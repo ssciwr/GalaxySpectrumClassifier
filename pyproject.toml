@@ -2,10 +2,7 @@
 # process itself. Being able to do this was the original reason to
 # introduce pyproject.toml
 [build-system]
-requires = [
-    "setuptools >=61",
-    "setuptools_scm >=7",
-]
+requires = ["setuptools >=61", "setuptools_scm >=7"]
 build-backend = "setuptools.build_meta"
 
 # This section provides general project metadata that is used across
@@ -13,13 +10,13 @@ build-backend = "setuptools.build_meta"
 # single source of truth for GalaxySpectrumClassifier's version
 [project]
 name = "GalaxySpectrumClassifier"
-description = "Add short description here"
+description = "A classifier system for galaxy spectra"
 readme = "README.md"
 maintainers = [
-    { name = "Harald Mack", email = "your@email.com" },
+    { name = "Harald Mack", email = "harald.mack@iwr.uni-heidelberg.de" },
 ]
 dynamic = ["version"]
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license-files = ["LICEN[CS]E*"]
 license = "MIT"
 classifiers = [
@@ -27,15 +24,17 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "click",
+    "click>=8.4.2",
+    "matplotlib>=3.11.0",
+    "numpy>=2.5.0",
+    "pandas>=3.0.3",
+    "pyaml>=26.2.1",
+    "scikit-learn>=1.9.0",
+    "scipy>=1.18.0",
 ]
 
 [project.optional-dependencies]
-tests = [
-    "pytest",
-    "pytest-cov",
-    "nbval",
-]
+tests = ["pytest", "pytest-cov", "nbval"]
 docs = [
     "ipykernel",
     "nbsphinx",
@@ -65,7 +64,4 @@ write_to = "src/GalaxySpectrumClassifier/_version.py"
 
 # The following is the configuration for the pytest test suite
 [tool.pytest.ini_options]
-testpaths = [
-    "tests",
-    "notebooks",
-]
+testpaths = ["tests", "notebooks"]
