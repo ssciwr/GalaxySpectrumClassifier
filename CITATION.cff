@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "GalaxySpectrumClassifier"
+abstract: "This is an awesome project. It does many things."
+keywords:
+  - keyword1
+  - keyword2
+  - keyword3
+authors:
+  - name: "Harald Mack"
+    orcid: "https://orcid.org/0000-0000-0000-0000"
+date-released: "2026-06-30"
+identifiers:
+  - description: This is a collection of archived snapshots of this project.
+    type: doi
+    value: "10.5281/zenodo.123456"
+license: MIT
+repository-code: git@github.com:ssciwr/GalaxySpectrumClassifier.git
