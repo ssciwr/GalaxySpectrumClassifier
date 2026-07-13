@@ -416,9 +416,9 @@ if __name__ == "__main__":
         "OII_7325",
         "SIII_9069",
     ]
-
-    hii_paths = sorted(glob.glob("C17_POPSTAR*.dat"))
-    agn_paths = sorted(glob.glob("C17_AGN*.dat"))
+    basepath = "../../data"
+    hii_paths = sorted(glob.glob(f"{basepath}/C17_POPSTAR*.dat"))
+    agn_paths = sorted(glob.glob(f"{basepath}/C17_AGN*.dat"))
 
     if not hii_paths or not agn_paths:
         raise FileNotFoundError(
