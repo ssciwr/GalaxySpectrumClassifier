@@ -144,3 +144,8 @@ cython_debug/
 # data
 data
 *.dat
+
+literature/pdfs/
+literature/.[!.]*
+.pi-subagents
+.pi
