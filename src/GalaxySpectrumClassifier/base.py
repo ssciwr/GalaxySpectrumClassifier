@@ -52,6 +52,10 @@ class ModelBase(ABC):
     def test(self):
         pass
 
+    @abstractmethod
+    def predict(self, input):
+        pass
+
 
 class VisualizerBase:
     def __init__(self):
