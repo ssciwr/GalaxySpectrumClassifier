@@ -17,7 +17,7 @@ class CloudyDataset(torch.utils.data.Dataset):
         na_values: list[str] = ["nan", "NaN"],
         sep: str = r"\s+",
         read_kwargs=None,
-        file_ending=".dat",
+        suffix=".dat",
         transform: Callable | None = None,
         pre_transform: Callable | None = None,
         pre_filter: Callable | None = None,
@@ -29,7 +29,7 @@ class CloudyDataset(torch.utils.data.Dataset):
 
         Args:
             path (str): Directory to search recursively for grid files matching
-                ``file_ending``.
+                ``suffix``.
             cache_path (str | None, optional): Directory to write the
                 concatenated/preprocessed cache to. Required (and only used)
                 when ``pre_transform`` or ``pre_filter`` is given, since that
@@ -45,7 +45,7 @@ class CloudyDataset(torch.utils.data.Dataset):
                 Cloudy grid format. Defaults to ``r"\\s+"``.
             read_kwargs (_type_, optional): Extra keyword arguments forwarded to
                 ``pandas.read_csv`` in ``_read_cloudy``. Defaults to None.
-            file_ending (str, optional): Suffix used to select grid files while
+            suffix (str, optional): Suffix used to select grid files while
                 walking ``path``. Defaults to ".dat".
             transform (Callable | None, optional): Callable applied to each
                 sample right before it is returned by ``__getitem__``. Defaults
@@ -74,7 +74,7 @@ class CloudyDataset(torch.utils.data.Dataset):
         self.sep = sep
         self.read_kwargs = read_kwargs or {}
 
-        self.file_ending = file_ending
+        self.suffix = suffix
 
         self._filter_datafiles(self.path, self.datafiles)
         self.datafiles.sort()
@@ -87,7 +87,7 @@ class CloudyDataset(torch.utils.data.Dataset):
         self.pre_filter = pre_filter
         self.n_workers = n_workers
 
-        self.cache_on_disk = pre_transform or pre_filter
+        self.cache_on_disk = pre_transform is not None or pre_filter is not None
         if self.cache_on_disk and cache_path is None:
             raise ValueError(
                 "When pre_transform or pre_filter are given, this implies preprocessing of data and cache_path cannot be None"
@@ -125,7 +125,7 @@ class CloudyDataset(torch.utils.data.Dataset):
         # TODO: this is naive, and might be too big for most machines, we need to check
         df = pd.concat(
             Parallel(n_jobs=self.n_workers)(
-                delayed(_preprocess_single(f) for f in self.datafiles)
+                delayed(_preprocess_single)(f) for f in self.datafiles
             )
         )
         df.to_csv(self.cache_path / "data.csv", sep=self.sep, na_rep=self.na_values[0])
@@ -133,7 +133,7 @@ class CloudyDataset(torch.utils.data.Dataset):
 
     def _filter_datafiles(self, path: Path, data_list: list[Path]):
         """Recursively collect every file under ``path`` whose suffix matches
-        ``self.file_ending``, appending their resolved paths to ``data_list``
+        ``self.suffix``, appending their resolved paths to ``data_list``
         in place.
 
         Args:
@@ -144,7 +144,7 @@ class CloudyDataset(torch.utils.data.Dataset):
         for obj in path.iterdir():
             if obj.is_dir():
                 self._filter_datafiles(obj, data_list)
-            elif obj.suffix == self.file_ending:
+            elif obj.suffix == self.suffix:
                 data_list.append(obj.resolve())
             else:
                 continue
@@ -192,92 +192,152 @@ class CloudyDataset(torch.utils.data.Dataset):
         )
         return data
 
-    def _map_index(self, idx: int):
-        """Resolve a global row index to the DataFrame that contains it (and
-        the equivalent row index within that DataFrame), reading and caching
-        files on demand.
-
-        Args:
-            idx (int): Global row index in ``[0, self.num_datapoints)``.
-
-        Raises:
-            ValueError: If ``idx`` does not fall inside the row range of any
-                of the dataset's files.
+    def _normalize_indices(
+        self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple
+    ) -> tuple[int | list[int], bool]:
+        """Normalise supported public indices to integer positions.
 
         Returns:
-            tuple[pd.DataFrame, int]: The DataFrame containing that row, and
-                the row's index within it.
+            tuple[int | list[int], bool]: The normalised positional index or
+                indices, plus a flag indicating whether the original request was
+                a single scalar index.
         """
-        # idx in [0, self.num_datapoints]
-        count = idx
-        containing_df = None
+        if isinstance(idx, torch.Tensor):
+            idx = idx.item() if idx.ndim == 0 else idx.tolist()
+        elif isinstance(idx, np.ndarray):
+            idx = idx.item() if idx.ndim == 0 else idx.tolist()
+
+        if isinstance(idx, slice):
+            return list(range(*idx.indices(self.num_datapoints))), False
+
+        if isinstance(idx, (list, tuple)):
+            indices = list(idx)
+            for index in indices:
+                self._validate_scalar_index(index)
+            return indices, False
+
+        self._validate_scalar_index(idx)
+        return int(idx), True
+
+    def _validate_scalar_index(self, idx: int):
+        """Validate that ``idx`` is a single in-range global row position."""
+        if isinstance(idx, bool) or not isinstance(idx, (int, np.integer)):
+            raise TypeError(f"Dataset indices must be integers, got {type(idx)!r}")
+        if idx < 0 or idx >= self.num_datapoints:
+            raise ValueError(
+                f"Error, index {idx} could not be found in dataset of length {self.num_datapoints}"
+            )
+
+    def _map_scalar_index(self, idx: int):
+        """Map one validated global row position to a file DataFrame and local position."""
+        count = int(idx)
+        for file in self.datafiles:
+            if file in self.data_cache:
+                read_data = self.data_cache[file]
+            else:
+                read_data = self._read_cloudy(file)
+                self.data_cache[file.resolve()] = read_data
+
+            if count >= len(read_data):
+                count -= len(read_data)
+            else:
+                return read_data, count
+
+        # This should only be reachable if the dataset changed after
+        # ``self.num_datapoints`` was computed.
+        raise ValueError(
+            f"Error, index {idx} could not be found in dataset of length {self.num_datapoints}"
+        )
+
+    def _map_index(self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple):
+        """Resolve global row index/indices to DataFrame row positions.
+
+        Scalar indices return the source DataFrame and the row's local position
+        within it. Non-scalar indices (slice, tensor, ndarray, list, tuple) are
+        treated as global dataset positions; when they span multiple files in
+        non-cache mode, the selected rows are materialised into one temporary
+        DataFrame in the requested order.
+
+        Args:
+            idx: Global row index, slice, or collection of indices in
+                ``[0, self.num_datapoints)``.
+
+        Raises:
+            ValueError: If any scalar index is outside the dataset range.
+            TypeError: If a scalar index is not integer-like.
+
+        Returns:
+            tuple[pd.DataFrame, int | slice]: A DataFrame containing the
+                requested row(s), and positional index/indices suitable for
+                ``_get_line_from_df``.
+        """
+        index, is_scalar = self._normalize_indices(idx)
+
         if self.cache_on_disk:
-            return self.data_cache, idx
-        else:
-            for file in self.datafiles:
-                if file in self.data_cache:
-                    read_data = self.data_cache[file]
-                else:
-                    read_data = self._read_cloudy(file)
-                    self.data_cache[file.resolve()] = read_data
+            return self.data_cache, index
 
-                # find data file to index
-                if count >= len(read_data):
-                    count -= len(read_data)
-                else:
-                    containing_df = read_data
-                    break
+        if is_scalar:
+            return self._map_scalar_index(index)
 
-            if containing_df is None:
-                raise ValueError(
-                    f"Error, index {idx} could not be found in dataset of length {self.num_datapoints}"
-                )
+        rows = []
+        for global_index in index:
+            df, local_index = self._map_scalar_index(global_index)
+            rows.append(df.iloc[[local_index], :])
 
-            return containing_df, count
+        if not rows:
+            if self.datafiles:
+                first_df = self.data_cache.get(self.datafiles[0])
+                if first_df is None:
+                    first_df = self._read_cloudy(self.datafiles[0])
+                    self.data_cache[self.datafiles[0]] = first_df
+                return first_df.iloc[0:0, :], slice(None)
+            return pd.DataFrame(), slice(None)
+
+        return pd.concat(rows, ignore_index=True), slice(None)
 
     def _get_line_from_df(
-        self, df: pd.DataFrame, idx: int | slice | torch.Tensor | np.ndarray
+        self,
+        df: pd.DataFrame,
+        idx: int | slice | torch.Tensor | np.ndarray | list | tuple,
     ):
-        """Select one or more rows from ``df`` by label, normalising tensor and
-        array indices to a plain list first (``DataFrame.loc`` does not accept
-        them directly).
+        """Select one or more rows from ``df`` by integer position.
+
+        Tensor and array indices are normalised to plain Python indices first
+        because pandas does not accept every tensor/array type directly.
 
         Args:
             df (pd.DataFrame): DataFrame to select from.
-            idx (int | slice | torch.Tensor | np.ndarray): Row label(s) to
-                select.
+            idx (int | slice | torch.Tensor | np.ndarray | list | tuple): Row
+                position(s) to select.
 
         Returns:
             _type_: The selected row (``pd.Series``) or rows (``pd.DataFrame``).
         """
         index = idx
-        if isinstance(idx, torch.Tensor) or isinstance(idx, np.ndarray):
-            index = idx.tolist()
-        return df.loc[index, :]
+        if isinstance(idx, torch.Tensor):
+            index = idx.item() if idx.ndim == 0 else idx.tolist()
+        elif isinstance(idx, np.ndarray):
+            index = idx.item() if idx.ndim == 0 else idx.tolist()
+        return df.iloc[index, :]
 
     def __getitem__(
-        self, idx: int | int | slice | torch.Tensor | np.ndarray
+        self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple
     ) -> torch.Tensor:
         """Return the sample(s) at ``idx`` as a tensor, applying
         ``self.transform`` first if one is set.
 
         Args:
-            idx (int | int | slice | torch.Tensor | np.ndarray): Row index (or
-                indices) to fetch.
+            idx (int | slice | torch.Tensor | np.ndarray | list | tuple): Row
+                index (or indices) to fetch.
 
         Returns:
             torch.Tensor: The (optionally transformed) row values.
         """
 
-        if self.cache_on_disk:
-            sample = self._get_line_from_df(self.data_cache, idx)
-            sample = self.transform(sample) if self.transform else sample
-            return torch.from_numpy(sample.values)
-        else:
-            df, index = self._map_index(idx)
-            sample = df.loc[index, :]
-            sample = self.transform(sample) if self.transform else sample
-            return torch.from_numpy(sample.values)
+        df, index = self._map_index(idx)
+        sample = self._get_line_from_df(df, index)
+        sample = self.transform(sample) if self.transform else sample
+        return torch.from_numpy(sample.values)
 
     def __len__(self):
         """Total number of rows across all grid files.
