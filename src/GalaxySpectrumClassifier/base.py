@@ -1,39 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Iterable, Callable
-from pathlib import Path
-
-
-class DatasetBase(ABC):
-    def __init__(
-        self,
-        datapath: str,
-        transform: Callable | None = None,
-        save: Callable | None = None,
-    ):
-        self.datapath = Path(datapath).resolve()
-        self.transformfunc = transform
-        self.savefunc = save
-
-    @abstractmethod
-    def __getitem__(self, idx: int):
-        pass
-
-    @abstractmethod
-    def get(self, idx: int | slice | Iterable):
-        pass
-
-    @abstractmethod
-    def read(self, path: str):
-        pass
-
-    def transform(self, object):
-        if self.transformfunc:
-            return self.transformfunc(object)
-        return object
-
-    def save(self, object):
-        if self.savefunc:
-            self.savefunc(object)
+from typing import Any
 
 
 class ModelBase(ABC):
@@ -54,6 +20,11 @@ class ModelBase(ABC):
 
     @abstractmethod
     def predict(self, input):
+        pass
+
+
+class TrainerBase(ABC):
+    def __init__(self):
         pass
 
 

@@ -1,2 +1,8 @@
 # The version file is generated automatically by setuptools_scm
 from GalaxySpectrumClassifier._version import version as __version__  # noqa: F401
+from GalaxySpectrumClassifier.data import CloudyDataset
+
+
+__all__ = [
+    "CloudyDataset",
+]
