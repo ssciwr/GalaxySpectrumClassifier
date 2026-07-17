@@ -26,7 +26,7 @@ class PandasDataset(torch.utils.data.Dataset):
         engine: str = "python",
         comment: str = "#",
         na_values: list[str] = ["nan", "NaN"],
-        sep: str = r"\s+",
+        sep: str = ",",
         read_kwargs=None,
         suffix=".dat",
         transform: Callable | None = None,
@@ -76,7 +76,7 @@ class PandasDataset(torch.utils.data.Dataset):
                 "type": type name as string
                 "args": argument list for the imputer type
                 "kwargs": keyword argument dict for the imputer type
-            }
+            }. Imputers do not work without preprocessing because for many Imputers, their output depends on the available data and would drift when data is added.
 
         Raises:
             ValueError: If ``pre_transform`` or ``pre_filter`` is given but
@@ -103,8 +103,28 @@ class PandasDataset(torch.utils.data.Dataset):
         self.pre_transform = pre_transform
         self.pre_filter = pre_filter
         self.n_workers = n_workers
-
         self.cache_on_disk = pre_transform is not None or pre_filter is not None
+
+        if imputer is not None:
+            if not self.cache_on_disk:
+                raise ValueError("Error, Imputer usage requires data caching on disk")
+
+            if "type" not in imputer or (
+                "args" not in imputer and "kwargs" not in imputer
+            ):
+                raise KeyError(
+                    "An imputer definition has to contain type and args, kwargs as needed"
+                )
+            else:
+                imputertype = imputer["type"]
+                imputerargs = imputer.get("args", [])
+                imputerkwargs = imputer.get("kwargs", {})
+                imputer_type = load_class("sklearn.impute", imputertype)
+                self.imputer = imputer_type(*imputerargs, **imputerkwargs)
+                self.imputer.set_output(transform="pandas")
+        else:
+            self.imputer = None
+
         if self.cache_on_disk and cache_path is None:
             raise ValueError(
                 "When pre_transform or pre_filter are given, this implies preprocessing of data and cache_path cannot be None"
@@ -119,25 +139,6 @@ class PandasDataset(torch.utils.data.Dataset):
             self.data_cache = df
 
         self.num_datapoints = self._get_num_datapoints()
-
-        if imputer is not None:
-            if (
-                "type" not in imputer
-                or "args" not in imputer
-                or "kwargs" not in imputer
-            ):
-                raise KeyError(
-                    "An imputer definition has to contain type, args, kwargs"
-                )
-            else:
-                imputertype = imputer["type"]
-                imputerargs = imputer["args"]
-                imputerkwargs = imputer["kwargs"]
-                imputer_type = load_class("sklearn.impute", imputertype)
-                self.imputer = imputer_type(*imputerargs, **imputerkwargs)
-                self.imputer.set_output(transform="pandas")
-        else:
-            self.imputer = None
 
     def _preprocess(self):
         """Read, filter and transform every matched grid file, concatenate the
@@ -164,10 +165,9 @@ class PandasDataset(torch.utils.data.Dataset):
                 delayed(_preprocess_single)(f) for f in self.datafiles
             )
         )
-
         if self.imputer is not None:
             # apply imputer to dataframe
-            df = self.impute.fit_transform(df)
+            df = self.imputer.fit_transform(df)
 
         df.to_csv(self.cache_path / "data.csv", sep=self.sep, na_rep=self.na_values[0])
         return df
@@ -207,7 +207,6 @@ class PandasDataset(torch.utils.data.Dataset):
             n = 0
             for data in self.datafiles:
                 read_data = self._read_cloudy(data)
-                self.data_cache[data] = read_data
                 n += len(read_data)
             return n
 
@@ -325,7 +324,6 @@ class PandasDataset(torch.utils.data.Dataset):
         Returns:
             torch.Tensor: The (optionally transformed) row values.
         """
-
         indices_frames = self._map_index(idx)
 
         if isinstance(indices_frames, Sequence) and isinstance(
@@ -396,6 +394,9 @@ class PandasDataset(torch.utils.data.Dataset):
         df = pd.concat(
             (self._read_cloudy(f) for f in self.datafiles), ignore_index=True
         )
+        if self.imputer is not None:
+            # apply imputer to dataframe
+            df = self.imputer.fit_transform(df)
 
         if label_column not in df.columns:
             raise ValueError(
