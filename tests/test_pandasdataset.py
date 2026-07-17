@@ -126,16 +126,22 @@ def test_pandasdataset_getitem_integer_indices(create_data):
 
     assert torch.equal(
         dataset[0],
-        torch.from_numpy(first_file.loc[first_file.index[0], ["a", "b"]].to_numpy()),
+        torch.from_numpy(
+            first_file.loc[first_file.index[0], ["a", "b"]].to_numpy().copy()
+        ),
     )
     assert torch.equal(
         dataset[99],
-        torch.from_numpy(first_file.loc[first_file.index[99], ["a", "b"]].to_numpy()),
+        torch.from_numpy(
+            first_file.loc[first_file.index[99], ["a", "b"]].to_numpy().copy()
+        ),
     )
     # Global indices should cross file boundaries.
     assert torch.equal(
         dataset[100],
-        torch.from_numpy(second_file.loc[second_file.index[0], ["a", "b"]].to_numpy()),
+        torch.from_numpy(
+            second_file.loc[second_file.index[0], ["a", "b"]].to_numpy().copy()
+        ),
     )
     assert len(transform_calls) == 3
 
@@ -154,6 +160,7 @@ def test_pandasdataset_getitem_slice_tensor_and_ndarray_are_global_indices(creat
     raw_files = sorted(create_data.glob("*.dat"))
     first_file = pd.read_csv(raw_files[0], index_col=0)
     second_file = pd.read_csv(raw_files[1], index_col=0)
+    last_file = pd.read_csv(raw_files[-1], index_col=0)
 
     def transform(row):
         return row[["a", "b"]]
@@ -163,25 +170,35 @@ def test_pandasdataset_getitem_slice_tensor_and_ndarray_are_global_indices(creat
     # The public API documents slice, torch.Tensor and np.ndarray indices. They
     # should be interpreted as global dataset indices, including across file
     # boundaries, and should work in the same way as integer indexing.
-    expected_slice = pd.concat(
+    expected_slice = pd.DataFrame(
         [
             first_file.loc[first_file.index[99], ["a", "b"]],
             second_file.loc[second_file.index[0], ["a", "b"]],
         ],
-        ignore_index=True,
     ).to_numpy()
+    returned = dataset[99:101].numpy()
+    np.testing.assert_allclose(returned, expected_slice)
+    assert returned.shape == (2, 2)
 
-    np.testing.assert_allclose(dataset[99:101].numpy(), expected_slice)
+    expected_slice = first_file.loc[first_file.index[:10], ["a", "b"]].to_numpy()
+    returned = dataset[:10].numpy()
+    np.testing.assert_allclose(returned, expected_slice)
+    assert returned.shape == (10, 2)
 
-    expected_tensor = pd.concat(
+    expected_slice = last_file.loc[last_file.index[95:], ["a", "b"]].to_numpy()
+    returned = dataset[995:].numpy()
+    np.testing.assert_allclose(returned, expected_slice)
+    assert returned.shape == (5, 2)
+
+    expected_tensor = pd.DataFrame(
         [
             first_file.loc[first_file.index[0], ["a", "b"]],
             second_file.loc[second_file.index[0], ["a", "b"]],
         ],
-        ignore_index=True,
     ).to_numpy()
-    np.testing.assert_allclose(dataset[torch.tensor([0, 100])].numpy(), expected_tensor)
-    np.testing.assert_allclose(dataset[np.array([0, 100])].numpy(), expected_tensor)
+    returned = dataset[np.array([0, 100])].numpy()
+    np.testing.assert_allclose(returned, expected_tensor)
+    assert returned.shape == (2, 2)
 
 
 def test_pandasdataset_list_transform_composed(create_data):

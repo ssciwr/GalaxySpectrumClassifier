@@ -52,8 +52,7 @@ class PandasDataset(torch.utils.data.Dataset):
             na_values (list[str], optional): Strings treated as missing values
                 when reading each grid file. Defaults to ["nan", "NaN"].
             sep (str, optional): Field-separator regex passed to
-                ``pandas.read_csv``; the default matches the whitespace-padded
-                Cloudy grid format. Defaults to ``r"\\s+"``.
+                ``pandas.read_csv``.
             read_kwargs (_type_, optional): Extra keyword arguments forwarded to
                 ``pandas.read_csv`` in ``_read_cloudy``. Defaults to None.
             suffix (str, optional): Suffix used to select grid files while
@@ -75,7 +74,7 @@ class PandasDataset(torch.utils.data.Dataset):
                 "type": type name as string
                 "args": argument list for the imputer type
                 "kwargs": keyword argument dict for the imputer type
-            }. Imputers do not work without preprocessing because for many Imputers, their output depends on the available data and would drift when data is added. **The imputer is always fit to the entire dataset, so it must be applied only after train/val/test split in order to avoid data leakage**.
+            }. Imputers do not work without preprocessing because for many Imputers, their output depends on the available data and would drift when data is added. **impute() fits on all rows visible to this dataset instance; create train/validation/test dataset instances first if split-specific fitting is required.**.
 
         Raises:
             ValueError: If ``pre_transform`` or ``pre_filter`` is given but
@@ -147,12 +146,14 @@ class PandasDataset(torch.utils.data.Dataset):
         """
 
         if (self.cache_path / "data.csv").exists():
+            kwargs = {"index_col": 0}
+            kwargs.update(self.read_kwargs)
             df = pd.read_csv(
                 self.cache_path / "data.csv",
-                sep=self.sep,
+                sep=",",
                 engine=self.engine,
                 na_values=self.na_values,
-                **self.read_kwargs,
+                **kwargs,
             )
 
             return df
@@ -175,15 +176,13 @@ class PandasDataset(torch.utils.data.Dataset):
                 )
             )
 
-            df.to_csv(
-                self.cache_path / "data.csv", sep=self.sep, na_rep=self.na_values[0]
-            )
+            df.to_csv(self.cache_path / "data.csv", sep=",", na_rep=self.na_values[0])
         return df
 
     def impute(self) -> pd.DataFrame:
         """Run sklearn imputer on dataset if the entire dataset is known, i.e., if pre_transform
         or pre_filter are given, which results in preprocessing the entire dataset into one dataframe.
-
+        impute() fits on all rows visible to this dataset instance; create train/validation/test dataset instances first if split-specific fitting is required.
         Raises:
             ValueError: If pre_transform or pre_filter is not given and hence the dataset cannot be assumed to be known
 
@@ -265,7 +264,7 @@ class PandasDataset(torch.utils.data.Dataset):
     def _normalize_index(
         self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple
     ):
-        """_summary_
+        """Normalize the idx
 
         Args:
             idx (int | slice | torch.Tensor | np.ndarray | list | tuple): _description_
@@ -273,7 +272,9 @@ class PandasDataset(torch.utils.data.Dataset):
         if isinstance(idx, torch.Tensor) or isinstance(idx, np.ndarray):
             return idx.tolist()
         elif isinstance(idx, slice):
-            return list(range(idx.start, idx.stop, idx.step or 1))
+            return list(
+                range(idx.start or 0, idx.stop or self.num_datapoints, idx.step or 1)
+            )
         elif isinstance(idx, tuple):
             return [i for i in idx]
         else:
@@ -359,14 +360,15 @@ class PandasDataset(torch.utils.data.Dataset):
         if isinstance(indices_frames, Sequence) and isinstance(
             indices_frames[0], Sequence
         ):
-            data = pd.concat(
+            data = pd.DataFrame(
                 [self.transform(df.iloc[i, :]) for i, df in indices_frames],
             )
         else:
             i, df = indices_frames
             data = self.transform(df.iloc[i, :])
 
-        return torch.from_numpy(data.values)
+        t = torch.from_numpy(data.values.copy())
+        return t
 
     def __len__(self):
         """Total number of rows across all grid files.
