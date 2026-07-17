@@ -22,9 +22,19 @@ class ModelBase(ABC):
     def predict(self, input):
         pass
 
+    @abstractmethod
+    @classmethod
+    def from_config(cls, cfg: dict[str, Any]) -> "ModelBase":
+        pass
+
 
 class TrainerBase(ABC):
     def __init__(self):
+        pass
+
+    @abstractmethod
+    @classmethod
+    def from_config(cls, cfg: dict[str, Any]) -> "TrainerBase":
         pass
 
 
@@ -38,3 +48,8 @@ class VisualizerBase:
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         self.plot(*args, **kwargs)
+
+    @abstractmethod
+    @classmethod
+    def from_config(cls, cfg: dict[str, Any]) -> "VisualizerBase":
+        pass

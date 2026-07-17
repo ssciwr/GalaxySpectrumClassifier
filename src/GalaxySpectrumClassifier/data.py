@@ -1,5 +1,5 @@
 import torch.utils.data
-from typing import Callable, Sequence
+from typing import Callable, Sequence, Any
 from pathlib import Path
 import pandas as pd
 import numpy as np
@@ -27,6 +27,7 @@ class CloudyDataset(torch.utils.data.Dataset):
         pre_transform: Callable | None = None,
         pre_filter: Callable | None = None,
         n_workers: int = 1,
+        imputer: dict[str, Any] | None = None,
     ):
         """Index one or more whitespace-separated Cloudy grid ``.dat`` files under
         ``path`` as a single dataset, where every row across every matched file
