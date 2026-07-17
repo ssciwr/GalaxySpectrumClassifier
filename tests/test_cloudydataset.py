@@ -6,9 +6,6 @@ from torchvision.transforms import Compose
 from GalaxySpectrumClassifier import CloudyDataset
 
 
-READ_CSV_KWARGS = {"index_col": 0}
-
-
 def test_cloudydataset_construction_default(create_data):
     dataset = CloudyDataset(create_data)
 
