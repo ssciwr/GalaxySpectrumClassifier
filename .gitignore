@@ -147,5 +147,7 @@ data
 
 literature/pdfs/
 literature/.[!.]*
+literature/**/.*/**/*.pdf
+literature/**/.*/**/*.md
 .pi-subagents
 .pi
