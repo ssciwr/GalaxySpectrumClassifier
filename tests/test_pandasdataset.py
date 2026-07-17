@@ -280,12 +280,9 @@ def test_pandasdataset_imputer_default_is_none(create_data):
     assert dataset.imputer is None
 
 
-def test_pandasdataset_cache_on_disk_applies_imputer(tmp_path):
-    # Per _preprocess's own logic, when cache_on_disk preprocessing is
-    # triggered (pre_filter/pre_transform) and an imputer is configured, the
-    # imputer should be fit and applied to the concatenated data before it
-    # becomes self.data_cache -- so gaps in the source files should come out
-    # filled in the resulting cache.
+def test_pandasdataset_imputer_is_constructed_but_not_run_until_explicit_impute(
+    tmp_path,
+):
     datapath = tmp_path / "data"
     datapath.mkdir()
     df = pd.DataFrame({"a": [1.0, np.nan, 3.0, 4.0], "b": [10.0, 20.0, 30.0, 40.0]})
@@ -302,15 +299,65 @@ def test_pandasdataset_cache_on_disk_applies_imputer(tmp_path):
         imputer={"type": "SimpleImputer", "args": [], "kwargs": {"strategy": "mean"}},
     )
 
+    assert isinstance(dataset.imputer, SimpleImputer)
+    assert pd.isna(dataset.data_cache.loc[1, "a"])
+
+    imputed = dataset.impute()
+
+    assert imputed is dataset.data_cache
     assert not dataset.data_cache.isna().any().any()
     assert dataset.data_cache.loc[1, "a"] == pytest.approx((1.0 + 3.0 + 4.0) / 3)
 
 
-def test_pandasdataset_imputer_requires_cache_on_disk(create_data):
-    # Imputer output depends on the data seen at fit time, so it is only
-    # allowed when preprocessing (pre_filter/pre_transform + cache_path) is
-    # eagerly caching a fixed snapshot of the data to disk -- otherwise the
-    # imputed values could silently drift as more data is loaded later.
+def test_pandasdataset_to_xy_does_not_implicitly_impute(tmp_path):
+    datapath = tmp_path / "data"
+    datapath.mkdir()
+    pd.DataFrame(
+        {"a": [1.0, np.nan, 3.0], "source": ["train", "train", "eval"]}
+    ).to_csv(datapath / "0.dat", index=False)
+
+    cache_path = tmp_path / "cache"
+    cache_path.mkdir()
+
+    dataset = PandasDataset(
+        datapath,
+        cache_path=cache_path,
+        pre_filter=lambda df: df,
+        sep=",",
+        imputer={"type": "SimpleImputer", "kwargs": {"strategy": "mean"}},
+    )
+
+    X, y = dataset.to_xy(
+        label_column="source", feature_columns=["a"], drop_duplicates=False
+    )
+
+    assert np.isnan(X[1, 0])
+    assert set(y) == {0, 1}
+    assert not hasattr(dataset.imputer, "statistics_")
+
+
+def test_pandasdataset_impute_requires_cache_on_disk(create_data):
+    dataset = PandasDataset(create_data, sep=",")
+
+    with pytest.raises(ValueError, match="cache_on_disk=True"):
+        dataset.impute()
+
+
+def test_pandasdataset_impute_requires_configured_imputer(create_data, tmp_path):
+    cache_path = tmp_path / "cache"
+    cache_path.mkdir()
+    dataset = PandasDataset(
+        create_data,
+        cache_path=cache_path,
+        pre_filter=lambda df: df,
+        sep=",",
+    )
+
+    with pytest.raises(ValueError, match="no imputer exists"):
+        dataset.impute()
+
+
+def test_pandasdataset_imputer_requires_cache_on_disk_at_construction(create_data):
     with pytest.raises(ValueError, match="requires data caching on disk"):
         PandasDataset(
             create_data,
@@ -375,11 +422,6 @@ def test_pandasdataset_imputer_constructs_configured_sklearn_instance(
 def test_pandasdataset_imputer_passes_positional_args(
     create_data, tmp_path, monkeypatch
 ):
-    # Every estimator in sklearn.impute (SimpleImputer, KNNImputer, ...) takes
-    # keyword-only constructor arguments, so "args" can never actually be
-    # exercised against a real sklearn class -- there is nothing to pass
-    # positionally. Verify the forwarding mechanism itself with a stand-in
-    # class registered under sklearn.impute instead.
     import sklearn.impute
 
     class FakeImputer:
@@ -416,9 +458,6 @@ def test_pandasdataset_imputer_passes_positional_args(
 
 
 def test_pandasdataset_imputer_supports_any_sklearn_impute_class(create_data, tmp_path):
-    # The loader is not hard-coded to SimpleImputer -- any class in
-    # sklearn.impute should be constructible from the same "type"/"args"/
-    # "kwargs" definition.
     cache_path = tmp_path / "cache"
     cache_path.mkdir()
 
@@ -435,9 +474,6 @@ def test_pandasdataset_imputer_supports_any_sklearn_impute_class(create_data, tm
 
 
 def test_pandasdataset_imputer_output_is_configured_for_pandas(create_data, tmp_path):
-    # set_output(transform="pandas") should make fit_transform hand back a
-    # DataFrame (preserving column names) instead of a bare ndarray, which is
-    # the point of requesting pandas output from an sklearn transformer.
     cache_path = tmp_path / "cache"
     cache_path.mkdir()
 
@@ -466,9 +502,15 @@ def test_pandasdataset_imputer_output_is_configured_for_pandas(create_data, tmp_
         ("constant", -1.0, [1.0, -1.0, 3.0]),
     ],
 )
-def test_pandasdataset_imputer_actually_imputes_missing_values(
-    create_data, tmp_path, strategy, fill_value, expected_a
+def test_pandasdataset_impute_runs_configured_simple_imputer_options(
+    tmp_path, strategy, fill_value, expected_a
 ):
+    datapath = tmp_path / "data"
+    datapath.mkdir()
+    pd.DataFrame({"a": [1.0, np.nan, 3.0], "b": [0.0, 0.0, 0.0]}).to_csv(
+        datapath / "0.dat", index=False
+    )
+
     kwargs = {"strategy": strategy}
     if fill_value is not None:
         kwargs["fill_value"] = fill_value
@@ -477,16 +519,16 @@ def test_pandasdataset_imputer_actually_imputes_missing_values(
     cache_path.mkdir()
 
     dataset = PandasDataset(
-        create_data,
+        datapath,
         cache_path=cache_path,
         pre_filter=lambda df: df,
         sep=",",
         imputer={"type": "SimpleImputer", "args": [], "kwargs": kwargs},
     )
 
-    assert isinstance(dataset.imputer, SimpleImputer)
-    frame_with_gaps = pd.DataFrame({"a": [1.0, np.nan, 3.0]})
-    result = dataset.imputer.fit_transform(frame_with_gaps)
+    assert dataset.data_cache["a"].isna().any()
+
+    result = dataset.impute()
 
     np.testing.assert_allclose(result["a"].to_numpy(), expected_a)
     assert not result["a"].isna().any()

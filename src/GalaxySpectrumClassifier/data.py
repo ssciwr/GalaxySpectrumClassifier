@@ -3,7 +3,6 @@ from typing import Callable, Sequence, Any
 from pathlib import Path
 import pandas as pd
 import numpy as np
-from torchvision.transforms import Compose
 from joblib import Parallel, delayed
 from collections import OrderedDict
 import importlib
@@ -76,7 +75,7 @@ class PandasDataset(torch.utils.data.Dataset):
                 "type": type name as string
                 "args": argument list for the imputer type
                 "kwargs": keyword argument dict for the imputer type
-            }. Imputers do not work without preprocessing because for many Imputers, their output depends on the available data and would drift when data is added.
+            }. Imputers do not work without preprocessing because for many Imputers, their output depends on the available data and would drift when data is added. **The imputer is always fit to the entire dataset, so it must be applied only after train/val/test split in order to avoid data leakage**.
 
         Raises:
             ValueError: If ``pre_transform`` or ``pre_filter`` is given but
@@ -95,9 +94,6 @@ class PandasDataset(torch.utils.data.Dataset):
 
         self._filter_datafiles(self.path, self.datafiles)
         self.datafiles.sort()
-
-        if isinstance(transform, list):
-            self.transform = Compose(transform)
 
         self.transform = transform if transform is not None else identity
         self.pre_transform = pre_transform
@@ -150,27 +146,61 @@ class PandasDataset(torch.utils.data.Dataset):
                 to back the dataset when ``cache_on_disk`` is True.
         """
 
-        def _preprocess_single(path):
-            df = self._read_cloudy(path)
-            if self.pre_filter:
-                df = self.pre_filter(df)
-
-            if self.pre_transform:
-                df = self.pre_transform(df)
-            return df
-
-        # TODO: this is naive, and might be too big for most machines, we need to check
-        df = pd.concat(
-            Parallel(n_jobs=self.n_workers)(
-                delayed(_preprocess_single)(f) for f in self.datafiles
+        if (self.cache_path / "data.csv").exists():
+            df = pd.read_csv(
+                self.cache_path / "data.csv",
+                sep=self.sep,
+                engine=self.engine,
+                na_values=self.na_values,
+                **self.read_kwargs,
             )
-        )
-        if self.imputer is not None:
-            # apply imputer to dataframe
-            df = self.imputer.fit_transform(df)
 
-        df.to_csv(self.cache_path / "data.csv", sep=self.sep, na_rep=self.na_values[0])
+            return df
+        else:
+
+            def _preprocess_single(path):
+                df = self._read_cloudy(path)
+                if self.pre_filter:
+                    df = self.pre_filter(df)
+
+                if self.pre_transform:
+                    df = self.pre_transform(df)
+                return df
+
+            # TODO: this is naive, and might be too big for most machines, we need to check
+            # possibly we need to chunk them, but I am not entirely sure how atm
+            df = pd.concat(
+                Parallel(n_jobs=self.n_workers)(
+                    delayed(_preprocess_single)(f) for f in self.datafiles
+                )
+            )
+
+            df.to_csv(
+                self.cache_path / "data.csv", sep=self.sep, na_rep=self.na_values[0]
+            )
         return df
+
+    def impute(self) -> pd.DataFrame:
+        """Run sklearn imputer on dataset if the entire dataset is known, i.e., if pre_transform
+        or pre_filter are given, which results in preprocessing the entire dataset into one dataframe.
+
+        Raises:
+            ValueError: If pre_transform or pre_filter is not given and hence the dataset cannot be assumed to be known
+
+        Returns:
+            pd.DataFrame: The dataset's full data as a DataFrame with the imputer having been run.
+
+        """
+        if not self.cache_on_disk:
+            raise ValueError(
+                "Error, without knowing all data, imputation can yield drfiting or wrong results, and only cache_on_disk=True guarantees this. Hence, pre_filter or pre_transform must be given for cache_on_disk to be true and for imputation to run"
+            )
+
+        if self.imputer:
+            self.data_cache = self.imputer.fit_transform(self.data_cache)
+            return self.data_cache
+        else:
+            raise ValueError("Error, no imputer exists")
 
     def _filter_datafiles(self, path: Path, data_list: list[Path]):
         """Recursively collect every file under ``path`` whose suffix matches
@@ -394,9 +424,6 @@ class PandasDataset(torch.utils.data.Dataset):
         df = pd.concat(
             (self._read_cloudy(f) for f in self.datafiles), ignore_index=True
         )
-        if self.imputer is not None:
-            # apply imputer to dataframe
-            df = self.imputer.fit_transform(df)
 
         if label_column not in df.columns:
             raise ValueError(
