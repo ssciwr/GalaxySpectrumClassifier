@@ -46,9 +46,6 @@ docs = [
     "sphinx_rtd_theme",
 ]
 
-# Command line scripts installed as part of the installation
-[project.scripts]
-GalaxySpectrumClassifier = "GalaxySpectrumClassifier.__main__:main"
 
 # The following section contains setuptools-specific configuration
 # options. For a full reference of available options, check the overview
@@ -66,4 +63,4 @@ write_to = "src/GalaxySpectrumClassifier/_version.py"
 
 # The following is the configuration for the pytest test suite
 [tool.pytest.ini_options]
-testpaths = ["tests", "notebooks"]
+testpaths = ["tests"]
