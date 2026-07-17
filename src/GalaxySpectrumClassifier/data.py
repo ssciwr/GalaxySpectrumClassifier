@@ -6,13 +6,19 @@ import numpy as np
 from torchvision.transforms import Compose
 from joblib import Parallel, delayed
 from collections import OrderedDict
+import importlib
 
 
 def identity(x):
     return x
 
 
-class CloudyDataset(torch.utils.data.Dataset):
+def load_class(module_path: str, class_name: str):
+    module = importlib.import_module(module_path)
+    return getattr(module, class_name)
+
+
+class PandasDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         path: str,
@@ -66,6 +72,11 @@ class CloudyDataset(torch.utils.data.Dataset):
                 Defaults to None.
             n_workers (int, optional): Number of parallel workers used to read
                 and preprocess files in ``_preprocess``. Defaults to 1.
+            imputer (dict[str, Any], None): sklearn imputer definition - {
+                "type": type name as string
+                "args": argument list for the imputer type
+                "kwargs": keyword argument dict for the imputer type
+            }
 
         Raises:
             ValueError: If ``pre_transform`` or ``pre_filter`` is given but
@@ -109,6 +120,25 @@ class CloudyDataset(torch.utils.data.Dataset):
 
         self.num_datapoints = self._get_num_datapoints()
 
+        if imputer is not None:
+            if (
+                "type" not in imputer
+                or "args" not in imputer
+                or "kwargs" not in imputer
+            ):
+                raise KeyError(
+                    "An imputer definition has to contain type, args, kwargs"
+                )
+            else:
+                imputertype = imputer["type"]
+                imputerargs = imputer["args"]
+                imputerkwargs = imputer["kwargs"]
+                imputer_type = load_class("sklearn.impute", imputertype)
+                self.imputer = imputer_type(*imputerargs, **imputerkwargs)
+                self.imputer.set_output(transform="pandas")
+        else:
+            self.imputer = None
+
     def _preprocess(self):
         """Read, filter and transform every matched grid file, concatenate the
         results into a single DataFrame, and write it to
@@ -134,6 +164,11 @@ class CloudyDataset(torch.utils.data.Dataset):
                 delayed(_preprocess_single)(f) for f in self.datafiles
             )
         )
+
+        if self.imputer is not None:
+            # apply imputer to dataframe
+            df = self.impute.fit_transform(df)
+
         df.to_csv(self.cache_path / "data.csv", sep=self.sep, na_rep=self.na_values[0])
         return df
 
