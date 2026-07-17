@@ -24,7 +24,7 @@ class PandasDataset(torch.utils.data.Dataset):
         cache_path: str | None = None,
         engine: str = "python",
         comment: str = "#",
-        na_values: list[str] = ["nan", "NaN"],
+        na_values: tuple = ("nan", "NaN"),
         sep: str = ",",
         read_kwargs=None,
         suffix=".dat",
@@ -264,16 +264,30 @@ class PandasDataset(torch.utils.data.Dataset):
     def _normalize_index(
         self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple
     ):
-        """Normalize the idx
+        """Normalize supported index types to scalar or explicit positions.
+
+        Tensor and NumPy indices are converted to Python lists, slices are
+        expanded to a list of global row positions, tuples are converted to
+        lists, and scalar indices are returned unchanged. Negative indices are
+        intentionally not normalized here; they are rejected later by
+        ``_map_index``.
 
         Args:
-            idx (int | slice | torch.Tensor | np.ndarray | list | tuple): _description_
+            idx (int | slice | torch.Tensor | np.ndarray | list | tuple): Scalar
+                row index, slice, or collection of global row indices.
+
+        Returns:
+            int | list: A scalar index or a list of explicit global row indices.
         """
         if isinstance(idx, torch.Tensor) or isinstance(idx, np.ndarray):
             return idx.tolist()
         elif isinstance(idx, slice):
             return list(
-                range(idx.start or 0, idx.stop or self.num_datapoints, idx.step or 1)
+                range(
+                    idx.start if idx.start is not None else 0,
+                    idx.stop if idx.stop is not None else self.num_datapoints,
+                    idx.step if idx.step is not None else 1,
+                )
             )
         elif isinstance(idx, tuple):
             return [i for i in idx]
@@ -337,6 +351,9 @@ class PandasDataset(torch.utils.data.Dataset):
         index = self._normalize_index(idx)
 
         if isinstance(index, Sequence):
+            if len(index) == 0:
+                raise ValueError("Error, empty index list cannot be passed.")
+
             return [_map_single_index(i) for i in index]
 
         else:

@@ -18,7 +18,7 @@ def test_pandasdataset_construction_default(create_data):
 
     assert dataset.engine == "python"
     assert dataset.comment == "#"
-    assert dataset.na_values == ["nan", "NaN"]
+    assert dataset.na_values == ("nan", "NaN")
     assert dataset.sep == ","
     assert dataset.read_kwargs == {}
     assert dataset.suffix == ".dat"
@@ -49,7 +49,7 @@ def test_pandasdataset_nonstandard(create_data_nonstandard):
 
     assert dataset.engine == "python"
     assert dataset.comment == "//"
-    assert dataset.na_values == ["nan", "NaN"]
+    assert dataset.na_values == ("nan", "NaN")
     assert dataset.sep == "\t"
     assert dataset.read_kwargs == {}
     assert dataset.suffix == ".tsv"
