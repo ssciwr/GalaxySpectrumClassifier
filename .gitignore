@@ -145,7 +145,7 @@ cython_debug/
 data
 *.dat
 
-literature/pdfs/
+literature/**/pdfs/
 literature/.[!.]*
 literature/**/.*/**/*.pdf
 literature/**/.*/**/*.md
