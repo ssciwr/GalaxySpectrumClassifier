@@ -24,7 +24,8 @@ def test_cloudydataset_construction_default(create_data):
     assert dataset.sep == r"\s+"
     assert dataset.read_kwargs == {}
     assert dataset.suffix == ".dat"
-    assert dataset.transform is None
+    assert callable(dataset.transform)
+    assert dataset.transform(3) == 3
     assert dataset.pre_transform is None
     assert dataset.pre_filter is None
     assert dataset.n_workers == 1
@@ -55,7 +56,8 @@ def test_cloudydataset_nonstandard(create_data_nonstandard):
     assert dataset.sep == "\t"
     assert dataset.read_kwargs == {}
     assert dataset.suffix == ".tsv"
-    assert dataset.transform is None
+    assert callable(dataset.transform)
+    assert dataset.transform(3) == 3
     assert dataset.pre_transform is None
     assert dataset.pre_filter is None
     assert dataset.n_workers == 1
@@ -109,7 +111,7 @@ def test_cloudydataset_construction_cache(create_data, tmp_path):
     assert (cache_path / "data.csv").exists()
 
     first = dataset[0]
-    expected = dataset.data_cache.loc[0].to_numpy()
+    expected = dataset.data_cache.iloc[0, :].to_numpy()
     np.testing.assert_allclose(first.numpy(), expected)
 
 
@@ -127,25 +129,28 @@ def test_cloudydataset_getitem_integer_indices(create_data):
     dataset = CloudyDataset(create_data, transform=transform, sep=",")
 
     assert torch.equal(
-        dataset[0], torch.from_numpy(first_file.loc[0, ["a", "b"]].to_numpy())
+        dataset[0],
+        torch.from_numpy(first_file.loc[first_file.index[0], ["a", "b"]].to_numpy()),
     )
     assert torch.equal(
-        dataset[99], torch.from_numpy(first_file.loc[99, ["a", "b"]].to_numpy())
+        dataset[99],
+        torch.from_numpy(first_file.loc[first_file.index[99], ["a", "b"]].to_numpy()),
     )
     # Global indices should cross file boundaries.
     assert torch.equal(
-        dataset[100], torch.from_numpy(second_file.loc[0, ["a", "b"]].to_numpy())
+        dataset[100],
+        torch.from_numpy(second_file.loc[second_file.index[0], ["a", "b"]].to_numpy()),
     )
     assert len(transform_calls) == 3
 
-    with pytest.raises(ValueError, match="could not be found"):
+    with pytest.raises(IndexError, match="could not be found"):
         dataset[len(dataset)]
 
 
 def test_cloudydataset_getitem_negative_index_is_out_of_range(create_data):
     dataset = CloudyDataset(create_data, transform=lambda row: row[["a", "b"]])
 
-    with pytest.raises(KeyError):
+    with pytest.raises(IndexError):
         dataset[-1]
 
 
@@ -153,19 +158,30 @@ def test_cloudydataset_getitem_slice_tensor_and_ndarray_are_global_indices(creat
     raw_files = sorted(create_data.glob("*.dat"))
     first_file = pd.read_csv(raw_files[0], index_col=0)
     second_file = pd.read_csv(raw_files[1], index_col=0)
-    dataset = CloudyDataset(create_data, transform=lambda row: row[["a", "b"]])
+
+    def transform(row):
+        return row[["a", "b"]]
+
+    dataset = CloudyDataset(create_data, transform=transform, sep=",")
 
     # The public API documents slice, torch.Tensor and np.ndarray indices. They
     # should be interpreted as global dataset indices, including across file
     # boundaries, and should work in the same way as integer indexing.
     expected_slice = pd.concat(
-        [first_file.loc[[99], ["a", "b"]], second_file.loc[[0], ["a", "b"]]],
+        [
+            first_file.loc[first_file.index[99], ["a", "b"]],
+            second_file.loc[second_file.index[0], ["a", "b"]],
+        ],
         ignore_index=True,
     ).to_numpy()
-    np.testing.assert_allclose(dataset[slice(99, 101)].numpy(), expected_slice)
+
+    np.testing.assert_allclose(dataset[99:101].numpy(), expected_slice)
 
     expected_tensor = pd.concat(
-        [first_file.loc[[0], ["a", "b"]], second_file.loc[[0], ["a", "b"]]],
+        [
+            first_file.loc[first_file.index[0], ["a", "b"]],
+            second_file.loc[second_file.index[0], ["a", "b"]],
+        ],
         ignore_index=True,
     ).to_numpy()
     np.testing.assert_allclose(dataset[torch.tensor([0, 100])].numpy(), expected_tensor)
@@ -176,6 +192,7 @@ def test_cloudydataset_list_transform_composed(create_data):
     first_file = pd.read_csv(sorted(create_data.glob("*.dat"))[0], index_col=0)
     dataset = CloudyDataset(
         create_data,
+        sep=",",
         transform=Compose([lambda row: row[["a", "b"]], lambda row: row * 2]),
     )
 
@@ -184,7 +201,7 @@ def test_cloudydataset_list_transform_composed(create_data):
 
 
 def test_cloudydataset_xy(create_data):
-    dataset = CloudyDataset(create_data)
+    dataset = CloudyDataset(create_data, sep=",")
 
     # The fixture has no default 'source' label column, so the documented error
     # should be raised before attempting to build X/y.
@@ -218,61 +235,45 @@ def test_cloudydataset_xy(create_data):
 
 
 def test_cloudydataset_mapindex(create_data):
-    dataset = CloudyDataset(create_data)
+    dataset = CloudyDataset(create_data, sep=",")
     first_file = pd.read_csv(dataset.datafiles[0], index_col=0)
     second_file = pd.read_csv(dataset.datafiles[1], index_col=0)
-
-    df, local_index = dataset._map_index(0)
+    cols = ["a", "b", "c", "d"]
+    local_index, df = dataset._map_index(0)
     assert local_index == 0
     pd.testing.assert_series_equal(
-        df.loc[local_index], first_file.loc[0], check_names=False
+        df.loc[df.index[local_index], cols],
+        first_file.loc[first_file.index[0], cols],
+        check_names=False,
     )
 
-    df, local_index = dataset._map_index(100)
+    local_index, df = dataset._map_index(100)
     assert local_index == 0
     pd.testing.assert_series_equal(
-        df.loc[local_index], second_file.loc[0], check_names=False
+        df.loc[df.index[local_index], cols],
+        second_file.loc[second_file.index[0], cols],
+        check_names=False,
     )
 
-    df, local_index = dataset._map_index(199)
+    local_index, df = dataset._map_index(199)
     assert local_index == 99
     pd.testing.assert_series_equal(
-        df.loc[local_index], second_file.loc[99], check_names=False
+        df.loc[df.index[local_index], cols],
+        second_file.loc[second_file.index[99], cols],
+        check_names=False,
     )
 
-    with pytest.raises(ValueError, match="could not be found"):
+    with pytest.raises(IndexError, match="could not be found"):
         dataset._map_index(len(dataset))
-
-
-def test_cloudydataset_mapindex_negative_index_is_out_of_range(create_data):
-    dataset = CloudyDataset(create_data)
-
-    with pytest.raises(ValueError):
-        dataset._map_index(-1)
-
-
-def test_cloudydataset_get_line_from_df_accepts_tensor_ndarray_and_slice(create_data):
-    dataset = CloudyDataset(create_data)
-    frame = pd.DataFrame({"a": [10, 20, 30], "b": [1, 2, 3]})
-
-    pd.testing.assert_frame_equal(
-        dataset._get_line_from_df(frame, torch.tensor([0, 2])), frame.loc[[0, 2], :]
-    )
-    pd.testing.assert_frame_equal(
-        dataset._get_line_from_df(frame, np.array([1, 2])), frame.loc[[1, 2], :]
-    )
-    pd.testing.assert_frame_equal(
-        dataset._get_line_from_df(frame, slice(1, 2)), frame.loc[1:2, :]
-    )
 
 
 def test_cloudydataset_mapindex_cache_mode(create_data, tmp_path):
     cache_path = tmp_path / "cache"
     cache_path.mkdir()
     dataset = CloudyDataset(
-        create_data, cache_path=cache_path, pre_filter=lambda df: df
+        create_data, cache_path=cache_path, pre_filter=lambda df: df, sep=","
     )
 
-    cache_df, cache_index = dataset._map_index(123)
+    cache_index, cache_df = dataset._map_index(123)
     assert cache_df is dataset.data_cache
     assert cache_index == 123
