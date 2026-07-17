@@ -135,6 +135,18 @@ class PandasDataset(torch.utils.data.Dataset):
 
         self.num_datapoints = self._get_num_datapoints()
 
+    @classmethod
+    def from_config(cls, cfg: dict[str, Any]) -> "PandasDataset":
+        """Create a new instance from a config file
+
+        Args:
+            cfg (dict[str, Any]): Configuration file content in the form of a dictionary. Needs to contain all necessary args and kwargs as required by __init__.
+
+        Returns:
+            PandasDataset: Newly created PandasDataset instance
+        """
+        return cls(**cfg)
+
     def _preprocess(self):
         """Read, filter and transform every matched grid file, concatenate the
         results into a single DataFrame, and write it to
