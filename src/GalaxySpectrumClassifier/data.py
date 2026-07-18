@@ -5,19 +5,12 @@ import pandas as pd
 import numpy as np
 from joblib import Parallel, delayed
 from collections import OrderedDict
-import importlib
+
+from .base import DatasetProtocol
+from .utils import identity, load_type
 
 
-def identity(x):
-    return x
-
-
-def load_class(module_path: str, class_name: str):
-    module = importlib.import_module(module_path)
-    return getattr(module, class_name)
-
-
-class PandasDataset(torch.utils.data.Dataset):
+class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
     def __init__(
         self,
         path: str,
@@ -114,7 +107,7 @@ class PandasDataset(torch.utils.data.Dataset):
                 imputertype = imputer["type"]
                 imputerargs = imputer.get("args", [])
                 imputerkwargs = imputer.get("kwargs", {})
-                imputer_type = load_class("sklearn.impute", imputertype)
+                imputer_type = load_type("sklearn.impute", imputertype)
                 self.imputer = imputer_type(*imputerargs, **imputerkwargs)
                 self.imputer.set_output(transform="pandas")
         else:
@@ -158,6 +151,7 @@ class PandasDataset(torch.utils.data.Dataset):
         """
 
         if (self.cache_path / "data.csv").exists():
+            # don't read
             kwargs = {"index_col": 0}
             kwargs.update(self.read_kwargs)
             df = pd.read_csv(
@@ -195,6 +189,7 @@ class PandasDataset(torch.utils.data.Dataset):
         """Run sklearn imputer on dataset if the entire dataset is known, i.e., if pre_transform
         or pre_filter are given, which results in preprocessing the entire dataset into one dataframe.
         impute() fits on all rows visible to this dataset instance; create train/validation/test dataset instances first if split-specific fitting is required.
+        Side effect: This function does change the internally held dataframe and returns it
         Raises:
             ValueError: If pre_transform or pre_filter is not given and hence the dataset cannot be assumed to be known
 
