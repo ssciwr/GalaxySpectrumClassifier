@@ -152,3 +152,6 @@ literature/**/.*/**/*.md
 literature/**/.sources/
 .pi-subagents
 .pi
+
+# editor
+.vscode
