@@ -37,6 +37,41 @@ def test_pandasdataset_construction_default(create_data):
     assert dataset.cache_on_disk is False
 
 
+def test_pandasdataset_fromconfig(create_data):
+    cfg = {
+        "path": create_data,
+        "sep": ",",
+    }
+
+    dataset = PandasDataset.from_config(cfg)
+
+    assert dataset.path == create_data.resolve()
+    assert len(dataset.datafiles) == 10
+    assert [path.name for path in dataset.datafiles] == [f"{i}.dat" for i in range(10)]
+    assert all(path.is_absolute() for path in dataset.datafiles)
+    assert all(path.suffix == ".dat" for path in dataset.datafiles)
+
+    assert dataset.engine == "python"
+    assert dataset.comment == "#"
+    assert dataset.na_values == ("nan", "NaN")
+    assert dataset.sep == ","
+    assert dataset.read_kwargs == {}
+    assert dataset.suffix == ".dat"
+    assert callable(dataset.transform)
+    assert dataset.transform(3) == 3
+    assert dataset.pre_transform is None
+    assert dataset.pre_filter is None
+    assert dataset.n_workers == 1
+
+    # Construction is documented to count rows, and non-cache counting reads and
+    # caches all files as a side effect.
+    assert len(dataset) == 1000
+    assert dataset.num_datapoints == 1000
+    assert all(isinstance(frame, pd.DataFrame) for frame in dataset.data_cache.values())
+    assert all(len(frame) == 100 for frame in dataset.data_cache.values())
+    assert dataset.cache_on_disk is False
+
+
 def test_pandasdataset_nonstandard(create_data_nonstandard):
     dataset = PandasDataset(
         create_data_nonstandard, sep="\t", comment="//", suffix=".tsv"
