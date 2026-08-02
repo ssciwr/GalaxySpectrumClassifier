@@ -1,8 +1,9 @@
-from typing import Any
 from collections.abc import Callable
+from typing import Any
+
 import numpy as np
 
-from .base import TrainerProtocol, Trainable, DatasetProtocol
+from .base import DatasetProtocol, Trainable, TrainerProtocol
 from .utils import load_type
 
 # One resolved, ready-to-call metric: (result key, the loaded callable, its
@@ -174,8 +175,7 @@ class SimpleTrainer(TrainerProtocol):
 
         Returns:
             Trainable: The constructed estimator, or the calibrator wrapping
-                it if ``calibrator_type`` was given. Either way, this is what
-                ``fit``/``predict``/``predict_proba`` get called on.
+                it if ``calibrator_type`` was given.
         """
         # "module.path.ClassName" -> ("module.path", "ClassName")
         model_module, model_type = type.rsplit(".", 1)
@@ -198,8 +198,8 @@ class SimpleTrainer(TrainerProtocol):
             cal_module, cal_type = calibrator_type.rsplit(".", 1)
             cal_type = load_type(cal_module, cal_type)
             cal = cal_type(
-                estimator=model,
                 *(calibrator_args if calibrator_args is not None else []),
+                estimator=model,
                 **(calibrator_kwargs if calibrator_kwargs is not None else {}),
             )
             # The calibrator, not the raw model, is trained/evaluated from
@@ -219,6 +219,7 @@ class SimpleTrainer(TrainerProtocol):
         Returns:
             SimpleTrainer: Newly constructed instance.
         """
+        # TODO: needs verification. json schema? pydantic?
         return cls(**cfg)
 
     def _build_metrics(self, specs: list[dict[str, Any]]) -> list[MetricSpec]:
