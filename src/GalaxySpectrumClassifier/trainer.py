@@ -9,7 +9,7 @@ from .utils import load_type
 # One resolved, ready-to-call metric: (result key, the loaded callable, its
 # extra positional args, its extra keyword args, whether it should be scored
 # against predict_proba() output instead of predict()).
-MetricSpec = tuple[str, Callable[..., Any], list[Any], dict[str, Any], bool]
+MetricSpec = dict[str, Callable[..., Any] | list[Any] | dict[str, Any] | bool]
 
 # The three task kinds SimpleTrainer knows how to evaluate. This drives two
 # things: which predict_proba() shape a "needs_proba" metric receives, and
@@ -248,7 +248,15 @@ class SimpleTrainer(TrainerProtocol):
             # Falls back to the metric's own name so results are keyed
             # sensibly even when the caller doesn't set `name` explicitly.
             name = spec.get("name", metric_name)
-            metrics.append((name, metric_fn, args, kwargs, needs_proba))
+            metrics.append(
+                {
+                    "name": name,
+                    "callable": metric_fn,
+                    "args": args,
+                    "kwargs": kwargs,
+                    "needs_proba": needs_proba,
+                }
+            )
         return metrics
 
     def fit(self, dataset: DatasetProtocol) -> Trainable:

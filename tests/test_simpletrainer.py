@@ -1,11 +1,10 @@
 import pytest
 import torch
 import skorch
-import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.datasets import make_classification
-
+from sklearn.metrics import accuracy_score
 from GalaxySpectrumClassifier import SimpleTrainer
 
 
@@ -38,7 +37,20 @@ def synthetic_dataset():
     return pd.DataFrame(X), pd.Series(y)
 
 
-def test_simple_trainer_init(): ...
+def test_simple_trainer_init_minimal():
+    trainer = SimpleTrainer(
+        model_type="sklearn.ensemble.RandomForestClassifier",
+        model_kwargs={"n_estimators": 10, "random_state": 42},
+    )
+
+    assert isinstance(trainer.model, RandomForestClassifier)
+    assert trainer.model.n_estimators == 10
+    assert trainer.model.random_state == 42
+    assert trainer.metrics[0]["name"] == "accuracy_score"
+    assert trainer.metrics[0]["callable"] == accuracy_score
+    assert trainer.metrics[0]["args"] == []
+    assert trainer.metrics[0]["kwargs"] == {}
+    assert trainer.metrics[0]["needs_proba"] is False
 
 
 def test_simple_trainr_from_config(): ...
