@@ -48,6 +48,7 @@ class SimpleTrainer(TrainerProtocol):
         task: str = "binary-classification",
         metrics: list[dict[str, Any]] | None = None,
         seed: int = 42,
+        data_xy_kwargs: dict[str, Any] | None = None,
     ):
         """Build the underlying model/calibrator and resolve the metrics to evaluate with.
 
@@ -111,6 +112,10 @@ class SimpleTrainer(TrainerProtocol):
                 seed the underlying sklearn estimator itself; pass a
                 ``random_state`` via ``model_kwargs`` for that. Defaults to
                 42.
+            data_xy_kwargs (dict[str, Any] | None, optional): Extra keyword
+                arguments forwarded to ``dataset.to_xy()`` when called in
+                ``fit``, ``validate`` and ``test``. Defaults to None (no extra
+                keyword arguments).
 
         Raises:
             ValueError: If ``task`` is not one of ``TASKS``.
@@ -138,6 +143,8 @@ class SimpleTrainer(TrainerProtocol):
         self.metrics: list[MetricSpec] = self._build_metrics(
             metrics if metrics is not None else DEFAULT_METRICS[task]
         )
+
+        self.data_xy_kwargs = data_xy_kwargs if data_xy_kwargs is not None else {}
 
     def build_model(
         self,
@@ -277,7 +284,7 @@ class SimpleTrainer(TrainerProtocol):
         Returns:
             Trainable: The fitted model (the same object as ``self.model``).
         """
-        X, y = dataset.to_xy()
+        X, y = dataset.to_xy(**self.data_xy_kwargs)
         self.model.fit(X, y)
         return self.model
 
@@ -323,7 +330,7 @@ class SimpleTrainer(TrainerProtocol):
             dict[str, float]: Mapping of each metric's ``name`` to its score,
                 in the same order the metrics were configured in.
         """
-        X, y = dataset.to_xy()
+        X, y = dataset.to_xy(**self.data_xy_kwargs)
 
         # predict() is cheap and always needed by at least the default
         # metric; predict_proba() is only computed if some configured metric
