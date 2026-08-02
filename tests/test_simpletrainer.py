@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 import torch
+import yaml
 import skorch
 import torchmetrics
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
@@ -302,6 +303,20 @@ def test_simple_trainer_fit_torchmodel_with_calibrator(synthetic_dataset):
     assert fitted.predict(X).shape == (100,)
 
 
+def test_simple_trainer_with_custom_metric(synthetic_dataset):
+    trainer = SimpleTrainer(
+        model_type="sklearn.ensemble.RandomForestClassifier",
+        model_kwargs={"n_estimators": 10, "random_state": 42},
+        metrics=[{"type": "sklearn.metrics.f1_score", "name": "f1"}],
+    )
+    trainer.fit(synthetic_dataset)
+
+    X, y = synthetic_dataset.to_xy()
+    expected = f1_score(y, trainer.model.predict(X))
+
+    assert trainer.validate(synthetic_dataset) == {"f1": expected}
+
+
 def test_simple_trainer_evaluate(synthetic_dataset):
     trainer = SimpleTrainer(
         model_type="sklearn.ensemble.RandomForestClassifier",
@@ -316,33 +331,114 @@ def test_simple_trainer_evaluate(synthetic_dataset):
     assert trainer.test(synthetic_dataset) == {"accuracy_score": expected}
 
 
-def test_simple_trainer_save_load(synthetic_dataset, tmp_path):
-    # SimpleTrainer does not implement save()/load() yet. Per the maintainer, a
-    # trained trainer should eventually persist its model together with its config
-    # into a directory and be reconstructable from it. This test documents that
-    # expected round-trip and is expected to fail until save()/load() land.
+def test_simple_trainer_save_load_snapshot(synthetic_dataset, tmp_path):
     trainer = SimpleTrainer(
         model_type="sklearn.ensemble.RandomForestClassifier",
         model_kwargs={"n_estimators": 10, "random_state": 42},
     )
     trainer.fit(synthetic_dataset)
 
-    trainer.save(tmp_path)
-    loaded = SimpleTrainer.load(tmp_path)
+    trainer.save_snapshot(tmp_path)
+    loaded = SimpleTrainer.load_snapshot(tmp_path)
+
+    X, _ = synthetic_dataset.to_xy()
+    np.testing.assert_array_equal(loaded.model.predict(X), trainer.model.predict(X))
+    assert loaded.config == trainer.config
+
+
+def test_simple_trainer_init_with_torchmodel_module_as_type_spec():
+    # model_kwargs values shaped {"type": "dotted.path"} are resolved via
+    # load_type - the YAML-safe way to reference a live type (e.g. skorch's
+    # module) so the trainer's config stays snapshot-safe.
+    trainer = SimpleTrainer(
+        model_type="skorch.NeuralNetClassifier",
+        model_kwargs={
+            "module": {"type": "test_simpletrainer.SimpleNN"},
+            "module__input_dim": 20,
+            "module__output_dim": 2,
+            "max_epochs": 2,
+            "lr": 0.1,
+        },
+    )
+
+    assert trainer.model.module is SimpleNN
+
+
+def test_simple_trainer_save_load_snapshot_torchmodel(synthetic_dataset, tmp_path):
+    trainer = SimpleTrainer(
+        model_type="skorch.NeuralNetClassifier",
+        model_kwargs={
+            "module": {"type": "test_simpletrainer.SimpleNN"},
+            "module__input_dim": 20,
+            "module__output_dim": 2,
+            "max_epochs": 2,
+            "lr": 0.1,
+        },
+    )
+    trainer.fit(synthetic_dataset)
+
+    trainer.save_snapshot(tmp_path)
+    loaded = SimpleTrainer.load_snapshot(tmp_path)
 
     X, _ = synthetic_dataset.to_xy()
     np.testing.assert_array_equal(loaded.model.predict(X), trainer.model.predict(X))
 
 
-def test_simple_trainer_with_custom_metric(synthetic_dataset):
+def test_simple_trainer_save_snapshot_rejects_live_object_config(
+    synthetic_dataset, tmp_path
+):
+    # model_kwargs={"module": SimpleNN} puts a live class in trainer.config -
+    # save_snapshot() must fail loudly rather than silently write a
+    # non-shareable config.yaml.
     trainer = SimpleTrainer(
-        model_type="sklearn.ensemble.RandomForestClassifier",
-        model_kwargs={"n_estimators": 10, "random_state": 42},
-        metrics=[{"type": "sklearn.metrics.f1_score", "name": "f1"}],
+        model_type="skorch.NeuralNetClassifier",
+        model_kwargs={
+            "module": SimpleNN,
+            "module__input_dim": 20,
+            "module__output_dim": 2,
+            "max_epochs": 2,
+            "lr": 0.1,
+        },
     )
     trainer.fit(synthetic_dataset)
 
-    X, y = synthetic_dataset.to_xy()
-    expected = f1_score(y, trainer.model.predict(X))
+    with pytest.raises(yaml.representer.RepresenterError):
+        trainer.save_snapshot(tmp_path)
 
-    assert trainer.validate(synthetic_dataset) == {"f1": expected}
+
+def test_simple_trainer_save_load_model(synthetic_dataset, tmp_path):
+    trainer = SimpleTrainer(
+        model_type="sklearn.ensemble.RandomForestClassifier",
+        model_kwargs={"n_estimators": 10, "random_state": 42},
+    )
+    trainer.fit(synthetic_dataset)
+
+    model_path = tmp_path / "model.skops"
+    trainer.save_model(model_path)
+    loaded_model = SimpleTrainer.load_model(model_path)
+
+    X, _ = synthetic_dataset.to_xy()
+    assert not isinstance(loaded_model, SimpleTrainer)
+    np.testing.assert_array_equal(loaded_model.predict(X), trainer.model.predict(X))
+
+
+def test_simple_trainer_save_load_model_torchmodel(synthetic_dataset, tmp_path):
+    trainer = SimpleTrainer(
+        model_type="skorch.NeuralNetClassifier",
+        model_kwargs={
+            "module": SimpleNN,
+            "module__input_dim": 20,
+            "module__output_dim": 2,
+            "max_epochs": 2,
+            "lr": 0.1,
+        },
+    )
+    trainer.fit(synthetic_dataset)
+
+    model_path = tmp_path / "model.skops"
+    trainer.save_model(model_path)
+    loaded_model = SimpleTrainer.load_model(model_path)
+
+    X, _ = synthetic_dataset.to_xy()
+    assert not isinstance(loaded_model, SimpleTrainer)
+    np.testing.assert_array_equal(loaded_model.predict(X), trainer.model.predict(X))
