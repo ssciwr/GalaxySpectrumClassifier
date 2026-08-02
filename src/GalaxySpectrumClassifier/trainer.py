@@ -1,10 +1,13 @@
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
-
 import numpy as np
+import pyaml
+import yaml
+import skops.io as sio
 
 from .base import DatasetProtocol, Trainable, TrainerProtocol
-from .utils import load_type
+from .utils import load_type, resolve_type_kwargs
 
 # One resolved, ready-to-call metric: (result key, the loaded callable, its
 # extra positional args, its extra keyword args, whether it should be scored
@@ -120,6 +123,21 @@ class SimpleTrainer(TrainerProtocol):
         Raises:
             ValueError: If ``task`` is not one of ``TASKS``.
         """
+        # Exactly the kwargs needed to reconstruct an equivalent instance via
+        # SimpleTrainer(**self.config) - see save_snapshot()/load_snapshot().
+        self.config: dict[str, Any] = {
+            "model_type": model_type,
+            "model_args": model_args,
+            "model_kwargs": model_kwargs,
+            "calibrator_type": calibrator_type,
+            "calibrator_args": calibrator_args,
+            "calibrator_kwargs": calibrator_kwargs,
+            "task": task,
+            "metrics": metrics,
+            "seed": seed,
+            "data_xy_kwargs": data_xy_kwargs,
+        }
+
         if task not in TASKS:
             raise ValueError(f"task must be one of {TASKS}, got {task!r}")
         self.task = task
@@ -137,7 +155,6 @@ class SimpleTrainer(TrainerProtocol):
             calibrator_args,
             calibrator_kwargs,
         )
-
         # Resolve metric specs to callables once up front, so validate()/test()
         # don't repeat the load_type/lookup work on every call.
         self.metrics: list[MetricSpec] = self._build_metrics(
@@ -196,7 +213,7 @@ class SimpleTrainer(TrainerProtocol):
         if kwargs is None:
             modelkwargs = {}
         else:
-            modelkwargs = kwargs
+            modelkwargs = resolve_type_kwargs(kwargs)
 
         model = modeltype(*modelargs, **modelkwargs)
 
@@ -207,7 +224,9 @@ class SimpleTrainer(TrainerProtocol):
             cal = cal_type(
                 *(calibrator_args if calibrator_args is not None else []),
                 estimator=model,
-                **(calibrator_kwargs if calibrator_kwargs is not None else {}),
+                **resolve_type_kwargs(
+                    calibrator_kwargs if calibrator_kwargs is not None else {}
+                ),
             )
             # The calibrator, not the raw model, is trained/evaluated from
             # here on - it internally re-fits (a copy of) the estimator.
@@ -361,7 +380,8 @@ class SimpleTrainer(TrainerProtocol):
             # multi_class="ovr") expect.
 
         results: dict[str, float] = {}
-        for name, metric_fn, args, kwargs, needs_proba in self.metrics:
+        for metric in self.metrics:
+            name, metric_fn, args, kwargs, needs_proba = metric.values()
             predictions = y_proba if needs_proba else y_pred
             results[name] = metric_fn(y, predictions, *args, **kwargs)
         return results
@@ -395,3 +415,67 @@ class SimpleTrainer(TrainerProtocol):
             dict[str, float]: Mapping of metric name to score.
         """
         return self._evaluate(dataset)
+
+    def save_snapshot(self, path: str) -> None:
+        """Save this trainer's full state - config plus fitted model - to
+        ``path``, a directory (created if it doesn't exist yet).
+
+        ``config.yaml`` holds only plain, YAML-safe data - it will raise if
+        ``model_kwargs``/``calibrator_kwargs`` contain a live object (see
+        ``__init__``'s docs on the ``{"type": ...}`` convention for kwargs
+        that need a live type, e.g. skorch's ``module``). The fitted model
+        itself is saved the same way as ``save_model()``.
+
+        Args:
+            path (str): Directory to save the snapshot into.
+        """
+        directory = Path(path)
+        directory.mkdir(parents=True, exist_ok=True)
+        with open(directory / "config.yaml", "w") as f:
+            pyaml.dump(self.config, f)
+        self.save_model(directory / "model.skops")
+
+    @classmethod
+    def load_snapshot(cls, path: str) -> "SimpleTrainer":
+        """Reconstruct a trainer previously saved with ``save_snapshot()``.
+
+        Args:
+            path (str): Directory previously passed to ``save_snapshot()``.
+
+        Returns:
+            SimpleTrainer: A new instance with the saved config and the
+                saved (fitted) model.
+        """
+        directory = Path(path)
+        with open(directory / "config.yaml") as f:
+            config = yaml.safe_load(f)
+        trainer = cls(**config)
+        trainer.model = cls.load_model(directory / "model.skops")
+        return trainer
+
+    def save_model(self, path: str | Path) -> None:
+        """Export just the fitted model/calibrator to ``path``, for
+        inference elsewhere - no trainer config, no metrics.
+
+        Uses skops (a safer-than-pickle format); an ONNX export path may be
+        added later.
+
+        Args:
+            path (str | Path): File path to save the model to.
+        """
+        sio.dump(self.model, path)
+
+    @staticmethod
+    def load_model(path: str | Path) -> Trainable:
+        """Load a model previously exported with ``save_model()``.
+
+        Args:
+            path (str | Path): File path previously passed to ``save_model()``.
+
+        Returns:
+            Trainable: The bare fitted model/calibrator - not a
+                ``SimpleTrainer`` - so only ``predict``/``predict_proba``
+                are guaranteed; no training config is restored.
+        """
+        untrusted = sio.get_untrusted_types(file=path)
+        return sio.load(path, trusted=untrusted)
