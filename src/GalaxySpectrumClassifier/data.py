@@ -514,6 +514,7 @@ def to_xy(
         df = df.drop_duplicates(subset=feature_columns, keep="first")
         base.n_duplicates_dropped_ = before - len(df)
 
+    # TODO: this needs to be reconciled with pytorch semantics and should be removed from here later
     if with_impute and base.imputer is not None:
         base.imputer.fit(df.loc[:, feature_columns])
         df.loc[:, feature_columns] = base.imputer.transform(df[feature_columns])
