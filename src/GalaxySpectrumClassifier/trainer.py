@@ -7,6 +7,7 @@ import yaml
 import skops.io as sio
 
 from .base import DatasetProtocol, Trainable, TrainerProtocol
+from .data import to_xy
 from .utils import load_type, resolve_type_kwargs
 
 # One resolved, ready-to-call metric: (result key, the loaded callable, its
@@ -32,17 +33,16 @@ DEFAULT_METRICS = {
 class SimpleTrainer(TrainerProtocol):
     """Trains, validates and tests a single scikit-learn-compatible estimator.
 
-    SimpleTrainer only depends on the ``DatasetProtocol`` abstraction (in
-    particular ``dataset.to_xy()``), never on a concrete dataset
-    implementation, so it works with ``PandasDataset`` or any other dataset
-    that implements the protocol. A separate trainer will be added later for
-    torch models, which need an epoch loop rather than a single ``.fit()``
-    call; this class is intentionally scoped to plain sklearn estimators.
+    SimpleTrainer only depends on the ``DatasetProtocol`` abstraction (via the
+    free ``to_xy`` function, which needs only ``to_frame()``), never on a
+    concrete dataset implementation, so it works with ``PandasDataset``, any
+    other dataset implementing the protocol, or a ``torch.utils.data.Subset``
+    of either. 
     """
 
     def __init__(
         self,
-        output_path: str,   
+        output_path: str,
         model_type: str,
         model_args: list[Any] | None = None,
         model_kwargs: dict[str, Any] | None = None,
@@ -117,7 +117,7 @@ class SimpleTrainer(TrainerProtocol):
                 ``random_state`` via ``model_kwargs`` for that. Defaults to
                 42.
             data_xy_kwargs (dict[str, Any] | None, optional): Extra keyword
-                arguments forwarded to ``dataset.to_xy()`` when called in
+                arguments forwarded to ``to_xy(dataset, ...)`` when called in
                 ``fit``, ``validate`` and ``test``. Defaults to None (no extra
                 keyword arguments).
 
@@ -296,14 +296,15 @@ class SimpleTrainer(TrainerProtocol):
         ``model_kwargs``).
 
         Args:
-            dataset (DatasetProtocol): Dataset to train on. Only
-                ``dataset.to_xy()`` is used, so any dataset implementing the
-                protocol works, not just ``PandasDataset``.
+            dataset (DatasetProtocol): Dataset to train on. It is only
+                passed to ``to_xy``, so any dataset implementing the protocol
+                works, not just ``PandasDataset`` - as does a
+                ``torch.utils.data.Subset`` of one.
 
         Returns:
             Trainable: The fitted model (the same object as ``self.model``).
         """
-        X, y = dataset.to_xy(**self.data_xy_kwargs)
+        X, y = to_xy(dataset, **self.data_xy_kwargs)
         self.model.fit(X, y)
         return self.model
 
@@ -334,7 +335,7 @@ class SimpleTrainer(TrainerProtocol):
 
         Args:
             dataset (DatasetProtocol): Dataset to evaluate on. Its
-                ``to_xy()`` output is the ground truth; nothing here re-fits
+                ``to_xy`` output is the ground truth; nothing here re-fits
                 the model, so this dataset should not be the one just used to
                 ``fit``/``train`` if the goal is an unbiased estimate.
 
@@ -349,7 +350,7 @@ class SimpleTrainer(TrainerProtocol):
             dict[str, float]: Mapping of each metric's ``name`` to its score,
                 in the same order the metrics were configured in.
         """
-        X, y = dataset.to_xy(**self.data_xy_kwargs)
+        X, y = to_xy(dataset, **self.data_xy_kwargs)
 
         # predict() is cheap and always needed by at least the default
         # metric; predict_proba() is only computed if some configured metric

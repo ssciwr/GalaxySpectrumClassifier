@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import pytest
 import torch
 import yaml
@@ -14,7 +15,7 @@ from sklearn.metrics import (
     mean_squared_error,
     roc_auc_score,
 )
-from GalaxySpectrumClassifier import SimpleTrainer
+from GalaxySpectrumClassifier import SimpleTrainer, to_xy
 
 
 class SimpleNN(torch.nn.Module):
@@ -27,13 +28,14 @@ class SimpleNN(torch.nn.Module):
 
 
 class _ArrayDataset:
-    """Minimal DatasetProtocol stand-in: SimpleTrainer only ever calls to_xy()."""
+    """Minimal DatasetProtocol stand-in: to_xy() only ever needs to_frame()."""
 
     def __init__(self, X, y):
-        self._X, self._y = X, y
+        self._frame = pd.DataFrame(X, columns=[f"f{i}" for i in range(X.shape[1])])
+        self._frame["source"] = y
 
-    def to_xy(self):
-        return self._X, self._y
+    def to_frame(self):
+        return self._frame
 
 
 @pytest.fixture
@@ -54,8 +56,9 @@ def synthetic_dataset():
     return _ArrayDataset(X.astype(np.float32), y.astype(np.int64))
 
 
-def test_simple_trainer_init_binary_minimal():
+def test_simple_trainer_init_binary_minimal(tmp_path):
     trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
         model_type="sklearn.ensemble.RandomForestClassifier",
         model_kwargs={"n_estimators": 10, "random_state": 42},
     )
@@ -70,8 +73,9 @@ def test_simple_trainer_init_binary_minimal():
     assert trainer.metrics[0]["needs_proba"] is False
 
 
-def test_simple_trainer_init_binary_with_calibrator():
+def test_simple_trainer_init_binary_with_calibrator(tmp_path):
     trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
         model_type="sklearn.ensemble.RandomForestClassifier",
         model_kwargs={"n_estimators": 10, "random_state": 42},
         calibrator_type="sklearn.calibration.CalibratedClassifierCV",
@@ -82,8 +86,9 @@ def test_simple_trainer_init_binary_with_calibrator():
     assert trainer.model.estimator.n_estimators == 10
 
 
-def test_simple_trainer_init_binary_with_custom_metric():
+def test_simple_trainer_init_binary_with_custom_metric(tmp_path):
     trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
         model_type="sklearn.ensemble.RandomForestClassifier",
         metrics=[
             {
@@ -99,8 +104,9 @@ def test_simple_trainer_init_binary_with_custom_metric():
     assert trainer.metrics[0]["needs_proba"] is True
 
 
-def test_simple_trainer_init_multiclass_minimal():
+def test_simple_trainer_init_multiclass_minimal(tmp_path):
     trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
         model_type="sklearn.ensemble.RandomForestClassifier",
         task="multiclass-classification",
     )
@@ -111,8 +117,9 @@ def test_simple_trainer_init_multiclass_minimal():
     assert trainer.metrics[0]["callable"] == accuracy_score
 
 
-def test_simple_trainer_init_multiclass_with_calibrator():
+def test_simple_trainer_init_multiclass_with_calibrator(tmp_path):
     trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
         model_type="sklearn.ensemble.RandomForestClassifier",
         task="multiclass-classification",
         calibrator_type="sklearn.calibration.CalibratedClassifierCV",
@@ -123,8 +130,9 @@ def test_simple_trainer_init_multiclass_with_calibrator():
     assert isinstance(trainer.model.estimator, RandomForestClassifier)
 
 
-def test_simple_trainer_init_regression_minimal():
+def test_simple_trainer_init_regression_minimal(tmp_path):
     trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
         model_type="sklearn.ensemble.RandomForestRegressor",
         task="regression",
     )
@@ -134,11 +142,12 @@ def test_simple_trainer_init_regression_minimal():
     assert trainer.metrics[0]["callable"] == r2_score
 
 
-def test_simple_trainer_init_regression_with_calibrator():
+def test_simple_trainer_init_regression_with_calibrator(tmp_path):
     # build_model() does not validate that a calibrator is classifier-only, so this
     # constructs fine even though CalibratedClassifierCV would fail on .fit() with a
     # regressor - documenting current (lenient) behavior rather than a real workflow.
     trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
         model_type="sklearn.ensemble.RandomForestRegressor",
         task="regression",
         calibrator_type="sklearn.calibration.CalibratedClassifierCV",
@@ -148,8 +157,9 @@ def test_simple_trainer_init_regression_with_calibrator():
     assert isinstance(trainer.model.estimator, RandomForestRegressor)
 
 
-def test_simple_trainer_init_regression_with_custom_metric():
+def test_simple_trainer_init_regression_with_custom_metric(tmp_path):
     trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
         model_type="sklearn.ensemble.RandomForestRegressor",
         task="regression",
         metrics=[{"type": "sklearn.metrics.mean_squared_error", "name": "mse"}],
@@ -159,8 +169,9 @@ def test_simple_trainer_init_regression_with_custom_metric():
     assert trainer.metrics[0]["callable"] == mean_squared_error
 
 
-def test_simple_trainer_init_with_torchmodel(skorch_torch_model):
+def test_simple_trainer_init_with_torchmodel(skorch_torch_model, tmp_path):
     trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
         model_type="skorch.NeuralNetClassifier",
         model_kwargs={
             "module": SimpleNN,
@@ -177,8 +188,9 @@ def test_simple_trainer_init_with_torchmodel(skorch_torch_model):
     assert trainer.model.lr == skorch_torch_model.lr
 
 
-def test_simple_trainer_init_with_torchmodel_and_calibrator():
+def test_simple_trainer_init_with_torchmodel_and_calibrator(tmp_path):
     trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
         model_type="skorch.NeuralNetClassifier",
         model_kwargs={
             "module": SimpleNN,
@@ -195,11 +207,12 @@ def test_simple_trainer_init_with_torchmodel_and_calibrator():
     assert isinstance(trainer.model.estimator, skorch.NeuralNetClassifier)
 
 
-def test_simple_trainer_init_with_torchmodel_and_custom_torchmetric():
+def test_simple_trainer_init_with_torchmodel_and_custom_torchmetric(tmp_path):
     # _build_metrics() only resolves the dotted path at init time, it never calls the
     # metric - so this succeeds even though torchmetrics.functional.accuracy expects
     # torch.Tensor input, not the numpy arrays _evaluate() would hand it.
     trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
         model_type="skorch.NeuralNetClassifier",
         model_kwargs={
             "module": SimpleNN,
@@ -222,8 +235,9 @@ def test_simple_trainer_init_with_torchmodel_and_custom_torchmetric():
     assert trainer.metrics[0]["kwargs"] == {"task": "binary"}
 
 
-def test_simple_trainer_from_config():
+def test_simple_trainer_from_config(tmp_path):
     cfg = {
+        "output_path": str(tmp_path / "training"),
         "model_type": "sklearn.ensemble.RandomForestClassifier",
         "model_kwargs": {"n_estimators": 10, "random_state": 42},
     }
@@ -234,8 +248,9 @@ def test_simple_trainer_from_config():
     assert trainer.model.random_state == 42
 
 
-def test_simple_trainer_fit_minimal(random_forest_model, synthetic_dataset):
+def test_simple_trainer_fit_minimal(random_forest_model, synthetic_dataset, tmp_path):
     trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
         model_type="sklearn.ensemble.RandomForestClassifier",
         model_kwargs={"n_estimators": 10, "random_state": 42},
     )
@@ -243,15 +258,16 @@ def test_simple_trainer_fit_minimal(random_forest_model, synthetic_dataset):
 
     # Same estimator type, params and seed fit directly on the same data should
     # produce identical predictions - confirms fit() wires X/y through unchanged.
-    X, y = synthetic_dataset.to_xy()
+    X, y = to_xy(synthetic_dataset)
     random_forest_model.fit(X, y)
 
     assert fitted is trainer.model
     np.testing.assert_array_equal(fitted.predict(X), random_forest_model.predict(X))
 
 
-def test_simple_trainer_fit_with_calibrator(synthetic_dataset):
+def test_simple_trainer_fit_with_calibrator(synthetic_dataset, tmp_path):
     trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
         model_type="sklearn.ensemble.RandomForestClassifier",
         model_kwargs={"n_estimators": 10, "random_state": 42},
         calibrator_type="sklearn.calibration.CalibratedClassifierCV",
@@ -259,14 +275,15 @@ def test_simple_trainer_fit_with_calibrator(synthetic_dataset):
     )
     fitted = trainer.fit(synthetic_dataset)
 
-    X, _ = synthetic_dataset.to_xy()
+    X, _ = to_xy(synthetic_dataset)
     assert fitted is trainer.model
     assert hasattr(fitted, "classes_")
     assert fitted.predict(X).shape == (100,)
 
 
-def test_simple_trainer_fit_torchmodel(synthetic_dataset):
+def test_simple_trainer_fit_torchmodel(synthetic_dataset, tmp_path):
     trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
         model_type="skorch.NeuralNetClassifier",
         model_kwargs={
             "module": SimpleNN,
@@ -278,13 +295,14 @@ def test_simple_trainer_fit_torchmodel(synthetic_dataset):
     )
     fitted = trainer.fit(synthetic_dataset)
 
-    X, _ = synthetic_dataset.to_xy()
+    X, _ = to_xy(synthetic_dataset)
     assert fitted is trainer.model
     assert fitted.predict(X).shape == (100,)
 
 
-def test_simple_trainer_fit_torchmodel_with_calibrator(synthetic_dataset):
+def test_simple_trainer_fit_torchmodel_with_calibrator(synthetic_dataset, tmp_path):
     trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
         model_type="skorch.NeuralNetClassifier",
         model_kwargs={
             "module": SimpleNN,
@@ -298,33 +316,35 @@ def test_simple_trainer_fit_torchmodel_with_calibrator(synthetic_dataset):
     )
     fitted = trainer.fit(synthetic_dataset)
 
-    X, _ = synthetic_dataset.to_xy()
+    X, _ = to_xy(synthetic_dataset)
     assert fitted is trainer.model
     assert fitted.predict(X).shape == (100,)
 
 
-def test_simple_trainer_with_custom_metric(synthetic_dataset):
+def test_simple_trainer_with_custom_metric(synthetic_dataset, tmp_path):
     trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
         model_type="sklearn.ensemble.RandomForestClassifier",
         model_kwargs={"n_estimators": 10, "random_state": 42},
         metrics=[{"type": "sklearn.metrics.f1_score", "name": "f1"}],
     )
     trainer.fit(synthetic_dataset)
 
-    X, y = synthetic_dataset.to_xy()
+    X, y = to_xy(synthetic_dataset)
     expected = f1_score(y, trainer.model.predict(X))
 
     assert trainer.validate(synthetic_dataset) == {"f1": expected}
 
 
-def test_simple_trainer_evaluate(synthetic_dataset):
+def test_simple_trainer_evaluate(synthetic_dataset, tmp_path):
     trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
         model_type="sklearn.ensemble.RandomForestClassifier",
         model_kwargs={"n_estimators": 10, "random_state": 42},
     )
     trainer.fit(synthetic_dataset)
 
-    X, y = synthetic_dataset.to_xy()
+    X, y = to_xy(synthetic_dataset)
     expected = accuracy_score(y, trainer.model.predict(X))
 
     assert trainer.validate(synthetic_dataset) == {"accuracy_score": expected}
@@ -333,6 +353,7 @@ def test_simple_trainer_evaluate(synthetic_dataset):
 
 def test_simple_trainer_save_load_snapshot(synthetic_dataset, tmp_path):
     trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
         model_type="sklearn.ensemble.RandomForestClassifier",
         model_kwargs={"n_estimators": 10, "random_state": 42},
     )
@@ -341,16 +362,17 @@ def test_simple_trainer_save_load_snapshot(synthetic_dataset, tmp_path):
     trainer.save_snapshot(tmp_path)
     loaded = SimpleTrainer.load_snapshot(tmp_path)
 
-    X, _ = synthetic_dataset.to_xy()
+    X, _ = to_xy(synthetic_dataset)
     np.testing.assert_array_equal(loaded.model.predict(X), trainer.model.predict(X))
     assert loaded.config == trainer.config
 
 
-def test_simple_trainer_init_with_torchmodel_module_as_type_spec():
+def test_simple_trainer_init_with_torchmodel_module_as_type_spec(tmp_path):
     # model_kwargs values shaped {"type": "dotted.path"} are resolved via
     # load_type - the YAML-safe way to reference a live type (e.g. skorch's
     # module) so the trainer's config stays snapshot-safe.
     trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
         model_type="skorch.NeuralNetClassifier",
         model_kwargs={
             "module": {"type": "test_simpletrainer.SimpleNN"},
@@ -366,6 +388,7 @@ def test_simple_trainer_init_with_torchmodel_module_as_type_spec():
 
 def test_simple_trainer_save_load_snapshot_torchmodel(synthetic_dataset, tmp_path):
     trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
         model_type="skorch.NeuralNetClassifier",
         model_kwargs={
             "module": {"type": "test_simpletrainer.SimpleNN"},
@@ -380,7 +403,7 @@ def test_simple_trainer_save_load_snapshot_torchmodel(synthetic_dataset, tmp_pat
     trainer.save_snapshot(tmp_path)
     loaded = SimpleTrainer.load_snapshot(tmp_path)
 
-    X, _ = synthetic_dataset.to_xy()
+    X, _ = to_xy(synthetic_dataset)
     np.testing.assert_array_equal(loaded.model.predict(X), trainer.model.predict(X))
 
 
@@ -391,6 +414,7 @@ def test_simple_trainer_save_snapshot_rejects_live_object_config(
     # save_snapshot() must fail loudly rather than silently write a
     # non-shareable config.yaml.
     trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
         model_type="skorch.NeuralNetClassifier",
         model_kwargs={
             "module": SimpleNN,
@@ -408,6 +432,7 @@ def test_simple_trainer_save_snapshot_rejects_live_object_config(
 
 def test_simple_trainer_save_load_model(synthetic_dataset, tmp_path):
     trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
         model_type="sklearn.ensemble.RandomForestClassifier",
         model_kwargs={"n_estimators": 10, "random_state": 42},
     )
@@ -417,13 +442,14 @@ def test_simple_trainer_save_load_model(synthetic_dataset, tmp_path):
     trainer.save_model(model_path)
     loaded_model = SimpleTrainer.load_model(model_path)
 
-    X, _ = synthetic_dataset.to_xy()
+    X, _ = to_xy(synthetic_dataset)
     assert not isinstance(loaded_model, SimpleTrainer)
     np.testing.assert_array_equal(loaded_model.predict(X), trainer.model.predict(X))
 
 
 def test_simple_trainer_save_load_model_torchmodel(synthetic_dataset, tmp_path):
     trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
         model_type="skorch.NeuralNetClassifier",
         model_kwargs={
             "module": SimpleNN,
@@ -439,6 +465,6 @@ def test_simple_trainer_save_load_model_torchmodel(synthetic_dataset, tmp_path):
     trainer.save_model(model_path)
     loaded_model = SimpleTrainer.load_model(model_path)
 
-    X, _ = synthetic_dataset.to_xy()
+    X, _ = to_xy(synthetic_dataset)
     assert not isinstance(loaded_model, SimpleTrainer)
     np.testing.assert_array_equal(loaded_model.predict(X), trainer.model.predict(X))
