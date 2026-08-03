@@ -1,6 +1,7 @@
 from typing import Any, Self, Protocol, runtime_checkable
 import torch
 import numpy as np
+import pandas as pd
 
 
 @runtime_checkable
@@ -19,13 +20,7 @@ class DatasetProtocol(Configurable, Protocol):
 
     def impute(self) -> Any: ...
 
-    def to_xy(
-        self,
-        label_column: str = "source",
-        feature_columns: list[str] | None = None,
-        drop_duplicates: bool = True,
-        dtype=np.float32,
-    ) -> tuple[np.ndarray, np.ndarray]: ...
+    def to_frame(self) -> pd.DataFrame: ...
 
 
 @runtime_checkable

@@ -21,9 +21,9 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         sep: str = ",",
         read_kwargs=None,
         suffix=".dat",
-        transform: Callable | None = None,
-        pre_transform: Callable | None = None,
-        pre_filter: Callable | None = None,
+        transform: Callable | str | None = None,
+        pre_transform: Callable | str | None = None,
+        pre_filter: Callable | str | None = None,
         n_workers: int = 1,
         imputer: dict[str, Any] | None = None,
     ):
@@ -39,7 +39,7 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
                 when ``pre_transform`` or ``pre_filter`` is given, since that
                 triggers eager ``cache_on_disk`` preprocessing. Defaults to None.
             engine (str, optional): ``pandas.read_csv`` parser engine used by
-                ``_read_cloudy``. Defaults to "python".
+                ``read_data``. Defaults to "python".
             comment (str, optional): Prefix marking comment lines in each grid
                 file; passed through to ``pandas.read_csv``. Defaults to "#".
             na_values (list[str], optional): Strings treated as missing values
@@ -47,24 +47,29 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
             sep (str, optional): Field-separator regex passed to
                 ``pandas.read_csv``.
             read_kwargs (_type_, optional): Extra keyword arguments forwarded to
-                ``pandas.read_csv`` in ``_read_cloudy``. Defaults to None.
+                ``pandas.read_csv`` in ``read_data``. Defaults to None.
             suffix (str, optional): Suffix used to select grid files while
                 walking ``path``. Defaults to ".dat".
-            transform (Callable | None, optional): Callable applied to each
-                sample right before it is returned by ``__getitem__``. Defaults
-                to None.
-            pre_transform (Callable | None, optional): Callable applied once per
-                file during ``_preprocess``, after ``pre_filter`` and before
-                concatenation/caching. Supplying it switches the dataset into
-                ``cache_on_disk`` mode. Defaults to None.
-            pre_filter (Callable | None, optional): Callable applied once per
-                file during ``_preprocess``, before ``pre_transform``. Supplying
-                it also switches the dataset into ``cache_on_disk`` mode.
-                Defaults to None.
+            transform (Callable | str | None, optional): Callable applied to each
+                sample right before it is returned by ``__getitem__``. May also
+                be given as a dotted path string, e.g.
+                ``"mypackage.transforms.log_fluxes"``, which is resolved via
+                ``load_type``. Defaults to None.
+            pre_transform (Callable | str | None, optional): Callable applied
+                once per file during ``_preprocess``, after ``pre_filter`` and
+                before concatenation/caching. Supplying it switches the dataset
+                into ``cache_on_disk`` mode. May also be given as a dotted path
+                string, see ``transform``. Defaults to None.
+            pre_filter (Callable | str | None, optional): Callable applied once
+                per file during ``_preprocess``, before ``pre_transform``.
+                Supplying it also switches the dataset into ``cache_on_disk``
+                mode. May also be given as a dotted path string, see
+                ``transform``. Defaults to None.
             n_workers (int, optional): Number of parallel workers used to read
                 and preprocess files in ``_preprocess``. Defaults to 1.
-            imputer (dict[str, Any], None): sklearn imputer definition - {
-                "type": type name as string
+            imputer (dict[str, Any], None): sklearn-style imputer definition - {
+                "type": dotted path to the imputer class, e.g.
+                    "sklearn.impute.SimpleImputer" or a custom one
                 "args": argument list for the imputer type
                 "kwargs": keyword argument dict for the imputer type
             }. Imputers do not work without preprocessing because for many Imputers, their output depends on the available data and would drift when data is added. **impute() fits on all rows visible to this dataset instance; create train/validation/test dataset instances first if split-specific fitting is required.**.
@@ -87,6 +92,16 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         self._filter_datafiles(self.path, self.datafiles)
         self.datafiles.sort()
 
+        # Each of the three may be given as a dotted path string, resolved the
+        # same way as SimpleTrainer's model/calibrator/metric types, so they can
+        # come straight from a YAML config.
+        if isinstance(transform, str):
+            transform = load_type(transform)
+        if isinstance(pre_transform, str):
+            pre_transform = load_type(pre_transform)
+        if isinstance(pre_filter, str):
+            pre_filter = load_type(pre_filter)
+
         self.transform = transform if transform is not None else identity
         self.pre_transform = pre_transform
         self.pre_filter = pre_filter
@@ -107,7 +122,7 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
                 imputertype = imputer["type"]
                 imputerargs = imputer.get("args", [])
                 imputerkwargs = imputer.get("kwargs", {})
-                imputer_type = load_type("sklearn.impute", imputertype)
+                imputer_type = load_type(imputertype)
                 self.imputer = imputer_type(*imputerargs, **imputerkwargs)
                 self.imputer.set_output(transform="pandas")
         else:
@@ -166,7 +181,7 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         else:
 
             def _preprocess_single(path):
-                df = self._read_cloudy(path)
+                df = self.read_data(path)
                 if self.pre_filter:
                     df = self.pre_filter(df)
 
@@ -242,11 +257,10 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         else:
             n = 0
             for data in self.datafiles:
-                read_data = self._read_cloudy(data)
-                n += len(read_data)
+                n += len(self.read_data(data))
             return n
 
-    def _read_cloudy(self, input: Path) -> pd.DataFrame:
+    def read_data(self, input: Path) -> pd.DataFrame:
         """Read a single Cloudy grid ``.dat`` file into a DataFrame, skipping
         its leading comment block and parsing the whitespace-separated header
         and data rows.
@@ -267,6 +281,22 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
             **self.read_kwargs,
         )
         return data
+
+    def to_frame(self) -> pd.DataFrame:
+        """Return every sample as one DataFrame, in dataset-index order.
+
+        Row ``i`` of the returned frame is the sample ``self[i]`` is built
+        from, which is what lets ``to_xy`` translate ``torch.utils.data.Subset``
+        indices into rows.
+
+        Returns:
+            pd.DataFrame: The preprocessed cache when ``cache_on_disk`` is
+                True, otherwise the raw grid files read and concatenated in
+                ``datafiles`` order.
+        """
+        if self.cache_on_disk:
+            return self.data_cache
+        return pd.concat((self.read_data(f) for f in self.datafiles), ignore_index=True)
 
     def _normalize_index(
         self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple
@@ -339,7 +369,7 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
                 containing_dataframe = None
                 for _df in self.datafiles:
                     if _df not in self.data_cache:
-                        self.data_cache[_df] = self._read_cloudy(_df)
+                        self.data_cache[_df] = self.read_data(_df)
 
                     candidate_dataframe = self.data_cache[_df]
                     if i < len(candidate_dataframe):
@@ -402,71 +432,94 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         """
         return self.num_datapoints
 
-    def to_xy(
-        self,
-        label_column: str = "source",
-        feature_columns: list[str] | None = None,
-        drop_duplicates: bool = True,
-        dtype=np.float32,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Materialise the dataset as (X, y) arrays for sklearn-style
-        estimators.
 
-        Only reads and concatenates the raw grid rows -- no imputation,
-        scaling, or splitting happens here, so nothing derived from a later
-        held-out split can leak backwards into the arrays returned; fit such
-        transforms inside the estimator's own pipeline, on the train fold
-        only.
+def to_xy(
+    dataset: DatasetProtocol | torch.utils.data.Subset,
+    label_column: str = "source",
+    feature_columns: list[str] | None = None,
+    drop_duplicates: bool = True,
+    dtype=np.float32,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Materialise ``dataset`` as (X, y) arrays for sklearn-style estimators.
 
-        Row order follows file concatenation (all rows of one file precede
-        the next), so a contiguous slice is not a valid split -- always split
-        with shuffling and ``stratify=y``.
+    ``dataset`` is anything implementing ``DatasetProtocol`` - only
+    ``to_frame()`` is used - or a ``torch.utils.data.Subset`` of one (as handed
+    back by ``torch.utils.data.random_split``), so a split can be materialised
+    on its own; that is the point of this being a free function rather than a
+    dataset method. Nested subsets are unwrapped, and their indices are
+    positions into the underlying dataset, exactly as for ``__getitem__``.
 
-        Args:
-            label_column (str, optional): Column holding the class label;
-                concatenated rows are grouped by it to build ``self.classes_``.
-                Defaults to "source".
-            feature_columns (list[str] | None, optional): Columns to use as
-                features. Defaults to every column except ``label_column``.
-            drop_duplicates (bool, optional): If True, collapse exact
-                duplicate feature rows (some grid corners, e.g. metallicity/
-                ionization combinations where most line fluxes go to zero,
-                produce identical rows across files) to one before building
-                X/y, so a duplicate can never land on both sides of a later
-                train/test split. The number dropped is recorded in
-                ``self.n_duplicates_dropped_``. Defaults to True.
-            dtype (_type_, optional): NumPy dtype for the returned feature
-                matrix. Defaults to np.float32.
+    No imputation or scaling happens here, so nothing fitted on a held-out
+    split can leak backwards into the arrays returned; fit such transforms
+    inside the estimator's own pipeline, on the train fold only. Note that
+    whatever ``to_frame()`` reports is what gets materialised - for
+    ``PandasDataset`` in ``cache_on_disk`` mode that means
+    ``pre_filter``/``pre_transform``, and an explicit ``impute()`` call if one
+    was made, are reflected here.
 
-        Raises:
-            ValueError: If ``label_column`` is not present in the concatenated
-                data.
+    Row order follows the dataset's own order (for ``PandasDataset``, all rows
+    of one file precede the next), so a contiguous slice is not a valid split
+    -- always split with shuffling and ``stratify=y``.
 
-        Returns:
-            tuple[np.ndarray, np.ndarray]: ``X`` of shape
-                ``(n_samples, n_features)`` and ``y`` of shape
-                ``(n_samples,)``, integer-encoded per ``self.classes_``.
-        """
-        df = pd.concat(
-            (self._read_cloudy(f) for f in self.datafiles), ignore_index=True
+    Args:
+        dataset (DatasetProtocol | torch.utils.data.Subset): Dataset, or subset
+            of one, to materialise.
+        label_column (str, optional): Column holding the class label; the rows
+            are grouped by it to build ``classes_``. Defaults to "source".
+        feature_columns (list[str] | None, optional): Columns to use as
+            features. Defaults to every column except ``label_column``.
+        drop_duplicates (bool, optional): If True, collapse exact duplicate
+            feature rows (some grid corners, e.g. metallicity/ionization
+            combinations where most line fluxes go to zero, produce identical
+            rows across files) to one before building X/y, so a duplicate can
+            never land on both sides of a later train/test split. The number
+            dropped is recorded in ``n_duplicates_dropped_``. Defaults to True.
+        dtype (_type_, optional): NumPy dtype for the returned feature matrix.
+            Defaults to np.float32.
+
+    Raises:
+        ValueError: If ``label_column`` is not present in the data.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: ``X`` of shape
+            ``(n_samples, n_features)`` and ``y`` of shape ``(n_samples,)``,
+            integer-encoded per ``classes_``.
+    """
+    # Subsets only carry indices into their parent, so unwrap down to the
+    # PandasDataset while composing the indices into that one frame.
+    indices = None
+    base = dataset
+    while isinstance(base, torch.utils.data.Subset):
+        indices = (
+            list(base.indices)
+            if indices is None
+            else [base.indices[i] for i in indices]
+        )
+        base = base.dataset
+
+    df = base.to_frame()
+
+    if indices is not None:
+        df = df.iloc[indices]
+
+    if label_column not in df.columns:
+        raise ValueError(
+            f"label column {label_column!r} not found; have {list(df.columns)}"
         )
 
-        if label_column not in df.columns:
-            raise ValueError(
-                f"label column {label_column!r} not found; have {list(df.columns)}"
-            )
+    if feature_columns is None:
+        feature_columns = [c for c in df.columns if c != label_column]
 
-        if feature_columns is None:
-            feature_columns = [c for c in df.columns if c != label_column]
+    if drop_duplicates:
+        before = len(df)
+        df = df.drop_duplicates(subset=feature_columns, keep="first")
+        base.n_duplicates_dropped_ = before - len(df)
 
-        if drop_duplicates:
-            before = len(df)
-            df = df.drop_duplicates(subset=feature_columns, keep="first")
-            self.n_duplicates_dropped_ = before - len(df)
+    X = df[feature_columns].to_numpy(dtype=dtype)
+    classes, y = np.unique(df[label_column].to_numpy(), return_inverse=True)
+    # Recorded on the dataset itself, not the subset, so they stay reachable
+    # from whichever object the caller is holding.
+    base.classes_ = classes
+    base.feature_names_ = feature_columns
 
-        X = df[feature_columns].to_numpy(dtype=dtype)
-        classes, y = np.unique(df[label_column].to_numpy(), return_inverse=True)
-        self.classes_ = classes
-        self.feature_names_ = feature_columns
-
-        return X, y.astype(np.int64)
+    return X, y.astype(np.int64)
