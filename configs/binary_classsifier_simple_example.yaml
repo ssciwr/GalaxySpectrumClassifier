@@ -21,7 +21,7 @@ trainer:
     cv: 5
     ensemble: true
     n_jobs: -1
-  # Must be one of trainer.TASKS - it decides the predict_proba shape handed
+  # Must be one of utils.TASKS - it decides the predict_proba shape handed
   # to needs_proba metrics (positive-class column for binary).
   task: binary-classification
   metrics:
@@ -94,11 +94,16 @@ trainer:
       kwargs:
       needs_proba: true
   seed: 42
-  # Forwarded to dataset.to_xy() in fit/validate/test.
+  # Forwarded to to_xy(dataset, ...) in fit/validate/test. `task` is not taken
+  # from the trainer's own setting above, so it has to be repeated here.
   data_xy_kwargs:
+    task: binary-classification
     label_column: source
     feature_columns:
     drop_duplicates: true
+    # The `source` column is already encoded as 0/1, so no mapping is needed.
+    # Set it to e.g. {AGN: 0, POPSTAR: 1} when the labels are not indices.
+    class_map:
 dataset:
   path: ../data/classification_v2
   engine: python
@@ -106,8 +111,6 @@ dataset:
   na_values:
     - nan
     - NaN
-  # The grid files are whitespace-separated, not comma-separated; this is a
-  # regex, hence engine: python above.
   sep: ","
   read_kwargs:
   suffix: .csv
@@ -119,14 +122,3 @@ dataset:
   pre_filter:
   n_workers: 5
   cache_path: ../data/classification_v2_cache
-
-  # Requires cache_on_disk (i.e. pre_transform/pre_filter + cache_path), so it
-  # stays unset here. Example once you have those:
-  #   imputer:
-  #     type: sklearn.impute.SimpleImputer
-  #     kwargs:
-  #       strategy: median
-  imputer:
-    type: sklearn.impute.SimpleImputer
-    kwargs:
-      strategy: median
