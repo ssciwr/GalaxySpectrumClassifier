@@ -14,18 +14,45 @@ def identity(x: Any) -> Any:
     return x
 
 
-def load_type(module_path: str, type_name: str) -> type:
-    """Load a type 'type_name' from a module given as 'module_path'
+def load_type(path: str) -> type:
+    """Load the type/callable named by the dotted path ``path``.
+
+    The boundary between module and attribute is not assumed to sit at the
+    last dot - it can't be, for anything nested inside another object, e.g.
+    ``"pandas.DataFrame.dropna"``. Instead the longest importable prefix is
+    imported and the remaining segments are walked with ``getattr``.
 
     Args:
-        module_path (str): Module name/path as imported
-        type_name (str): Name of the type to load
+        path (str): Dotted path, e.g. ``"sklearn.metrics.f1_score"`` or
+            ``"pandas.DataFrame.dropna"``.
+
+    Raises:
+        ModuleNotFoundError: If no prefix of the path is an importable module.
+        AttributeError: If a segment after the imported prefix does not exist.
 
     Returns:
         type: The loaded type
     """
-    module = importlib.import_module(module_path)
-    return getattr(module, type_name)
+    parts = path.split(".")
+    for i in range(len(parts) - 1, 0, -1):
+        prefix = ".".join(parts[:i])
+        try:
+            obj = importlib.import_module(prefix)
+        except ModuleNotFoundError as e:
+            # Only keep shortening when *this* prefix is what's missing; a
+            # module that exists but fails on its own imports must surface as
+            # itself instead of being masked by a shorter, unrelated prefix.
+            if e.name != prefix:
+                raise
+            continue
+
+        for attr in parts[i:]:
+            obj = getattr(obj, attr)
+        return obj
+
+    raise ModuleNotFoundError(
+        f"No importable module found in {'.'.join(parts)!r}", name=parts[0]
+    )
 
 
 def resolve_type_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -51,8 +78,7 @@ def resolve_type_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     resolved = {}
     for key, value in kwargs.items():
         if isinstance(value, dict) and value.keys() == {"type"}:
-            module_path, type_name = value["type"].rsplit(".", 1)
-            resolved[key] = load_type(module_path, type_name)
+            resolved[key] = load_type(value["type"])
         else:
             resolved[key] = value
     return resolved

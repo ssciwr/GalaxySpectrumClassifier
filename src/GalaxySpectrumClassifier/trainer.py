@@ -42,6 +42,7 @@ class SimpleTrainer(TrainerProtocol):
 
     def __init__(
         self,
+        output_path: str,   
         model_type: str,
         model_args: list[Any] | None = None,
         model_kwargs: dict[str, Any] | None = None,
@@ -126,6 +127,7 @@ class SimpleTrainer(TrainerProtocol):
         # Exactly the kwargs needed to reconstruct an equivalent instance via
         # SimpleTrainer(**self.config) - see save_snapshot()/load_snapshot().
         self.config: dict[str, Any] = {
+            "output_path": output_path,
             "model_type": model_type,
             "model_args": model_args,
             "model_kwargs": model_kwargs,
@@ -137,6 +139,9 @@ class SimpleTrainer(TrainerProtocol):
             "seed": seed,
             "data_xy_kwargs": data_xy_kwargs,
         }
+
+        self.output_path = Path(output_path).resolve()
+        self.output_path.mkdir(parents=True, exist_ok=True)
 
         if task not in TASKS:
             raise ValueError(f"task must be one of {TASKS}, got {task!r}")
@@ -176,8 +181,7 @@ class SimpleTrainer(TrainerProtocol):
 
         Args:
             type (str): Dotted path ``"module.path.ClassName"`` of the
-                estimator to construct. Split on the last ``"."`` into module
-                and class name, then resolved via ``load_type``.
+                estimator to construct, resolved via ``load_type``.
             args (list[Any] | None, optional): Positional constructor
                 arguments for the estimator. Defaults to None (treated as an
                 empty list).
@@ -201,9 +205,7 @@ class SimpleTrainer(TrainerProtocol):
             Trainable: The constructed estimator, or the calibrator wrapping
                 it if ``calibrator_type`` was given.
         """
-        # "module.path.ClassName" -> ("module.path", "ClassName")
-        model_module, model_type = type.rsplit(".", 1)
-        modeltype = load_type(model_module, model_type)
+        modeltype = load_type(type)
 
         if args is None:
             modelargs = []
@@ -218,9 +220,7 @@ class SimpleTrainer(TrainerProtocol):
         model = modeltype(*modelargs, **modelkwargs)
 
         if calibrator_type:
-            # Same dotted-path resolution as the model above.
-            cal_module, cal_type = calibrator_type.rsplit(".", 1)
-            cal_type = load_type(cal_module, cal_type)
+            cal_type = load_type(calibrator_type)
             cal = cal_type(
                 *(calibrator_args if calibrator_args is not None else []),
                 estimator=model,
@@ -263,9 +263,9 @@ class SimpleTrainer(TrainerProtocol):
         """
         metrics: list[MetricSpec] = []
         for spec in specs:
-            # "module.path.metric_name" -> ("module.path", "metric_name")
-            metric_module, metric_name = spec["type"].rsplit(".", 1)
-            metric_fn = load_type(metric_module, metric_name)
+            metric_fn = load_type(spec["type"])
+            # Only used as the default result key below, see `name`.
+            metric_name = spec["type"].rsplit(".", 1)[-1]
             # `or []`/`or {}` also catches an explicit `None` in the config,
             # not just a missing key.
             args = spec.get("args") or []
@@ -429,7 +429,7 @@ class SimpleTrainer(TrainerProtocol):
         Args:
             path (str): Directory to save the snapshot into.
         """
-        directory = Path(path)
+        directory = self.output_path / Path(path)
         directory.mkdir(parents=True, exist_ok=True)
         with open(directory / "config.yaml", "w") as f:
             pyaml.dump(self.config, f)
