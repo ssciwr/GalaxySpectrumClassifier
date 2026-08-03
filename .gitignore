@@ -155,3 +155,6 @@ literature/**/.sources/
 
 # editor
 .vscode
+
+# training artifacts
+training/
