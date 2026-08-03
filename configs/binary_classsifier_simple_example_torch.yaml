@@ -1,0 +1,137 @@
+# Example: 2-layer MLP (skorch-wrapped torch) + probability calibration on the
+# classification_v2 Cloudy grids (AGN vs. star-forming). Paths are relative to
+# notebooks/.
+trainer:
+  output_path: ../training/binaryclassifier_simple_example_torch
+  model_type: skorch.NeuralNetClassifier
+  model_args:
+  model_kwargs:
+    # torchvision.ops.MLP builds Linear -> ReLU -> Linear from these: 18 input
+    # features (all dataset columns except `source`), one hidden layer of 64,
+    # and 2 output logits. ReLU is its default activation.
+    module:
+      type: torchvision.ops.MLP
+    module__in_channels: 18 # input columns (all except `source`)
+    module__hidden_channels: [64, 2]
+    # The MLP emits raw logits, so the loss must be CrossEntropyLoss - skorch's
+    # default for a classifier is NLLLoss, which expects log-probabilities.
+    criterion:
+      type: torch.nn.CrossEntropyLoss
+    max_epochs: 30
+    lr: 0.01
+    batch_size: 256
+    # Rows arrive grouped by source file, so shuffling is not optional here.
+    iterator_train__shuffle: true
+    device: cpu # change to cuda if you wan to run on nvidia gpu
+    verbose: 0
+  # The calibrator wraps the model as its `estimator=` and becomes what is
+  # actually fitted/evaluated. isotonic needs a good amount of data per fold;
+  # switch to "sigmoid" if the training split is small.
+  calibrator_type: sklearn.calibration.CalibratedClassifierCV
+  calibrator_args:
+  calibrator_kwargs:
+    method: isotonic
+    cv: 5
+    ensemble: true
+    n_jobs: -1
+  # Must be one of utils.TASKS - it decides the predict_proba shape handed
+  # to needs_proba metrics (positive-class column for binary).
+  task: binary-classification
+  metrics:
+    -
+      name: accuracy
+      type: sklearn.metrics.accuracy_score
+      args:
+      kwargs:
+      needs_proba: false
+    -
+      name: balanced_accuracy
+      type: sklearn.metrics.balanced_accuracy_score
+      args:
+      kwargs:
+      needs_proba: false
+    -
+      name: f1
+      type: sklearn.metrics.f1_score
+      args:
+      kwargs:
+        average: binary
+        zero_division: 0
+      needs_proba: false
+    -
+      name: precision
+      type: sklearn.metrics.precision_score
+      args:
+      kwargs:
+        average: binary
+        zero_division: 0
+      needs_proba: false
+    -
+      name: recall
+      type: sklearn.metrics.recall_score
+      args:
+      kwargs:
+        average: binary
+        zero_division: 0
+      needs_proba: false
+    -
+      name: matthews_corrcoef
+      type: sklearn.metrics.matthews_corrcoef
+      args:
+      kwargs:
+      needs_proba: false
+    # The three below score against predict_proba()[:, 1] - these are the ones
+    # that actually show whether the calibrator earned its keep.
+    -
+      name: roc_auc
+      type: sklearn.metrics.roc_auc_score
+      args:
+      kwargs:
+      needs_proba: true
+    -
+      name: average_precision
+      type: sklearn.metrics.average_precision_score
+      args:
+      kwargs:
+      needs_proba: true
+    -
+      name: log_loss
+      type: sklearn.metrics.log_loss
+      args:
+      kwargs:
+      needs_proba: true
+    -
+      name: brier
+      type: sklearn.metrics.brier_score_loss
+      args:
+      kwargs:
+      needs_proba: true
+  seed: 42
+  # Forwarded to to_xy(dataset, ...) in fit/validate/test. `task` is not taken
+  # from the trainer's own setting above, so it has to be repeated here.
+  data_xy_kwargs:
+    task: binary-classification
+    label_column: source
+    feature_columns:
+    drop_duplicates: true
+    # The `source` column is already encoded as 0/1, so no mapping is needed.
+    # Set it to e.g. {AGN: 0, POPSTAR: 1} when the labels are not indices.
+    class_map:
+dataset:
+  path: ../data/classification_v2
+  engine: python
+  comment: "#"
+  na_values:
+    - nan
+    - NaN
+  sep: ","
+  read_kwargs:
+  suffix: .csv
+  # transform/pre_transform/pre_filter accept a dotted path to a module-level
+  # callable, e.g. "GalaxySpectrumClassifier.utils.identity". Setting either
+  # pre_* switches the dataset into cache_on_disk mode, which needs cache_path.
+  transform:
+  pre_transform: GalaxySpectrumClassifier.utils.identity
+  pre_filter:
+  n_workers: 5
+  cache_path: ../data/classification_v2_cache
