@@ -25,54 +25,44 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         pre_transform: Callable | str | None = None,
         pre_filter: Callable | str | None = None,
         n_workers: int = 1,
-        imputer: dict[str, Any] | None = None,
     ):
-        """Index one or more whitespace-separated Cloudy grid ``.dat`` files under
-        ``path`` as a single dataset, where every row across every matched file
-        is one sample.
+        """Index every delimited text file under ``path`` as a single dataset,
+        where each row of each matched file is one sample.
 
         Args:
-            path (str): Directory to search recursively for grid files matching
+            path (str): Directory to search recursively for files matching
                 ``suffix``.
             cache_path (str | None, optional): Directory to write the
-                concatenated/preprocessed cache to. Required (and only used)
-                when ``pre_transform`` or ``pre_filter`` is given, since that
-                triggers eager ``cache_on_disk`` preprocessing. Defaults to None.
-            engine (str, optional): ``pandas.read_csv`` parser engine used by
-                ``read_data``. Defaults to "python".
-            comment (str, optional): Prefix marking comment lines in each grid
-                file; passed through to ``pandas.read_csv``. Defaults to "#".
-            na_values (list[str], optional): Strings treated as missing values
-                when reading each grid file. Defaults to ["nan", "NaN"].
-            sep (str, optional): Field-separator regex passed to
-                ``pandas.read_csv``.
-            read_kwargs (_type_, optional): Extra keyword arguments forwarded to
-                ``pandas.read_csv`` in ``read_data``. Defaults to None.
-            suffix (str, optional): Suffix used to select grid files while
-                walking ``path``. Defaults to ".dat".
-            transform (Callable | str | None, optional): Callable applied to each
-                sample right before it is returned by ``__getitem__``. May also
-                be given as a dotted path string, e.g.
-                ``"mypackage.transforms.log_fluxes"``, which is resolved via
-                ``load_type``. Defaults to None.
+                concatenated, preprocessed data to. Required when
+                ``pre_transform`` or ``pre_filter`` is given, and unused
+                otherwise. Defaults to None.
+            engine (str, optional): ``pandas.read_csv`` parser engine.
+                Defaults to "python".
+            comment (str, optional): Prefix marking comment lines; passed
+                through to ``pandas.read_csv``. Defaults to "#".
+            na_values (list[str], optional): Strings treated as missing values.
+                Defaults to ["nan", "NaN"].
+            sep (str, optional): Field separator passed to ``pandas.read_csv``;
+                may be a regular expression. Defaults to ",".
+            read_kwargs (dict | None, optional): Extra keyword arguments
+                forwarded to ``pandas.read_csv``. Defaults to None.
+            suffix (str, optional): Suffix used to select files while walking
+                ``path``. Defaults to ".dat".
+            transform (Callable | str | None, optional): Callable applied to
+                each sample before it is returned by ``__getitem__``. May also
+                be given as a dotted path to a callable, which is resolved at
+                construction time. Defaults to None.
             pre_transform (Callable | str | None, optional): Callable applied
-                once per file during ``_preprocess``, after ``pre_filter`` and
-                before concatenation/caching. Supplying it switches the dataset
-                into ``cache_on_disk`` mode. May also be given as a dotted path
-                string, see ``transform``. Defaults to None.
-            pre_filter (Callable | str | None, optional): Callable applied once
-                per file during ``_preprocess``, before ``pre_transform``.
-                Supplying it also switches the dataset into ``cache_on_disk``
-                mode. May also be given as a dotted path string, see
+                to each file's data after ``pre_filter``, before the files are
+                concatenated and cached. Supplying it switches the dataset into
+                ``cache_on_disk`` mode. May also be given as a dotted path, see
                 ``transform``. Defaults to None.
+            pre_filter (Callable | str | None, optional): Callable applied to
+                each file's data before ``pre_transform``. Supplying it also
+                switches the dataset into ``cache_on_disk`` mode. May also be
+                given as a dotted path, see ``transform``. Defaults to None.
             n_workers (int, optional): Number of parallel workers used to read
-                and preprocess files in ``_preprocess``. Defaults to 1.
-            imputer (dict[str, Any], None): sklearn-style imputer definition - {
-                "type": dotted path to the imputer class, e.g.
-                    "sklearn.impute.SimpleImputer" or a custom one
-                "args": argument list for the imputer type
-                "kwargs": keyword argument dict for the imputer type
-            }. Imputers do not work without preprocessing because for many Imputers, their output depends on the available data and would drift when data is added. **impute() fits on all rows visible to this dataset instance; create train/validation/test dataset instances first if split-specific fitting is required.**.
+                and preprocess files. Defaults to 1.
 
         Raises:
             ValueError: If ``pre_transform`` or ``pre_filter`` is given but
@@ -108,26 +98,6 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         self.n_workers = n_workers
         self.cache_on_disk = pre_transform is not None or pre_filter is not None
 
-        if imputer is not None:
-            if not self.cache_on_disk:
-                raise ValueError("Error, Imputer usage requires data caching on disk")
-
-            if "type" not in imputer or (
-                "args" not in imputer and "kwargs" not in imputer
-            ):
-                raise KeyError(
-                    "An imputer definition has to contain type and args, kwargs as needed"
-                )
-            else:
-                imputertype = imputer["type"]
-                imputerargs = imputer.get("args", [])
-                imputerkwargs = imputer.get("kwargs", {})
-                imputer_type = load_type(imputertype)
-                self.imputer = imputer_type(*imputerargs, **imputerkwargs)
-                self.imputer.set_output(transform="pandas")
-        else:
-            self.imputer = None
-
         if self.cache_on_disk and cache_path is None:
             raise ValueError(
                 "When pre_transform or pre_filter are given, this implies preprocessing of data and cache_path cannot be None"
@@ -157,13 +127,12 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         return cls(**cfg)
 
     def _preprocess(self):
-        """Read, filter and transform every matched grid file, concatenate the
+        """Read, filter and transform every matched file, concatenate the
         results into a single DataFrame, and write it to
-        ``cache_path/data.csv``.
+        ``cache_path/data.csv``. An existing cache file is read back instead.
 
         Returns:
-            pd.DataFrame: The concatenated, filtered and transformed data used
-                to back the dataset when ``cache_on_disk`` is True.
+            pd.DataFrame: The concatenated, filtered and transformed data.
         """
 
         if (self.cache_path / "data.csv").exists():
@@ -201,29 +170,6 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
             df.to_csv(self.cache_path / "data.csv", sep=",", na_rep=self.na_values[0])
         return df
 
-    def impute(self) -> pd.DataFrame:
-        """Run sklearn imputer on dataset if the entire dataset is known, i.e., if pre_transform
-        or pre_filter are given, which results in preprocessing the entire dataset into one dataframe.
-        impute() fits on all rows visible to this dataset instance; create train/validation/test dataset instances first if split-specific fitting is required.
-        Side effect: This function does change the internally held dataframe and returns it
-        Raises:
-            ValueError: If pre_transform or pre_filter is not given and hence the dataset cannot be assumed to be known
-
-        Returns:
-            pd.DataFrame: The dataset's full data as a DataFrame with the imputer having been run.
-
-        """
-        if not self.cache_on_disk:
-            raise ValueError(
-                "Error, without knowing all data, imputation can yield drfiting or wrong results, and only cache_on_disk=True guarantees this. Hence, pre_filter or pre_transform must be given for cache_on_disk to be true and for imputation to run"
-            )
-
-        if self.imputer:
-            self.data_cache = self.imputer.fit_transform(self.data_cache)
-            return self.data_cache
-        else:
-            raise ValueError("Error, no imputer exists")
-
     def _filter_datafiles(self, path: Path, data_list: list[Path]):
         """Recursively collect every file under ``path`` whose suffix matches
         ``self.suffix``, appending their resolved paths to ``data_list``
@@ -245,13 +191,8 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
     def _get_num_datapoints(self) -> int:
         """Compute the total number of rows across the dataset.
 
-        When not ``cache_on_disk``, this reads (and caches in
-        ``self.data_cache``) every grid file to sum their row counts, as a
-        side effect of counting them.
-
         Returns:
-            int: Total row count summed over all grid files, or
-                ``len(self.data_cache)`` when ``cache_on_disk`` is True.
+            int: Total row count summed over all files.
         """
         if self.cache_on_disk:
             return len(self.data_cache)
@@ -262,16 +203,14 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
             return n
 
     def read_data(self, input: Path) -> pd.DataFrame:
-        """Read a single Cloudy grid ``.dat`` file into a DataFrame, skipping
-        its leading comment block and parsing the whitespace-separated header
-        and data rows.
+        """Read a single data file into a DataFrame, skipping comment lines and
+        parsing the header and data rows according to the configured separator.
 
         Args:
-            input (Path): Path to the grid file.
+            input (Path): Path to the file to read.
 
         Returns:
-            pd.DataFrame: One row per Cloudy model, one column per model
-                parameter and emission line (plus ``source``, if present).
+            pd.DataFrame: One row per sample, one column per field.
         """
         data = pd.read_csv(
             input,
@@ -286,14 +225,10 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
     def to_frame(self) -> pd.DataFrame:
         """Return every sample as one DataFrame, in dataset-index order.
 
-        Row ``i`` of the returned frame is the sample ``self[i]`` is built
-        from, which is what lets ``to_xy`` translate ``torch.utils.data.Subset``
-        indices into rows.
+        Row ``i`` of the returned frame is the sample ``self[i]`` is built from.
 
         Returns:
-            pd.DataFrame: The preprocessed cache when ``cache_on_disk`` is
-                True, otherwise the raw grid files read and concatenated in
-                ``datafiles`` order.
+            pd.DataFrame: All samples of this dataset.
         """
         if self.cache_on_disk:
             return self.data_cache
@@ -337,24 +272,18 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
     ) -> list[tuple[int, pd.DataFrame]] | tuple[int, pd.DataFrame]:
         """Resolve global row index/indices to DataFrame row positions.
 
-        Scalar indices return the source DataFrame and the row's local position
-        within it. Non-scalar indices (slice, tensor, ndarray, list, tuple) are
-        treated as global dataset positions; when they span multiple files in
-        non-cache mode, the selected rows are materialised into one temporary
-        DataFrame in the requested order.
-
         Args:
             idx: Global row index, slice, or collection of indices in
-                ``[0, self.num_datapoints)``.
+                ``[0, len(self))``.
 
         Raises:
-            ValueError: If any scalar index is outside the dataset range.
-            TypeError: If a scalar index is not integer-like.
+            IndexError: If an index is negative or outside the dataset range.
+            ValueError: If an empty collection of indices is passed.
 
         Returns:
-            tuple[pd.DataFrame, int | slice]: A DataFrame containing the
-                requested row(s), and positional index/indices suitable for
-                ``_get_line_from_df``.
+            tuple[int, pd.DataFrame] | list[tuple[int, pd.DataFrame]]: For each
+                requested index, the DataFrame holding that row and the row's
+                position within it.
         """
 
         def _map_single_index(idx: int) -> tuple[int, pd.DataFrame]:
@@ -426,104 +355,9 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         return t
 
     def __len__(self):
-        """Total number of rows across all grid files.
+        """Total number of samples in the dataset.
 
         Returns:
-            int: ``self.num_datapoints``.
+            int: Number of rows across all files.
         """
         return self.num_datapoints
-
-
-def to_xy(
-    dataset: DatasetProtocol | torch.utils.data.Subset,
-    label_column: str = "source",
-    feature_columns: list[str] | None = None,
-    drop_duplicates: bool = True,
-    dtype=np.float32,
-    with_impute: bool = False,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Materialise ``dataset`` as (X, y) arrays for sklearn-style estimators.
-
-    ``dataset`` is anything implementing ``DatasetProtocol`` - only
-    ``to_frame()`` is used - or a ``torch.utils.data.Subset`` of one (as handed
-    back by ``torch.utils.data.random_split``), so a split can be materialised
-    on its own; that is the point of this being a free function rather than a
-    dataset method. Nested subsets are unwrapped, and their indices are
-    positions into the underlying dataset, exactly as for ``__getitem__``. Note that whatever ``to_frame()`` reports is what gets materialised - for
-    ``PandasDataset`` in ``cache_on_disk`` mode that means
-    ``pre_filter``/``pre_transform``, and an explicit ``impute()`` call if one
-    was made, are reflected here.
-
-    Row order follows the dataset's own order (for ``PandasDataset``, all rows
-    of one file precede the next), so a contiguous slice is not a valid split
-    -- always split with shuffling and ``stratify=y``.
-
-    Args:
-        dataset (DatasetProtocol | torch.utils.data.Subset): Dataset, or subset
-            of one, to materialise.
-        label_column (str, optional): Column holding the class label; the rows
-            are grouped by it to build ``classes_``. Defaults to "source".
-        feature_columns (list[str] | None, optional): Columns to use as
-            features. Defaults to every column except ``label_column``.
-        drop_duplicates (bool, optional): If True, collapse exact duplicate
-            feature rows (some grid corners, e.g. metallicity/ionization
-            combinations where most line fluxes go to zero, produce identical
-            rows across files) to one before building X/y, so a duplicate can
-            never land on both sides of a later train/test split. The number
-            dropped is recorded in ``n_duplicates_dropped_``. Defaults to True.
-        dtype (_type_, optional): NumPy dtype for the returned feature matrix.
-            Defaults to np.float32.
-        with_impute (bool, optional): If True, and if the dataset has an imputer, run the imputer on the dataset
-            before returning X/y. Defaults to False.
-
-    Raises:
-        ValueError: If ``label_column`` is not present in the data.
-
-    Returns:
-        tuple[np.ndarray, np.ndarray]: ``X`` of shape
-            ``(n_samples, n_features)`` and ``y`` of shape ``(n_samples,)``,
-            integer-encoded per ``classes_``.
-    """
-    # Subsets only carry indices into their parent, so unwrap down to the
-    # PandasDataset while composing the indices into that one frame.
-    indices = None
-    base = dataset
-    while isinstance(base, torch.utils.data.Subset):
-        indices = (
-            list(base.indices)
-            if indices is None
-            else [base.indices[i] for i in indices]
-        )
-        base = base.dataset
-
-    df = base.to_frame()
-
-    if indices is not None:
-        df = df.iloc[indices]
-
-    if label_column not in df.columns:
-        raise ValueError(
-            f"label column {label_column!r} not found; have {list(df.columns)}"
-        )
-
-    if feature_columns is None:
-        feature_columns = [c for c in df.columns if c != label_column]
-
-    if drop_duplicates:
-        before = len(df)
-        df = df.drop_duplicates(subset=feature_columns, keep="first")
-        base.n_duplicates_dropped_ = before - len(df)
-
-    # TODO: this needs to be reconciled with pytorch semantics and should be removed from here later
-    if with_impute and base.imputer is not None:
-        base.imputer.fit(df.loc[:, feature_columns])
-        df.loc[:, feature_columns] = base.imputer.transform(df[feature_columns])
-
-    X = df[feature_columns].to_numpy(dtype=dtype)
-    classes, y = np.unique(df[label_column].to_numpy(), return_inverse=True)
-    # Recorded on the dataset itself, not the subset, so they stay reachable
-    # from whichever object the caller is holding.
-    base.classes_ = classes
-    base.feature_names_ = feature_columns
-
-    return X, y.astype(np.int64)

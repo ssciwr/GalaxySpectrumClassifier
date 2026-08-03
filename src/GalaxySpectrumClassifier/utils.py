@@ -1,5 +1,26 @@
 import importlib
+from collections.abc import Callable
 from typing import Any
+
+import numpy as np
+import torch.utils.data
+
+from .base import DatasetProtocol
+
+
+# The three task kinds SimpleTrainer knows how to evaluate. This drives two
+# things: which predict_proba() shape a "needs_proba" metric receives, and
+# which metric is used by default when the caller doesn't configure one.
+TASKS = ("binary-classification", "multiclass-classification", "regression")
+
+# Sensible zero-config metric per task, used when `metrics` is not given.
+# accuracy_score assumes discrete labels, so it is only appropriate for the
+# two classification tasks; regression falls back to r2_score instead.
+DEFAULT_METRICS = {
+    "binary-classification": [{"type": "sklearn.metrics.accuracy_score"}],
+    "multiclass-classification": [{"type": "sklearn.metrics.accuracy_score"}],
+    "regression": [{"type": "sklearn.metrics.r2_score"}],
+}
 
 
 def identity(x: Any) -> Any:
@@ -82,3 +103,106 @@ def resolve_type_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
         else:
             resolved[key] = value
     return resolved
+
+
+def to_xy(
+    dataset: DatasetProtocol | torch.utils.data.Subset,
+    task: str = "binary-classification",
+    label_column: str = "source",
+    feature_columns: list[str] | None = None,
+    drop_duplicates: bool = True,
+    class_map: dict[Any, int] | None = None,
+    dtype=np.float32,
+    to_frame: Callable | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Materialise ``dataset`` as (X, y) arrays.
+
+    ``dataset`` is anything implementing ``DatasetProtocol``, or a
+    ``torch.utils.data.Subset`` of one, so an individual split can be
+    materialised on its own. Nested subsets are unwrapped, and their indices
+    are positions into the underlying dataset, exactly as for ``__getitem__``.
+
+    Rows are taken in the dataset's own order, which is not guaranteed to be
+    randomised, so a contiguous slice of the result is not a valid split.
+
+    Args:
+        dataset (DatasetProtocol | torch.utils.data.Subset): Dataset, or subset
+            of one, to materialise.
+        task (str, optional): One of ``TASKS``. Classification tasks return an
+            integer label array, regression returns the label column
+            unconverted. Defaults to "binary-classification".
+        label_column (str, optional): Column holding the label. Defaults to
+            "source".
+        feature_columns (list[str] | None, optional): Columns to use as
+            features. Defaults to every column except ``label_column``.
+        drop_duplicates (bool, optional): If True, collapse rows with identical
+            feature values to the first occurrence, so a duplicate cannot land
+            on both sides of a later split. Defaults to True.
+        class_map (dict[Any, int] | None, optional): Mapping from label value
+            to class index, applied to every label of a classification task.
+            Supply it when the labels are not already encoded as indices, so
+            that the same value maps to the same index for every split.
+            Defaults to None, in which case the label column is used as-is.
+        dtype (_type_, optional): NumPy dtype for the returned feature matrix.
+            Defaults to np.float32.
+        to_frame (Callable | None, optional): Function turning the underlying
+            dataset into a DataFrame, required when that dataset does not
+            implement ``DatasetProtocol`` itself. Defaults to None.
+
+    Raises:
+        ValueError: If ``label_column`` is not present in the data, if ``task``
+            is unknown, or if the dataset provides no ``to_frame()`` and none
+            was passed.
+        KeyError: If ``class_map`` is given and a label is missing from it.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: ``X`` of shape
+            ``(n_samples, n_features)`` and ``y`` of shape ``(n_samples,)``.
+    """
+    # Subsets only carry indices into their parent, so unwrap down to the
+    # dataset itself while composing the indices into that one frame.
+    indices = None
+    base = dataset
+    while isinstance(base, torch.utils.data.Subset):
+        indices = (
+            list(base.indices)
+            if indices is None
+            else [base.indices[i] for i in indices]
+        )
+        base = base.dataset
+
+    if isinstance(base, DatasetProtocol):
+        df = base.to_frame()
+    else:
+        if to_frame is None:
+            raise ValueError(
+                "Error, if called on a subset, a to_frame function must be supplied that turns the dataset into a dataframe"
+            )
+        df = to_frame(base)
+
+    if indices is not None:
+        df = df.iloc[indices]
+
+    if label_column not in df.columns:
+        raise ValueError(
+            f"label column {label_column!r} not found; have {list(df.columns)}"
+        )
+
+    if feature_columns is None:
+        feature_columns = [c for c in df.columns if c != label_column]
+
+    if drop_duplicates:
+        df = df.drop_duplicates(subset=feature_columns, keep="first")
+
+    X = df[feature_columns].to_numpy(dtype=dtype)
+
+    if task in ["binary-classification", "multiclass-classification"]:
+        if class_map is not None:
+            y = np.array([class_map[x] for x in df[label_column].to_numpy()])
+        else:
+            y = df[label_column].to_numpy().astype(np.int64)
+        return X, y
+    elif task == "regression":
+        return X, df[label_column].to_numpy()
+    else:
+        raise ValueError("unknown task")
