@@ -440,6 +440,7 @@ def to_xy(
     feature_columns: list[str] | None = None,
     drop_duplicates: bool = True,
     dtype=np.float32,
+    with_impute: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Materialise ``dataset`` as (X, y) arrays for sklearn-style estimators.
 
@@ -448,12 +449,7 @@ def to_xy(
     back by ``torch.utils.data.random_split``), so a split can be materialised
     on its own; that is the point of this being a free function rather than a
     dataset method. Nested subsets are unwrapped, and their indices are
-    positions into the underlying dataset, exactly as for ``__getitem__``.
-
-    No imputation or scaling happens here, so nothing fitted on a held-out
-    split can leak backwards into the arrays returned; fit such transforms
-    inside the estimator's own pipeline, on the train fold only. Note that
-    whatever ``to_frame()`` reports is what gets materialised - for
+    positions into the underlying dataset, exactly as for ``__getitem__``. Note that whatever ``to_frame()`` reports is what gets materialised - for
     ``PandasDataset`` in ``cache_on_disk`` mode that means
     ``pre_filter``/``pre_transform``, and an explicit ``impute()`` call if one
     was made, are reflected here.
@@ -477,6 +473,8 @@ def to_xy(
             dropped is recorded in ``n_duplicates_dropped_``. Defaults to True.
         dtype (_type_, optional): NumPy dtype for the returned feature matrix.
             Defaults to np.float32.
+        with_impute (bool, optional): If True, and if the dataset has an imputer, run the imputer on the dataset
+            before returning X/y. Defaults to False.
 
     Raises:
         ValueError: If ``label_column`` is not present in the data.
@@ -515,6 +513,10 @@ def to_xy(
         before = len(df)
         df = df.drop_duplicates(subset=feature_columns, keep="first")
         base.n_duplicates_dropped_ = before - len(df)
+
+    if with_impute and base.imputer is not None:
+        base.imputer.fit(df.loc[:, feature_columns])
+        df.loc[:, feature_columns] = base.imputer.transform(df[feature_columns])
 
     X = df[feature_columns].to_numpy(dtype=dtype)
     classes, y = np.unique(df[label_column].to_numpy(), return_inverse=True)
