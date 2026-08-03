@@ -1,5 +1,4 @@
 import importlib
-from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -113,7 +112,6 @@ def to_xy(
     drop_duplicates: bool = True,
     class_map: dict[Any, int] | None = None,
     dtype=np.float32,
-    to_frame: Callable | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Materialise ``dataset`` as (X, y) arrays.
 
@@ -145,14 +143,10 @@ def to_xy(
             Defaults to None, in which case the label column is used as-is.
         dtype (_type_, optional): NumPy dtype for the returned feature matrix.
             Defaults to np.float32.
-        to_frame (Callable | None, optional): Function turning the underlying
-            dataset into a DataFrame, required when that dataset does not
-            implement ``DatasetProtocol`` itself. Defaults to None.
 
     Raises:
-        ValueError: If ``label_column`` is not present in the data, if ``task``
-            is unknown, or if the dataset provides no ``to_frame()`` and none
-            was passed.
+        ValueError: If ``label_column`` is not present in the data or if
+            ``task`` is unknown.
         KeyError: If ``class_map`` is given and a label is missing from it.
 
     Returns:
@@ -171,14 +165,7 @@ def to_xy(
         )
         base = base.dataset
 
-    if isinstance(base, DatasetProtocol):
-        df = base.to_frame()
-    else:
-        if to_frame is None:
-            raise ValueError(
-                "Error, if called on a subset, a to_frame function must be supplied that turns the dataset into a dataframe"
-            )
-        df = to_frame(base)
+    df = base.to_frame()
 
     if indices is not None:
         df = df.iloc[indices]

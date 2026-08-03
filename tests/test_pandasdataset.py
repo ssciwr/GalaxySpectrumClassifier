@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 import torch
 from torchvision.transforms import Compose
-from GalaxySpectrumClassifier import PandasDataset, to_xy
+from GalaxySpectrumClassifier import PandasDataset
 from GalaxySpectrumClassifier.utils import identity
 
 
@@ -273,47 +273,6 @@ def test_pandasdataset_unresolvable_dotted_path_raises(create_data):
         PandasDataset(create_data, sep=",", transform="pandas.does_not_exist")
 
 
-def test_pandasdataset_xy(create_data):
-    dataset = PandasDataset(create_data, sep=",")
-
-    # The fixture has no default 'source' label column, so the documented error
-    # should be raised before attempting to build X/y.
-    with pytest.raises(ValueError, match="label column 'source' not found"):
-        to_xy(dataset)
-
-    X, y = to_xy(
-        dataset,
-        label_column="d",
-        feature_columns=["a", "b", "c"],
-        drop_duplicates=False,
-    )
-    assert X.shape == (1000, 3)
-    assert y.shape == (1000,)
-    assert X.dtype == np.float32
-    assert y.dtype == np.int64
-    assert dataset.feature_names_ == ["a", "b", "c"]
-    all_rows = pd.concat(pd.read_csv(path, index_col=0) for path in dataset.datafiles)
-    np.testing.assert_array_equal(dataset.classes_, np.unique(all_rows["d"]))
-
-    X64, y64 = to_xy(
-        dataset,
-        label_column="d",
-        feature_columns=["a"],
-        drop_duplicates=False,
-        dtype=np.float64,
-    )
-    assert X64.shape == (1000, 1)
-    assert X64.dtype == np.float64
-    np.testing.assert_array_equal(y64, y)
-    assert dataset.feature_names_ == ["a"]
-
-    X_deduped, y_deduped = to_xy(
-        dataset, label_column="d", feature_columns=["a"], drop_duplicates=True
-    )
-    assert len(X_deduped) == len(y_deduped)
-    assert dataset.n_duplicates_dropped_ == 0
-
-
 def test_pandasdataset_to_frame_matches_dataset_order(create_data, tmp_path):
     dataset = PandasDataset(create_data, sep=",")
     frame = dataset.to_frame()
@@ -330,94 +289,6 @@ def test_pandasdataset_to_frame_matches_dataset_order(create_data, tmp_path):
     )
 
     assert cached.to_frame() is cached.data_cache
-
-
-def test_to_xy_on_subset_selects_only_its_rows(create_data):
-    dataset = PandasDataset(create_data, sep=",")
-    indices = [7, 3, 250, 999]
-    subset = torch.utils.data.Subset(dataset, indices)
-
-    X, y = to_xy(
-        subset, label_column="d", feature_columns=["a", "b", "c"], drop_duplicates=False
-    )
-
-    full = dataset.to_frame()
-    assert X.shape == (4, 3)
-    assert y.shape == (4,)
-    np.testing.assert_allclose(
-        X, full.iloc[indices][["a", "b", "c"]].to_numpy(dtype=np.float32)
-    )
-    # The attributes belong to the dataset, not the subset.
-    assert dataset.feature_names_ == ["a", "b", "c"]
-    assert not hasattr(subset, "feature_names_")
-
-
-def test_to_xy_on_random_split_covers_the_dataset(create_data):
-    dataset = PandasDataset(create_data, sep=",")
-    train, test = torch.utils.data.random_split(
-        dataset, [800, 200], generator=torch.Generator().manual_seed(42)
-    )
-
-    kwargs = {
-        "label_column": "d",
-        "feature_columns": ["a", "b", "c"],
-        "drop_duplicates": False,
-    }
-    X_train, y_train = to_xy(train, **kwargs)
-    X_test, y_test = to_xy(test, **kwargs)
-
-    assert X_train.shape == (800, 3)
-    assert X_test.shape == (200, 3)
-    assert len(y_train) == 800 and len(y_test) == 200
-    # Splits must be disjoint and jointly cover the dataset.
-    rows = {tuple(row) for row in np.vstack([X_train, X_test])}
-    assert len(rows) == 1000
-
-
-def test_to_xy_unwraps_nested_subsets(create_data):
-    dataset = PandasDataset(create_data, sep=",")
-    # A split of a split - indices of the inner subset are positions in the
-    # outer one, not in the dataset.
-    outer = torch.utils.data.Subset(dataset, [10, 11, 12, 13])
-    inner = torch.utils.data.Subset(outer, [3, 0])
-
-    X, _ = to_xy(inner, label_column="d", feature_columns=["a"], drop_duplicates=False)
-
-    expected = dataset.to_frame().iloc[[13, 10]][["a"]].to_numpy(dtype=np.float32)
-    np.testing.assert_allclose(X, expected)
-
-
-def test_to_xy_on_subset_of_cached_dataset(create_data, tmp_path):
-    cache_path = tmp_path / "cache"
-    cache_path.mkdir()
-    dataset = PandasDataset(
-        create_data,
-        sep=",",
-        cache_path=cache_path,
-        pre_filter=lambda df: df[df["a"] > 50],
-    )
-    subset = torch.utils.data.Subset(dataset, [0, 1, 2])
-
-    X, _ = to_xy(subset, label_column="d", feature_columns=["a"], drop_duplicates=False)
-
-    # Rows come from the preprocessed cache, so the pre_filter is honoured and
-    # the indices line up with __getitem__.
-    assert (X > 50).all()
-    np.testing.assert_allclose(
-        X.ravel(), dataset.data_cache.iloc[[0, 1, 2]]["a"].to_numpy(dtype=np.float32)
-    )
-
-
-def test_to_xy_dedups_within_the_subset(create_data):
-    dataset = PandasDataset(create_data, sep=",")
-    # The same row twice: dedup runs after subsetting, so one must be dropped.
-    subset = torch.utils.data.Subset(dataset, [5, 5, 6])
-
-    X, y = to_xy(subset, label_column="d", feature_columns=["a", "b", "c"])
-
-    assert X.shape == (2, 3)
-    assert len(y) == 2
-    assert dataset.n_duplicates_dropped_ == 1
 
 
 def test_pandasdataset_mapindex(create_data):

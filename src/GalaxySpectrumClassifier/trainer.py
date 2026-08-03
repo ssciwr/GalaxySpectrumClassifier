@@ -7,37 +7,20 @@ import yaml
 import skops.io as sio
 
 from .base import DatasetProtocol, Trainable, TrainerProtocol
-from .data import to_xy
-from .utils import load_type, resolve_type_kwargs
+from .utils import load_type, resolve_type_kwargs, to_xy
+from .utils import TASKS, DEFAULT_METRICS
 
 # One resolved, ready-to-call metric: (result key, the loaded callable, its
 # extra positional args, its extra keyword args, whether it should be scored
 # against predict_proba() output instead of predict()).
 MetricSpec = dict[str, Callable[..., Any] | list[Any] | dict[str, Any] | bool]
 
-# The three task kinds SimpleTrainer knows how to evaluate. This drives two
-# things: which predict_proba() shape a "needs_proba" metric receives, and
-# which metric is used by default when the caller doesn't configure one.
-TASKS = ("binary-classification", "multiclass-classification", "regression")
-
-# Sensible zero-config metric per task, used when `metrics` is not given.
-# accuracy_score assumes discrete labels, so it is only appropriate for the
-# two classification tasks; regression falls back to r2_score instead.
-DEFAULT_METRICS = {
-    "binary-classification": [{"type": "sklearn.metrics.accuracy_score"}],
-    "multiclass-classification": [{"type": "sklearn.metrics.accuracy_score"}],
-    "regression": [{"type": "sklearn.metrics.r2_score"}],
-}
-
 
 class SimpleTrainer(TrainerProtocol):
-    """Trains, validates and tests a single scikit-learn-compatible estimator.
+    """Trains, validates and tests a single scikit-learn-compatible estimator for in-memory datasets.
 
-    SimpleTrainer only depends on the ``DatasetProtocol`` abstraction (via the
-    free ``to_xy`` function, which needs only ``to_frame()``), never on a
-    concrete dataset implementation, so it works with ``PandasDataset``, any
-    other dataset implementing the protocol, or a ``torch.utils.data.Subset``
-    of either.
+    The dataset is only ever passed to ``to_xy``, so any dataset implementing
+    ``DatasetProtocol`` works, as does a ``torch.utils.data.Subset`` of one.
     """
 
     def __init__(
@@ -124,6 +107,10 @@ class SimpleTrainer(TrainerProtocol):
         Raises:
             ValueError: If ``task`` is not one of ``TASKS``.
         """
+
+        if task == "regression" and calibrator_type is not None:
+            raise ValueError("Error, regression tasks cannot be calibrated")
+
         # Exactly the kwargs needed to reconstruct an equivalent instance via
         # SimpleTrainer(**self.config) - see save_snapshot()/load_snapshot().
         self.config: dict[str, Any] = {
@@ -189,11 +176,9 @@ class SimpleTrainer(TrainerProtocol):
                 arguments for the estimator. Defaults to None (treated as an
                 empty dict).
             calibrator_type (str | None, optional): Dotted path of a
-                calibrator class to construct around the estimator, passing
-                the estimator as its ``estimator=`` keyword argument (this
-                matches scikit-learn's ``CalibratedClassifierCV`` signature;
-                a different calibrator class would need to accept the same
-                keyword). Defaults to None, meaning no calibration is applied.
+                calibrator class to construct around the estimator, which is
+                passed to it as its ``estimator=`` keyword argument. Defaults
+                to None, meaning no calibration is applied.
             calibrator_args (list[Any] | None, optional): Additional
                 positional arguments for the calibrator's constructor, passed
                 after ``estimator``. Defaults to None.
@@ -249,17 +234,15 @@ class SimpleTrainer(TrainerProtocol):
         return cls(**cfg)
 
     def _build_metrics(self, specs: list[dict[str, Any]]) -> list[MetricSpec]:
-        """Resolve metric spec dicts into ready-to-call ``MetricSpec`` tuples.
+        """Resolve metric spec dicts into ready-to-call metrics.
 
         Args:
             specs (list[dict[str, Any]]): Metric specifications as documented
                 on the ``metrics`` parameter of ``__init__``.
 
         Returns:
-            list[MetricSpec]: One ``(name, callable, args, kwargs,
-                needs_proba)`` tuple per spec, in the same order, ready to be
-                called as ``callable(y_true, predictions, *args, **kwargs)``
-                in ``_evaluate``.
+            list[MetricSpec]: One entry per spec, in the same order, each
+                holding the resolved callable and how to call it.
         """
         metrics: list[MetricSpec] = []
         for spec in specs:
@@ -286,20 +269,13 @@ class SimpleTrainer(TrainerProtocol):
         return metrics
 
     def fit(self, dataset: DatasetProtocol) -> Trainable:
-        """Fit the underlying model (or calibrator) on the whole dataset.
+        """Fit the model on the whole dataset.
 
-        This is the single point where the sklearn ``.fit()`` API is called;
-        ``train`` delegates to it. Note that unlike an iterative/epoch-based
-        trainer, this performs one, non-resumable fit - calling it again
-        re-fits from scratch (sklearn estimators reset their learned state on
-        each ``.fit()`` call, except where ``warm_start=True`` was passed via
-        ``model_kwargs``).
+        This performs one, non-resumable fit: calling it again re-fits from
+        scratch unless the estimator was configured to continue training.
 
         Args:
-            dataset (DatasetProtocol): Dataset to train on. It is only
-                passed to ``to_xy``, so any dataset implementing the protocol
-                works, not just ``PandasDataset`` - as does a
-                ``torch.utils.data.Subset`` of one.
+            dataset (DatasetProtocol): Dataset to train on.
 
         Returns:
             Trainable: The fitted model (the same object as ``self.model``).
@@ -311,12 +287,8 @@ class SimpleTrainer(TrainerProtocol):
     def train(self, dataset: DatasetProtocol) -> Trainable:
         """Public entry point to train the model on ``dataset``.
 
-        For this sklearn-based trainer this is just a thin wrapper around
-        ``fit`` - there is no epoch loop to run. It is kept as a separate
-        method (rather than being ``fit`` itself) so a future, multi-epoch
-        torch trainer can give ``train`` a different meaning (e.g. run
-        several epochs, each calling something analogous to ``fit``) while
-        keeping the same ``TrainerProtocol.train`` entry point.
+        Here this is a thin wrapper around ``fit``, since there is no epoch
+        loop to run.
 
         Args:
             dataset (DatasetProtocol): Dataset to train on.
@@ -329,22 +301,15 @@ class SimpleTrainer(TrainerProtocol):
     def _evaluate(self, dataset: DatasetProtocol) -> dict[str, float]:
         """Score the current model on ``dataset`` with every configured metric.
 
-        Shared by ``validate`` and ``test`` since both need the exact same
-        computation - only *when* they get called in a workflow differs
-        (tuning/early-stopping vs. a final held-out check).
-
         Args:
-            dataset (DatasetProtocol): Dataset to evaluate on. Its
-                ``to_xy`` output is the ground truth; nothing here re-fits
-                the model, so this dataset should not be the one just used to
-                ``fit``/``train`` if the goal is an unbiased estimate.
+            dataset (DatasetProtocol): Dataset to evaluate on. Nothing here
+                re-fits the model.
 
         Raises:
             ValueError: If a ``needs_proba`` metric is configured together
-                with ``task="regression"`` (regression models have no
-                ``predict_proba``), or if ``task="binary-classification"`` but
-                ``predict_proba`` did not return exactly 2 columns (e.g. the
-                model was actually fit on more than 2 classes).
+                with ``task="regression"``, or if
+                ``task="binary-classification"`` but ``predict_proba`` did not
+                return exactly two columns.
 
         Returns:
             dict[str, float]: Mapping of each metric's ``name`` to its score,
@@ -358,6 +323,7 @@ class SimpleTrainer(TrainerProtocol):
         # (or at all, for plain regressors).
         y_pred = self.model.predict(X)
         y_proba = None
+
         if any(metric["needs_proba"] for metric in self.metrics):
             if self.task == "regression":
                 raise ValueError(
@@ -390,9 +356,8 @@ class SimpleTrainer(TrainerProtocol):
     def validate(self, dataset: DatasetProtocol) -> dict[str, float]:
         """Score the model on a validation dataset.
 
-        Intended for use during development - hyperparameter tuning, early
-        stopping, monitoring - as opposed to a final held-out check (see
-        ``test``). Computes the same thing as ``test``; see ``_evaluate``.
+        Intended for use during development, as opposed to a final held-out
+        check; see ``test``.
 
         Args:
             dataset (DatasetProtocol): Validation dataset to score against.
@@ -405,9 +370,8 @@ class SimpleTrainer(TrainerProtocol):
     def test(self, dataset: DatasetProtocol) -> dict[str, float]:
         """Score the model on a held-out test dataset.
 
-        Intended as the final, one-shot evaluation after model/hyperparameter
-        selection is done (see ``validate`` for the tuning-time counterpart).
-        Computes the same thing as ``validate``; see ``_evaluate``.
+        Intended as the final evaluation once model selection is done; see
+        ``validate`` for the counterpart used during development.
 
         Args:
             dataset (DatasetProtocol): Test dataset to score against.
@@ -418,14 +382,13 @@ class SimpleTrainer(TrainerProtocol):
         return self._evaluate(dataset)
 
     def save_snapshot(self, path: str) -> None:
-        """Save this trainer's full state - config plus fitted model - to
-        ``path``, a directory (created if it doesn't exist yet).
+        """Save this trainer's config and fitted model to ``path``, a
+        directory that is created if it does not exist yet.
 
-        ``config.yaml`` holds only plain, YAML-safe data - it will raise if
-        ``model_kwargs``/``calibrator_kwargs`` contain a live object (see
-        ``__init__``'s docs on the ``{"type": ...}`` convention for kwargs
-        that need a live type, e.g. skorch's ``module``). The fitted model
-        itself is saved the same way as ``save_model()``.
+        The config is written as YAML and therefore has to be plain data;
+        passing live objects as constructor keyword arguments rather than the
+        ``{"type": ...}`` form makes it unwritable. The model is saved as in
+        ``save_model()``.
 
         Args:
             path (str): Directory to save the snapshot into.
@@ -455,11 +418,8 @@ class SimpleTrainer(TrainerProtocol):
         return trainer
 
     def save_model(self, path: str | Path) -> None:
-        """Export just the fitted model/calibrator to ``path``, for
-        inference elsewhere - no trainer config, no metrics.
-
-        Uses skops (a safer-than-pickle format); an ONNX export path may be
-        added later.
+        """Export only the fitted model to ``path``, without the trainer
+        config or metrics, for use elsewhere.
 
         Args:
             path (str | Path): File path to save the model to.
@@ -474,9 +434,8 @@ class SimpleTrainer(TrainerProtocol):
             path (str | Path): File path previously passed to ``save_model()``.
 
         Returns:
-            Trainable: The bare fitted model/calibrator - not a
-                ``SimpleTrainer`` - so only ``predict``/``predict_proba``
-                are guaranteed; no training config is restored.
+            Trainable: The fitted model on its own; no trainer configuration
+                is restored.
         """
         untrusted = sio.get_untrusted_types(file=path)
         return sio.load(path, trusted=untrusted)

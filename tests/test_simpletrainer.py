@@ -151,18 +151,15 @@ def test_simple_trainer_init_regression_minimal(tmp_path):
 
 
 def test_simple_trainer_init_regression_with_calibrator(tmp_path):
-    # build_model() does not validate that a calibrator is classifier-only, so this
-    # constructs fine even though CalibratedClassifierCV would fail on .fit() with a
-    # regressor - documenting current (lenient) behavior rather than a real workflow.
-    trainer = SimpleTrainer(
-        output_path=str(tmp_path / "training"),
-        model_type="sklearn.ensemble.RandomForestRegressor",
-        task="regression",
-        calibrator_type="sklearn.calibration.CalibratedClassifierCV",
-    )
-
-    assert isinstance(trainer.model, CalibratedClassifierCV)
-    assert isinstance(trainer.model.estimator, RandomForestRegressor)
+    with pytest.raises(
+        ValueError, match="Error, regression tasks cannot be calibrated"
+    ):
+        SimpleTrainer(
+            output_path=str(tmp_path / "training"),
+            model_type="sklearn.ensemble.RandomForestRegressor",
+            task="regression",
+            calibrator_type="sklearn.calibration.CalibratedClassifierCV",
+        )
 
 
 def test_simple_trainer_init_regression_with_custom_metric(tmp_path):
