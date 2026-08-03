@@ -134,6 +134,7 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
             )
         if cache_path is not None:
             self.cache_path = Path(cache_path).resolve()
+            self.cache_path.mkdir(parents=True, exist_ok=True)
 
         self.data_cache = OrderedDict()  # empty always if cache_read_data is false
 
