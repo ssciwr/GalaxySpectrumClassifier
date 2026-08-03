@@ -37,7 +37,7 @@ class SimpleTrainer(TrainerProtocol):
     free ``to_xy`` function, which needs only ``to_frame()``), never on a
     concrete dataset implementation, so it works with ``PandasDataset``, any
     other dataset implementing the protocol, or a ``torch.utils.data.Subset``
-    of either. 
+    of either.
     """
 
     def __init__(
@@ -358,7 +358,7 @@ class SimpleTrainer(TrainerProtocol):
         # (or at all, for plain regressors).
         y_pred = self.model.predict(X)
         y_proba = None
-        if any(needs_proba for *_, needs_proba in self.metrics):
+        if any(metric["needs_proba"] for metric in self.metrics):
             if self.task == "regression":
                 raise ValueError(
                     "A metric with needs_proba=True is configured, but "

@@ -6,8 +6,10 @@ import yaml
 import skorch
 import torchmetrics
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.svm import LinearSVC
+from sklearn.linear_model import LinearRegression
 from sklearn.calibration import CalibratedClassifierCV
-from sklearn.datasets import make_classification
+from sklearn.datasets import make_classification, make_regression
 from sklearn.metrics import (
     accuracy_score,
     r2_score,
@@ -54,6 +56,12 @@ def synthetic_dataset():
         n_samples=100, n_features=20, n_classes=2, random_state=42
     )
     return _ArrayDataset(X.astype(np.float32), y.astype(np.int64))
+
+
+@pytest.fixture
+def synthetic_regression_dataset():
+    X, y = make_regression(n_samples=100, n_features=20, noise=0.1, random_state=42)
+    return _ArrayDataset(X.astype(np.float32), y.astype(np.float32))
 
 
 def test_simple_trainer_init_binary_minimal(tmp_path):
@@ -279,6 +287,97 @@ def test_simple_trainer_fit_with_calibrator(synthetic_dataset, tmp_path):
     assert fitted is trainer.model
     assert hasattr(fitted, "classes_")
     assert fitted.predict(X).shape == (100,)
+
+
+def test_simple_trainer_fit_estimator_without_predict_proba(
+    synthetic_dataset, tmp_path
+):
+    # LinearSVC has no predict_proba - SimpleTrainer must still fit/predict/
+    # evaluate fine with the default (predict-based) accuracy_score metric.
+    trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
+        model_type="sklearn.svm.LinearSVC",
+        model_kwargs={"random_state": 42},
+    )
+    fitted = trainer.fit(synthetic_dataset)
+
+    X, y = to_xy(synthetic_dataset)
+    reference = LinearSVC(random_state=42).fit(X, y)
+
+    assert fitted is trainer.model
+    assert not hasattr(fitted, "predict_proba")
+    np.testing.assert_array_equal(fitted.predict(X), reference.predict(X))
+    assert trainer.validate(synthetic_dataset) == {
+        "accuracy_score": accuracy_score(y, reference.predict(X))
+    }
+
+
+def test_simple_trainer_needs_proba_metric_fails_without_predict_proba(
+    synthetic_dataset, tmp_path
+):
+    # A needs_proba metric with an estimator that has no predict_proba should
+    # fail with sklearn's own real AttributeError, not be silently skipped.
+    trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
+        model_type="sklearn.svm.LinearSVC",
+        model_kwargs={"random_state": 42},
+        metrics=[
+            {
+                "type": "sklearn.metrics.roc_auc_score",
+                "name": "auc",
+                "needs_proba": True,
+            }
+        ],
+    )
+    trainer.fit(synthetic_dataset)
+
+    with pytest.raises(AttributeError):
+        trainer.validate(synthetic_dataset)
+
+
+def test_simple_trainer_calibrator_enables_proba_for_linear_svc(
+    synthetic_dataset, tmp_path
+):
+    # CalibratedClassifierCV should let a needs_proba metric work even though
+    # the wrapped estimator (LinearSVC) has no predict_proba of its own.
+    trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
+        model_type="sklearn.svm.LinearSVC",
+        model_kwargs={"random_state": 42},
+        calibrator_type="sklearn.calibration.CalibratedClassifierCV",
+        calibrator_kwargs={"cv": 3},
+        metrics=[
+            {
+                "type": "sklearn.metrics.roc_auc_score",
+                "name": "auc",
+                "needs_proba": True,
+            }
+        ],
+    )
+    trainer.fit(synthetic_dataset)
+
+    result = trainer.validate(synthetic_dataset)
+
+    assert hasattr(trainer.model, "predict_proba")
+    assert 0.0 <= result["auc"] <= 1.0
+
+
+def test_simple_trainer_fit_regression(synthetic_regression_dataset, tmp_path):
+    trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
+        model_type="sklearn.linear_model.LinearRegression",
+        task="regression",
+    )
+    fitted = trainer.fit(synthetic_regression_dataset)
+
+    X, y = to_xy(synthetic_regression_dataset)
+    reference = LinearRegression().fit(X, y)
+
+    assert fitted is trainer.model
+    np.testing.assert_allclose(fitted.predict(X), reference.predict(X))
+    assert trainer.validate(synthetic_regression_dataset) == {
+        "r2_score": r2_score(y, reference.predict(X))
+    }
 
 
 def test_simple_trainer_fit_torchmodel(synthetic_dataset, tmp_path):

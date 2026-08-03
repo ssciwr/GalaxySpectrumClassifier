@@ -22,7 +22,10 @@ Impact:
 - Classifiers without `predict_proba()` fail even when configured only with label metrics such as `accuracy_score`; for example `sklearn.svm.LinearSVC` trains but validation raises `AttributeError`.
 - Tests pass because current evaluation tests use `RandomForestClassifier`, which happens to have `predict_proba()`, and regression tests only cover initialization.
 
-Suggested fix: use `any(metric["needs_proba"] for metric in self.metrics)` and add regression-evaluation and no-proba-classifier tests.
+Suggested fix:
+    - [x] use `any(metric["needs_proba"] for metric in self.metrics)`
+    - [x] add regression-evaluation
+    - [x] add no-proba-classifier tests.
 
 ### High: `to_xy()` always class-encodes labels, which breaks regression and can corrupt split-level classification metrics
 
