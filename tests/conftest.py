@@ -12,8 +12,14 @@ def build_data():
         b = rng.normal(0, 1, size=100)
         c = rng.uniform(-100, 100, size=100)
         d = rng.uniform(5, 10, size=100)
+        # Integer-valued target, so tests exercise the label split without
+        # relying on the float -> int64 cast.
+        source = rng.integers(0, 2, size=100)
+        extra = rng.integers(0, 3, size=100)
 
-        df = pd.DataFrame({"a": a, "b": b, "c": c, "d": d})
+        df = pd.DataFrame(
+            {"a": a, "b": b, "c": c, "d": d, "source": source, "extra": extra}
+        )
         data.append(df)
     return data
 
