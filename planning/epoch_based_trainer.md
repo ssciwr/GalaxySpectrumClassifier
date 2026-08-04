@@ -76,7 +76,7 @@ and **not** declared; neither are `onnx`/`onnxscript`.
 | Callbacks `before_train`, `start_epoch`, `end_epoch`, `after_train_batch`, `after_val_batch`, `after_train` | `skorch.callbacks.Callback`: `on_train_begin`, `on_epoch_begin`, `on_epoch_end`, `on_batch_end(training=True/False)`, `on_train_end`, plus `on_batch_begin`/`on_grad_computed` | **Import** — 1:1 mapping |
 | Callbacks `before_test`, `after_test_batch`, `after_test` | **Nothing.** skorch has no test phase at all | **Implement** |
 | Early stopping: metric-driven, patience countdown, reset on improvement | `skorch.callbacks.EarlyStopping(monitor, patience, threshold, threshold_mode, lower_is_better, load_best)` — reset-on-improvement is built in | **Import** |
-| Early stopping on a **set** of validation metrics | skorch monitors one history key | **Implement** (subclass) |
+| Early stopping on a **set** of validation metrics | skorch monitors one history key; its `EarlyStopping` keeps the patience state in undocumented attributes | **Implement** on `Callback` (see §3.2) |
 | Batch-wise metrics | `torchmetrics`: stateful `update()`/`compute()`, `MetricCollection`, `.clone(prefix=)` | **Import** |
 | Optimizer / LR scheduler from `type` + args/kwargs | `torch.optim.*`, `torch.optim.lr_scheduler.*` via skorch's `optimizer=`/`optimizer__*` and `skorch.callbacks.LRScheduler(policy=, step_every=)` | **Import** |
 | accelerate on the hot path | `skorch.hf.AccelerateMixin` — overrides `train_step`, `train_step_single`, `_step_optimizer`, `get_iterator`, `evaluation_step`, `save_params`, `load_params`, `on_train_end` | **Import**, add dependency |
@@ -220,24 +220,34 @@ values visible to skorch's history, and therefore to `EarlyStopping`:
 
 Built from config via `load_type` into a `torchmetrics.MetricCollection`.
 
-**`MultiMetricEarlyStopping(skorch.callbacks.EarlyStopping)`** — the only thing skorch's
-`EarlyStopping` cannot already do is watch more than one history key:
+Two details settled during implementation: metric values are recorded as floats when
+scalar and as lists otherwise (per-class scores cannot be an early-stopping monitor), and
+the collection is moved onto the prediction's device each batch so GPU runs work. The
+labels come from `batch[1]` directly rather than from skorch's `unpack_data`, since
+`DatasetProtocol` already guarantees the two-tuple.
 
-- `monitor` accepts a **list** of history keys; patience resets when *any* designated
-  metric improves, and counts down only when none does
-- everything else (patience countdown, `threshold`/`threshold_mode`, `lower_is_better`,
-  `load_best`) is inherited unchanged
+**`MultiMetricEarlyStopping(skorch.callbacks.Callback)`** — watches any number of history
+keys: patience resets when *any* monitored metric improves, and counts down only when none
+does. `patience`, `threshold`, `threshold_mode` and `lower_is_better` behave as in skorch's
+own `EarlyStopping`; stopping raises `KeyboardInterrupt`, which is skorch's documented
+mechanism and which `fit` catches.
+
+> **Deviation from the earlier plan, and why.** This was going to subclass
+> `skorch.callbacks.EarlyStopping`. It does not. Multi-metric monitoring has to override
+> both `on_train_begin` and `on_epoch_end` and reuse `misses_`, `dynamic_threshold_`,
+> `best_epoch_` and `best_model_weights_` — all undocumented internals — which would have
+> been ~90% override for ~10% reuse, and exactly the boundary the Risks section says to
+> surface rather than route around. Extending `Callback`, the documented extension point,
+> costs about the same number of lines and touches nothing private. Stock `EarlyStopping`
+> remains available through the `callbacks` config for the single-metric case.
+
+`load_best` is therefore **not** supported by this callback; use
+`skorch.callbacks.Checkpoint`/`EarlyStopping` via the `callbacks` config if it is needed.
 
 **Config-supplied callbacks** are resolved with `load_type` and appended to the net's
 `callbacks=[...]`, so `before_train`/`start_epoch`/`end_epoch`/`after_train_batch`/
 `after_val_batch`/`after_train` all route through skorch's own dispatch — no custom
 callback machinery.
-
-**Resolution of the review above:** grace period dropped everywhere — from this section,
-from the Part 1 inventory, from the Part 5 tests, and from the Context paragraph. The
-subclass is now only about multi-metric monitoring. If plain single-metric early stopping
-turns out to be enough in practice, even this subclass can go and
-`skorch.callbacks.EarlyStopping` be used directly.
 
 
 ### 3.3 `epoch_trainer.py` — `EpochTrainer(TrainerProtocol)`
@@ -256,6 +266,10 @@ snapshotting. **No data argument of any kind appears in the constructor.**
   `optimizer=`, `optimizer__*`, `LRScheduler(policy=...)`.
   Calibrator parameters from the protocol signature are accepted, **warned about**, and
   ignored (see §3.4).
+- **`batch_size` / `max_epochs`** are explicit constructor arguments, because the config
+  groups them with the rest of the training setup — but they are also plain skorch
+  parameters. Passing one in both places raises, rather than resolving it with a silent
+  precedence rule.
 - **`train(train_data, validation_data=None)`** — both are `DatasetProtocol` instances
   passed in from outside and never modified:
 
@@ -279,10 +293,32 @@ snapshotting. **No data argument of any kind appears in the constructor.**
   YAML-serialisable data.
 - **`load_snapshot(path)`**: `cls(**config)` → `net.initialize()` → `net.load_params(...)`.
 - **`save_model(path, sample_input=None)`**: dispatches on the `export_format`
-  constructor argument. `"pt"` → `torch.save` of the unwrapped module. `"onnx"` →
-  `torch.onnx.export(module, sample_input, path, dynamo=True)`.
-- **`load_model(path)`**: `.pt` only — an ONNX graph cannot be loaded back as a torch
-  module, so that case raises.
+  constructor argument, over the unwrapped module put into `eval()` mode first — exporting
+  in training mode would bake dropout and batch-norm's training behaviour into the
+  artefact, and `torch.onnx.export` warns about exactly that.
+  - `"pt"` writes a **reconstructive** payload, not a pickled module:
+
+    ```python
+    {"module_type": "torchvision.ops.misc.MLP",
+     "module_kwargs": {"in_channels": 18, "hidden_channels": [64, 2]},
+     "state_dict": {...}}
+    ```
+
+    `module_kwargs` are the `module__*` entries of `model_kwargs` in their unresolved
+    config form, so the whole file stays plain data.
+  - `"onnx"` → `torch.onnx.export(module, (sample_input,), path, dynamo=True)`, which
+    raises without a `sample_input` since tracing needs concrete shapes.
+- **`load_model(path)`**: loads with `weights_only=True` — nothing is unpickled —
+  resolves `module_type` via `load_type`, constructs it from `module_kwargs`, loads the
+  weights and returns the module in eval mode. Mismatched weights raise from
+  `load_state_dict` rather than producing a wrong-shaped model. ONNX exports cannot be
+  loaded back as torch modules; use an ONNX runtime for those.
+
+  Two honest limits: the named class is still imported and called, so this is narrower
+  than pickle but not a licence to load untrusted files; and the module must have been
+  configured through `module__*` kwargs. A pre-built module instance cannot be
+  reconstructed this way — that case is served by calling `torch.save` on
+  `trainer.model.module_` directly, and is an accepted limitation for now.
 
 **Resolution of the review above:**
 
@@ -306,6 +342,26 @@ else. Absent section means no acceleration and no `AccelerateMixin` in the class
 *Separation:* the trainer takes datasets but knows nothing about them beyond
 `DatasetProtocol`. No label column, no dtype, no column names, no `to_frame()`, no
 `PandasDataset` import. The label split lives in the dataset (§3.1).
+
+*Why there is no `optimizer_args` / `lr_scheduler_args`.* The `type/args/kwargs` paradigm
+is followed for the model and the accelerator, but the optimizer and scheduler take only
+`optimizer_type`/`optimizer_kwargs` and `lr_scheduler_type`/`lr_scheduler_kwargs`. Torch's
+optimizers take exactly one positional parameter, `params`, and its schedulers take
+`optimizer` — both supplied by skorch itself. Every hyperparameter is keyword-able, so an
+`args` list would have had nothing to carry. Verified on a real run:
+
+| passed as | reached |
+| --- | --- |
+| `optimizer_kwargs: {lr: 0.08, momentum: 0.9, weight_decay: 0.03, nesterov: true}` | `SGD` with all four set |
+| `lr_scheduler_kwargs: {step_every: epoch, step_size: 1, gamma: 0.5}` | `StepLR(step_size=1, gamma=0.5)`, lr `0.08 → 0.04 → 0.02` |
+
+`optimizer_kwargs` are forwarded as skorch's `optimizer__*`; `lr_scheduler_kwargs` go to
+`skorch.callbacks.LRScheduler`, which passes anything it does not consume itself straight
+to the policy constructor.
+
+*Test-phase callbacks* may be given as a dotted path **or** as a live callable, following
+`PandasDataset.transform`'s existing convention — YAML needs the string, notebooks want
+the object.
 
 ### 3.4 `base.py` — one protocol change
 
@@ -341,46 +397,61 @@ Export `EpochTrainer` from `src/GalaxySpectrumClassifier/__init__.py`.
 
 ---
 
-## Part 4 — Sequencing
+## Part 4 — Status
 
-**Step 1**: the `(x, y)` change to `DatasetProtocol`/`PandasDataset` and the resulting
-updates to `tests/test_pandasdataset.py`; then the two callbacks, `EpochTrainer`, the
-`base.py` signature change, the dependency additions and the example config — then
-**stop**. No *new* tests yet; the user reviews and engages with the code first. (The
-existing dataset tests are updated in this step because the contract change breaks them —
-that is a fix, not new test-writing.)
+**Step 1 — done.** The `(x, y)` contract on `DatasetProtocol`/`PandasDataset`, with
+`tests/test_pandasdataset.py` updated to it.
 
-**Step 2**: after that review, write the test suite below against whatever the code has
-become.
+**Step 2 — done**, in the order §3.5 → §3.4 → §3.3 → §3.2 → §3.6: dependencies, the
+protocol signature change, `EpochTrainer`, the two callbacks, the example config and the
+package exports, with `tests/test_epochtrainer.py` covering Part 5.
 
-## Part 5 — Verification (deferred to step 2)
+## Part 5 — Verification
 
-`tests/test_epochtrainer.py`, fixture-driven off `tests/conftest.py`:
+`tests/test_epochtrainer.py` and `tests/test_pandasdataset.py`, fixture-driven off
+`tests/conftest.py`. Mocking is limited to one four-line stub net wrapping skorch's real
+`History`, used only to drive early stopping over a fixed score sequence; everything else
+runs against real datasets, a real net and real files.
 
-1. `PandasDataset.__getitem__` returns `(x, y)` with the label split off correctly, for a
-   label column at the start, middle and end of the frame, and for scalar, slice and
-   array indices. A plain `DataLoader` over it yields batches `unpack_data` accepts, with
-   no `collate_fn`.
-2. `train` runs for the configured number of epochs and populates history; loader options
-   set as `iterator_train__*` (e.g. `shuffle`, `batch_size`) actually take effect.
-3. Early stopping fires when the monitored metric stagnates, patience resets on
-   improvement, and a multi-metric monitor resets when any one of its metrics improves.
-4. `test()` fires `before_test`, `after_test_batch` (once per batch), `after_test`, and
-   returns one entry per configured test metric.
-5. Snapshot round-trip: `save_snapshot` → `load_snapshot` yields identical predictions.
-6. `save_model` writes a loadable `.pt`; ONNX export produces a file `onnx.checker`
-   accepts, and raises cleanly without a sample input.
-7. `build_model` warns when calibrator parameters are passed, and still builds.
-
+1. `PandasDataset.__getitem__` returns `(x, y)` for scalar, slice and array indices; a
+   string label is one axis flatter than a one-element list; unset, unknown or
+   transform-dropped `label_columns` each raise; dtypes are `float32`/`int64`; `Subset`
+   preserves the pair; a plain `DataLoader` batches it with **no** `collate_fn`.
+2. `train` runs the configured number of epochs and records the torchmetrics values under
+   their configured names; `batch_size` and `iterator_train__drop_last` change the
+   observed `train_batch_count` (3 vs 2 over 40 samples), proving the DataLoader options
+   take effect; training without validation data works, and is refused when metrics or
+   early stopping are configured; the same net trains end-to-end on a real
+   `PandasDataset`.
+3. Early stopping fires exactly at `patience`, resets on improvement, resets when *any*
+   metric of a multi-metric monitor improves, honours `lower_is_better`, and rejects a bad
+   `threshold_mode`. One end-to-end run halts a real training loop at a deterministic
+   epoch (an absurd absolute threshold makes "no improvement" certain, so the assertion
+   does not depend on convergence speed).
+4. `test()` fires `before_test` once, `after_test_batch` once per batch and `after_test`
+   once, in that order, with the batch sizes the loader actually produced (16/16/8 over
+   40 samples), and returns one entry per configured test metric; `test_metrics` falls
+   back to `metrics`; hooks resolve from dotted paths; `validate()` reproduces the last
+   epoch's number exactly.
+5. Snapshot round-trip: `save_snapshot` → `load_snapshot` reproduces `predict` and
+   `predict_proba` exactly and yields a trainer that still tests.
+6. `save_model("pt")` writes a payload that loads under `weights_only=True`, rebuilds to
+   an identical-output module in eval mode, and raises on mismatched weights; ONNX export
+   passes `onnx.checker` and raises cleanly without a sample input; an unknown
+   `export_format` is rejected at construction.
+7. `build_model` warns on calibrator arguments and still builds a usable trainer, and does
+   not warn otherwise.
 
 Commands:
 
-- `uv sync --extra tests` (after the dependency additions)
-- `uv run pytest tests/test_epochtrainer.py`
-- `uv run pytest` — confirm `SimpleTrainer` tests still pass after the `base.py` signature change
-- End-to-end against real data: run the new `configs/binary_classifier_epoch_example.yaml`
-  over `data/classification_v2`, on CPU and once with an `Accelerator` configured
+- `uv sync --extra tests`
+- `uv run pytest` — 99 passing
 - `uv run pre-commit run --all-files`
+
+**Still outstanding:** an end-to-end run of
+`configs/binary_classifier_epoch_example.yaml` over `data/classification_v2`, on CPU and
+once with an `Accelerator` configured. The accelerate path has not been exercised against
+real data yet — only its construction is covered.
 
 ---
 
@@ -395,8 +466,14 @@ Commands:
   reference page for `skorch.hf.AccelerateMixin` rather than on the narrative
   `user/huggingface` guide page. The chosen `save_params`/ONNX route sidesteps the
   pickle limitation, but the API may shift on a skorch upgrade.
-- The trainer currently touches only documented, public skorch API: `fit`, `set_params`,
-  `get_iterator`, `evaluation_step`, `history`, `save_params`/`load_params`,
-  `predefined_split` and the `iterator_*__*` config prefix. The moment it needs an
-  override of `get_split_datasets`, `fit_loop` or similar, that is the architecture smell
-  the feature list calls out — stop and re-discuss rather than routing around it.
+- The trainer touches only documented, public skorch API: `fit`, `set_params`,
+  `get_iterator`, `evaluation_step`, `history.record`, `save_params`/`load_params`,
+  `predefined_split`, `Callback`, `LRScheduler` and the `iterator_*__*` config prefix.
+  Nothing private, and no override of `get_split_datasets` or `fit_loop` — the one place
+  that pressure appeared, multi-metric early stopping, was resolved by not subclassing
+  `EarlyStopping` (§3.2). The moment such an override becomes tempting again, that is the
+  architecture smell the feature list calls out: stop and re-discuss rather than routing
+  around it.
+- `AccelerateMixin.on_train_end` unwraps the model when `unwrap_after_train=True` (the
+  default), so multi-process testing after training needs `unwrap_after_train=False`.
+  `_export_module` unwraps explicitly before export, so that path is unaffected either way.
