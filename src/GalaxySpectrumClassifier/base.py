@@ -14,7 +14,7 @@ class Configurable(Protocol):
 class DatasetProtocol(Configurable, Protocol):
     def __getitem__(
         self, idx: int | slice | torch.Tensor | np.ndarray | list[int] | tuple
-    ) -> torch.Tensor: ...
+    ) -> tuple[torch.Tensor, torch.Tensor]: ...
 
     def __len__(self) -> int: ...
 
@@ -22,7 +22,7 @@ class DatasetProtocol(Configurable, Protocol):
 
 
 @runtime_checkable
-class Predicable(Configurable, Protocol):
+class Predictable(Configurable, Protocol):
     def predict(self, data, *args, **kwargs) -> Any: ...
 
     def predict_proba(self, data, *args, **kwargs) -> Any: ...
@@ -33,7 +33,7 @@ class Predicable(Configurable, Protocol):
 
 
 @runtime_checkable
-class Trainable(Predicable, Protocol):
+class Trainable(Predictable, Protocol):
     def fit(self, data, *args, **kwargs): ...
 
 
