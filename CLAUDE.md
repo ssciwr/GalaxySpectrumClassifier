@@ -17,12 +17,27 @@ The design follows SOLID principles via a `Protocol`-based system (`base.py`), s
 - **`DatasetProtocol`** — anything indexable/sized that can impute missing values and hand out all of its samples as one DataFrame, in dataset-index order (row *i* backs `dataset[i]`), via `to_frame()`. Materialization to `(X, y)` arrays is *not* a dataset method: the free function `data.to_xy(dataset, ...)` builds them from `to_frame()`, and also accepts a `torch.utils.data.Subset` (including nested ones, e.g. from `random_split`) so an individual split can be materialized on its own. `PandasDataset` (`data.py`) is the current implementation: it indexes one or more whitespace-separated Cloudy grid `.dat` files under a directory as a single dataset (one row per sample across all files). It supports two modes:
   - **Lazy/streaming** (default): files are read on demand and cached per-file in memory; no `pre_transform`/`pre_filter`/imputation available.
   - **`cache_on_disk`** (triggered by passing `pre_transform` and/or `pre_filter`): all files are read, filtered/transformed, and concatenated eagerly into one `data.csv` under `cache_path`. Imputation (`impute()`) is only available in this mode, since sklearn imputers need the full dataset to fit consistently — and imputation fits on *everything visible to that dataset instance*, so split-specific fitting requires constructing separate train/val/test `PandasDataset` instances first.
-- **`Trainable`/`Predicable`** — the `fit`/`predict`/`predict_proba`/`__call__`/`forward` surface that both raw sklearn estimators and skorch-wrapped torch models satisfy, letting the trainer stay agnostic to which one it's holding.
+- **`Trainable`/`Predictable`** — the `fit`/`predict`/`predict_proba`/`__call__`/`forward` surface that both raw sklearn estimators and skorch-wrapped torch models satisfy, letting the trainer stay agnostic to which one it's holding.
 - **`TrainerProtocol`** — `train`/`validate`/`test`/`build_model`, all driven by config (dotted-path `type` strings resolved at runtime via `utils.load_type`, e.g. `"sklearn.ensemble.RandomForestClassifier"`). `SimpleTrainer` (`trainer.py`) is the current implementation: it wraps a single scikit-learn-compatible estimator (optionally wrapped again in a calibrator, e.g. `CalibratedClassifierCV`), does one non-resumable `.fit()` per `train()` call, and evaluates via a small metrics-spec system (each metric is a dotted path + args/kwargs + whether it needs `predict_proba` instead of `predict`). It only depends on `data.to_xy()`, which in turn only needs `DatasetProtocol.to_frame()`, never on `PandasDataset` directly.
 - **Models**: RandomForest (via plain sklearn) is the baseline. **skorch** is used to give torch models the same `fit`/`predict`/`predict_proba` sklearn-style API, so `SimpleTrainer` can train either a bare sklearn estimator or a skorch-wrapped torch `nn.Module` without any special-casing.
 - **Config**: components are constructed via `from_config(cfg: dict)` classmethods (part of the `Configurable` protocol), intended to be fed from YAML. There is currently no schema validation on these configs.
 
-**Planned, not yet integrated:** DVC for data/experiment management, and JSON Schema for config validation (`SimpleTrainer.from_config` and `PandasDataset.from_config` currently just splat the dict into `__init__` with no verification — see the `TODO` comment in `trainer.py`).
+## Behavior
+Never write any code without user approval. Strictly follow a plan, ask-for-approval, implemement loop.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs are tracked as local markdown files under `.scratch/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Triage uses the default five-role vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Domain documentation uses a single-context layout: root `CONTEXT.md` plus ADRs under `docs/adr/`. See `docs/agents/domain.md`.
 
 ## Build, Test, and Development Commands
 
