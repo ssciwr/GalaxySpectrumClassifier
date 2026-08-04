@@ -44,13 +44,13 @@ class TrainerProtocol(Configurable, Protocol):
     # and the signature should not claim one reading over the other.
     def train(
         self,
-        train_data: "DatasetProtocol",
-        validation_data: "DatasetProtocol | None" = None,
+        train_data: DatasetProtocol | torch.utils.data.DataLoader,
+        validation_data: DatasetProtocol | torch.utils.data.DataLoader | None = None,
     ) -> Any: ...
 
-    def validate(self, data: "DatasetProtocol") -> Any: ...
+    def validate(self, data: DatasetProtocol | torch.utils.data.DataLoader) -> Any: ...
 
-    def test(self, data: "DatasetProtocol") -> Any: ...
+    def test(self, data: DatasetProtocol | torch.utils.data.DataLoader) -> Any: ...
 
     def build_model(
         self,
@@ -60,7 +60,7 @@ class TrainerProtocol(Configurable, Protocol):
         calibrator_type: str | None = None,
         calibrator_args: list[Any] | None = None,
         calibrator_kwargs: dict[str, Any] | None = None,
-    ) -> Trainable: ...
+    ) -> Trainable | torch.nn.Module: ...
 
     def save_snapshot(self, path: str) -> None: ...
 
