@@ -25,6 +25,7 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         pre_transform: Callable | str | None = None,
         pre_filter: Callable | str | None = None,
         n_workers: int = 1,
+        label_columns: str | Sequence[str] | None = None,
     ):
         """Index every delimited text file under ``path`` as a single dataset,
         where each row of each matched file is one sample.
@@ -63,6 +64,16 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
                 given as a dotted path, see ``transform``. Defaults to None.
             n_workers (int, optional): Number of parallel workers used to read
                 and preprocess files. Defaults to 1.
+            label_columns (str | Sequence[str] | None, optional): Column(s)
+                holding the target, split off from the features by
+                ``__getitem__``. A single string yields a scalar label per
+                sample, so a batch of them has shape ``(batch,)`` - what
+                ``CrossEntropyLoss`` expects. A sequence yields one label
+                vector per sample, so a batch has shape
+                ``(batch, len(label_columns))``. A one-element sequence is
+                therefore *not* the same as a bare string. Defaults to None,
+                which leaves ``__getitem__`` unusable - it raises rather than
+                guessing or substituting a placeholder label.
 
         Raises:
             ValueError: If ``pre_transform`` or ``pre_filter`` is given but
@@ -96,6 +107,7 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         self.pre_transform = pre_transform
         self.pre_filter = pre_filter
         self.n_workers = n_workers
+        self.label_columns = label_columns
         self.cache_on_disk = pre_transform is not None or pre_filter is not None
 
         if self.cache_on_disk and cache_path is None:
@@ -326,18 +338,80 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         else:
             return _map_single_index(index)
 
+    def _split_labels(
+        self, data: pd.Series | pd.DataFrame
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Split transformed sample(s) into a ``(features, labels)`` tensor pair.
+
+        Args:
+            data (pd.Series | pd.DataFrame): One transformed row as a Series,
+                or several as a DataFrame.
+
+        Raises:
+            ValueError: If ``label_columns`` was not set at construction, or if
+                a named label column is absent from ``data``. Neither is
+                papered over with a placeholder label, since a fabricated
+                target trains a model against garbage without failing.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: Features as float32 and labels
+                as int64. Labels are scalar (single row) or 1D (several rows)
+                when ``label_columns`` is a string, and carry a trailing
+                ``len(label_columns)`` axis when it is a sequence.
+        """
+        if self.label_columns is None:
+            raise ValueError(
+                "label_columns was not set, so features and labels cannot be "
+                "separated. Pass label_columns to the constructor."
+            )
+
+        single_label = isinstance(self.label_columns, str)
+        labels = [self.label_columns] if single_label else list(self.label_columns)
+
+        # A single sample is a Series indexed by column name; several samples
+        # are a DataFrame whose columns are those same names.
+        columns = data.index if isinstance(data, pd.Series) else data.columns
+
+        missing = [column for column in labels if column not in columns]
+        if missing:
+            raise ValueError(
+                f"label column(s) {missing} not found in the sample; have "
+                f"{list(columns)}. Note that `transform` is applied before the "
+                "split, so it has to keep the label columns."
+            )
+
+        features = [column for column in columns if column not in labels]
+
+        # .copy() throughout: pandas hands back read-only views when no cast is
+        # needed, and those would alias the dataset's cached frame.
+        x = torch.from_numpy(data[features].to_numpy(dtype=np.float32).copy())
+        # A bare string selects a single column, which keeps the label one axis
+        # flatter than the list form all the way through - scalar per sample
+        # rather than a length-1 vector.
+        selector = self.label_columns if single_label else labels
+        y = torch.from_numpy(np.asarray(data[selector], dtype=np.int64).copy())
+        return x, y
+
     def __getitem__(
         self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple
-    ) -> torch.Tensor:
-        """Return the sample(s) at ``idx`` as a tensor, applying
-        ``self.transform`` first if one is set.
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return the sample(s) at ``idx`` as a ``(features, labels)`` pair,
+        applying ``self.transform`` first if one is set.
+
+        The transform runs on the whole row, labels included, so it has to keep
+        the ``label_columns`` intact; the split happens afterwards.
 
         Args:
             idx (int | slice | torch.Tensor | np.ndarray | list | tuple): Row
                 index (or indices) to fetch.
 
+        Raises:
+            ValueError: If ``label_columns`` was not set, or if it does not
+                survive ``transform``.
+
         Returns:
-            torch.Tensor: The (optionally transformed) row values.
+            tuple[torch.Tensor, torch.Tensor]: The (optionally transformed)
+                features and labels, shaped as described on ``_split_labels``.
         """
         indices_frames = self._map_index(idx)
 
@@ -351,8 +425,7 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
             i, df = indices_frames
             data = self.transform(df.iloc[i, :])
 
-        t = torch.from_numpy(data.values.copy())
-        return t
+        return self._split_labels(data)
 
     def __len__(self):
         """Total number of samples in the dataset.

@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import torch
+from torch.utils.data import DataLoader, Subset
 from torchvision.transforms import Compose
 from GalaxySpectrumClassifier import PandasDataset
 from GalaxySpectrumClassifier.utils import identity
@@ -27,6 +28,7 @@ def test_pandasdataset_construction_default(create_data):
     assert dataset.pre_transform is None
     assert dataset.pre_filter is None
     assert dataset.n_workers == 1
+    assert dataset.label_columns is None
 
     # Construction is documented to count rows, and non-cache counting reads and
     # caches all files as a side effect.
@@ -129,6 +131,7 @@ def test_pandasdataset_construction_cache(create_data, tmp_path):
         pre_filter=pre_filter,
         pre_transform=pre_transform,
         sep=",",
+        label_columns="source",
     )
 
     assert dataset.cache_on_disk is True
@@ -141,9 +144,12 @@ def test_pandasdataset_construction_cache(create_data, tmp_path):
     assert (dataset.data_cache["a"] > 50).all()
     assert (cache_path / "data.csv").exists()
 
-    first = dataset[0]
-    expected = dataset.data_cache.iloc[0, :].to_numpy()
-    np.testing.assert_allclose(first.numpy(), expected)
+    x, y = dataset[0]
+    first_row = dataset.data_cache.iloc[0, :]
+    np.testing.assert_allclose(
+        x.numpy(), first_row.drop(labels=["source"]).to_numpy(dtype=np.float32)
+    )
+    assert int(y) == int(first_row["source"])
 
 
 def test_pandasdataset_getitem_integer_indices(create_data):
@@ -155,28 +161,31 @@ def test_pandasdataset_getitem_integer_indices(create_data):
 
     def transform(row):
         transform_calls.append(row)
-        return row[["a", "b"]]
+        return row[["a", "b", "source"]]
 
-    dataset = PandasDataset(create_data, transform=transform, sep=",")
-
-    assert torch.equal(
-        dataset[0],
-        torch.from_numpy(
-            first_file.loc[first_file.index[0], ["a", "b"]].to_numpy().copy()
-        ),
+    dataset = PandasDataset(
+        create_data, transform=transform, sep=",", label_columns="source"
     )
-    assert torch.equal(
-        dataset[99],
-        torch.from_numpy(
-            first_file.loc[first_file.index[99], ["a", "b"]].to_numpy().copy()
-        ),
+
+    def expected(frame, position):
+        row = frame.loc[frame.index[position], ["a", "b", "source"]]
+        return (
+            torch.from_numpy(row[["a", "b"]].to_numpy(dtype=np.float32)),
+            torch.tensor(int(row["source"])),
+        )
+
+    assert all(
+        torch.equal(returned, want)
+        for returned, want in zip(dataset[0], expected(first_file, 0))
+    )
+    assert all(
+        torch.equal(returned, want)
+        for returned, want in zip(dataset[99], expected(first_file, 99))
     )
     # Global indices should cross file boundaries.
-    assert torch.equal(
-        dataset[100],
-        torch.from_numpy(
-            second_file.loc[second_file.index[0], ["a", "b"]].to_numpy().copy()
-        ),
+    assert all(
+        torch.equal(returned, want)
+        for returned, want in zip(dataset[100], expected(second_file, 0))
     )
     assert len(transform_calls) == 3
 
@@ -185,7 +194,11 @@ def test_pandasdataset_getitem_integer_indices(create_data):
 
 
 def test_pandasdataset_getitem_negative_index_is_out_of_range(create_data):
-    dataset = PandasDataset(create_data, transform=lambda row: row[["a", "b"]])
+    dataset = PandasDataset(
+        create_data,
+        transform=lambda row: row[["a", "b", "source"]],
+        label_columns="source",
+    )
 
     with pytest.raises(IndexError):
         dataset[-1]
@@ -198,42 +211,49 @@ def test_pandasdataset_getitem_slice_tensor_and_ndarray_are_global_indices(creat
     last_file = pd.read_csv(raw_files[-1], index_col=0)
 
     def transform(row):
-        return row[["a", "b"]]
+        return row[["a", "b", "source"]]
 
-    dataset = PandasDataset(create_data, transform=transform, sep=",")
+    dataset = PandasDataset(
+        create_data, transform=transform, sep=",", label_columns="source"
+    )
+
+    def expect(rows, x, y):
+        """Compare a returned (features, labels) pair against raw frame rows."""
+        frame = pd.DataFrame(rows)
+        np.testing.assert_allclose(
+            x.numpy(), frame[["a", "b"]].to_numpy(dtype=np.float32)
+        )
+        np.testing.assert_array_equal(
+            y.numpy(), frame["source"].to_numpy(dtype=np.int64)
+        )
+        assert x.shape == (len(frame), 2)
+        assert y.shape == (len(frame),)
 
     # The public API documents slice, torch.Tensor and np.ndarray indices. They
     # should be interpreted as global dataset indices, including across file
     # boundaries, and should work in the same way as integer indexing.
-    expected_slice = pd.DataFrame(
+    expect(
         [
-            first_file.loc[first_file.index[99], ["a", "b"]],
-            second_file.loc[second_file.index[0], ["a", "b"]],
+            first_file.loc[first_file.index[99]],
+            second_file.loc[second_file.index[0]],
         ],
-    ).to_numpy()
-    returned = dataset[99:101].numpy()
-    np.testing.assert_allclose(returned, expected_slice)
-    assert returned.shape == (2, 2)
-
-    expected_slice = first_file.loc[first_file.index[:10], ["a", "b"]].to_numpy()
-    returned = dataset[:10].numpy()
-    np.testing.assert_allclose(returned, expected_slice)
-    assert returned.shape == (10, 2)
-
-    expected_slice = last_file.loc[last_file.index[95:], ["a", "b"]].to_numpy()
-    returned = dataset[995:].numpy()
-    np.testing.assert_allclose(returned, expected_slice)
-    assert returned.shape == (5, 2)
-
-    expected_tensor = pd.DataFrame(
+        *dataset[99:101],
+    )
+    expect(
+        [first_file.loc[i] for i in first_file.index[:10]],
+        *dataset[:10],
+    )
+    expect(
+        [last_file.loc[i] for i in last_file.index[95:]],
+        *dataset[995:],
+    )
+    expect(
         [
-            first_file.loc[first_file.index[0], ["a", "b"]],
-            second_file.loc[second_file.index[0], ["a", "b"]],
+            first_file.loc[first_file.index[0]],
+            second_file.loc[second_file.index[0]],
         ],
-    ).to_numpy()
-    returned = dataset[np.array([0, 100])].numpy()
-    np.testing.assert_allclose(returned, expected_tensor)
-    assert returned.shape == (2, 2)
+        *dataset[np.array([0, 100])],
+    )
 
 
 def test_pandasdataset_list_transform_composed(create_data):
@@ -241,11 +261,16 @@ def test_pandasdataset_list_transform_composed(create_data):
     dataset = PandasDataset(
         create_data,
         sep=",",
-        transform=Compose([lambda row: row[["a", "b"]], lambda row: row * 2]),
+        transform=Compose([lambda row: row[["a", "b", "source"]], lambda row: row * 2]),
+        label_columns="source",
     )
 
-    expected = first_file.loc[0, ["a", "b"]].to_numpy() * 2
-    np.testing.assert_allclose(dataset[0].numpy(), expected)
+    # The transform runs on the whole row, so it hits the label column too.
+    x, y = dataset[0]
+    np.testing.assert_allclose(
+        x.numpy(), first_file.loc[0, ["a", "b"]].to_numpy(dtype=np.float32) * 2
+    )
+    assert int(y) == int(first_file.loc[0, "source"]) * 2
 
 
 def test_pandasdataset_resolves_dotted_path_callables(create_data, tmp_path):
@@ -274,13 +299,18 @@ def test_pandasdataset_unresolvable_dotted_path_raises(create_data):
 
 
 def test_pandasdataset_to_frame_matches_dataset_order(create_data, tmp_path):
-    dataset = PandasDataset(create_data, sep=",")
+    dataset = PandasDataset(create_data, sep=",", label_columns="source")
     frame = dataset.to_frame()
 
     assert len(frame) == len(dataset)
     # Row i of the frame must back sample i, since to_xy translates Subset
-    # indices through it.
-    np.testing.assert_allclose(frame.iloc[100].to_numpy(), dataset[100].numpy())
+    # indices through it. to_frame keeps the label column; __getitem__ splits it.
+    row = frame.iloc[100]
+    x, y = dataset[100]
+    np.testing.assert_allclose(
+        x.numpy(), row.drop(labels=["source"]).to_numpy(dtype=np.float32)
+    )
+    np.testing.assert_array_equal(y.numpy(), np.int64(row["source"]))
 
     cache_path = tmp_path / "cache"
     cache_path.mkdir()
@@ -289,6 +319,141 @@ def test_pandasdataset_to_frame_matches_dataset_order(create_data, tmp_path):
     )
 
     assert cached.to_frame() is cached.data_cache
+
+
+def test_pandasdataset_getitem_without_label_columns_raises(create_data):
+    dataset = PandasDataset(create_data, sep=",")
+
+    # No placeholder label, no whole-row fallback - a missing target has to be
+    # loud, since a fabricated one would train a model against garbage.
+    with pytest.raises(ValueError, match="label_columns was not set"):
+        dataset[0]
+
+    with pytest.raises(ValueError, match="label_columns was not set"):
+        dataset[0:2]
+
+
+def test_pandasdataset_getitem_label_dropped_by_transform_raises(create_data):
+    dataset = PandasDataset(
+        create_data,
+        sep=",",
+        transform=lambda row: row[["a", "b"]],
+        label_columns="source",
+    )
+
+    with pytest.raises(ValueError, match=r"label column\(s\) \['source'\]"):
+        dataset[0]
+
+
+def test_pandasdataset_getitem_unknown_label_column_raises(create_data):
+    dataset = PandasDataset(create_data, sep=",", label_columns="not_a_column")
+
+    with pytest.raises(ValueError, match=r"label column\(s\) \['not_a_column'\]"):
+        dataset[0]
+
+
+def test_pandasdataset_getitem_string_label_is_one_axis_flatter_than_list(create_data):
+    single = PandasDataset(
+        create_data, sep=",", read_kwargs={"index_col": 0}, label_columns="source"
+    )
+    listed = PandasDataset(
+        create_data, sep=",", read_kwargs={"index_col": 0}, label_columns=["source"]
+    )
+
+    # A bare string means "one scalar target per sample"; a one-element list
+    # means "a length-1 target vector per sample". They are not the same thing.
+    x_single, y_single = single[0]
+    x_listed, y_listed = listed[0]
+    assert x_single.shape == (5,)
+    assert y_single.shape == ()
+    assert x_listed.shape == (5,)
+    assert y_listed.shape == (1,)
+    assert int(y_single) == int(y_listed[0])
+
+    x_single, y_single = single[0:4]
+    x_listed, y_listed = listed[0:4]
+    assert x_single.shape == (4, 5)
+    assert y_single.shape == (4,)
+    assert x_listed.shape == (4, 5)
+    assert y_listed.shape == (4, 1)
+
+
+def test_pandasdataset_getitem_multiple_label_columns(create_data):
+    dataset = PandasDataset(
+        create_data,
+        sep=",",
+        read_kwargs={"index_col": 0},
+        label_columns=["source", "extra"],
+    )
+    frame = dataset.to_frame()
+
+    x, y = dataset[0:4]
+    # Every label column is removed from the features, in frame order.
+    assert x.shape == (4, 4)
+    assert y.shape == (4, 2)
+    np.testing.assert_allclose(
+        x.numpy(), frame.iloc[0:4][["a", "b", "c", "d"]].to_numpy(dtype=np.float32)
+    )
+    np.testing.assert_array_equal(
+        y.numpy(), frame.iloc[0:4][["source", "extra"]].to_numpy(dtype=np.int64)
+    )
+
+
+def test_pandasdataset_getitem_dtypes(create_data):
+    dataset = PandasDataset(
+        create_data, sep=",", read_kwargs={"index_col": 0}, label_columns="source"
+    )
+
+    x, y = dataset[0]
+    assert x.dtype == torch.float32
+    assert y.dtype == torch.int64
+
+    x, y = dataset[0:4]
+    assert x.dtype == torch.float32
+    assert y.dtype == torch.int64
+
+
+def test_pandasdataset_works_with_dataloader_without_collate_fn(create_data):
+    dataset = PandasDataset(
+        create_data, sep=",", read_kwargs={"index_col": 0}, label_columns="source"
+    )
+    frame = dataset.to_frame()
+
+    # The point of the (x, y) contract: torch's default collate already
+    # produces the two-tuple batches skorch unpacks, so no collate_fn is needed.
+    loader = DataLoader(dataset, batch_size=8, shuffle=False)
+    batch = next(iter(loader))
+
+    assert isinstance(batch, (list, tuple))
+    assert len(batch) == 2
+    x, y = batch
+    assert x.shape == (8, 5)
+    assert y.shape == (8,)
+    np.testing.assert_allclose(
+        x.numpy(), frame.iloc[0:8].drop(columns=["source"]).to_numpy(dtype=np.float32)
+    )
+    np.testing.assert_array_equal(
+        y.numpy(), frame.iloc[0:8]["source"].to_numpy(dtype=np.int64)
+    )
+    assert sum(len(batch_y) for _, batch_y in loader) == len(dataset)
+
+
+def test_pandasdataset_subset_yields_pairs(create_data):
+    dataset = PandasDataset(
+        create_data, sep=",", read_kwargs={"index_col": 0}, label_columns="source"
+    )
+    subset = Subset(dataset, [100, 5, 999])
+    frame = dataset.to_frame()
+
+    # Subsets index the parent per item, so the pair contract has to survive
+    # them - this is what random_split hands to the trainer.
+    for position, index in enumerate([100, 5, 999]):
+        x, y = subset[position]
+        np.testing.assert_allclose(
+            x.numpy(),
+            frame.iloc[index].drop(labels=["source"]).to_numpy(dtype=np.float32),
+        )
+        np.testing.assert_array_equal(y.numpy(), np.int64(frame.iloc[index]["source"]))
 
 
 def test_pandasdataset_mapindex(create_data):
