@@ -181,15 +181,21 @@ def to_xy(
     if drop_duplicates:
         df = df.drop_duplicates(subset=feature_columns, keep="first")
 
-    X = df[feature_columns].to_numpy(dtype=dtype)
+    # copy=True because pandas hands back a read-only view into the frame's own
+    # block whenever no conversion is needed. torch.as_tensor would then share
+    # that memory, so an in-place op on a batch would write straight into the
+    # frame a dataset is caching - which is the undefined behaviour torch warns
+    # about when it collates a non-writable array.
+    X = df[feature_columns].to_numpy(dtype=dtype, copy=True)
 
     if task in ["binary-classification", "multiclass-classification"]:
         if class_map is not None:
             y = np.array([class_map[x] for x in df[label_column].to_numpy()])
         else:
+            # astype already copies, so this y is writable either way.
             y = df[label_column].to_numpy().astype(np.int64)
         return X, y
     elif task == "regression":
-        return X, df[label_column].to_numpy()
+        return X, df[label_column].to_numpy(copy=True)
     else:
         raise ValueError("unknown task")
