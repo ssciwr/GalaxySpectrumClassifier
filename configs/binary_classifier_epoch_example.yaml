@@ -1,0 +1,115 @@
+# Example: 2-layer MLP trained over epochs with per-epoch validation, early
+# stopping and a held-out test pass, on the classification_v2 Cloudy grids
+# (AGN vs. star-forming). Paths are relative to notebooks/.
+#
+# Unlike the SimpleTrainer configs, there is no data section here: the datasets
+# are built by the caller and handed to train()/validate()/test(). All this file
+# describes is the trainer.
+trainer:
+  output_path: ../training/binaryclassifier_epoch_example
+  model_type: skorch.NeuralNetClassifier
+  model_args:
+  # Everything skorch itself takes goes here, including the DataLoader options
+  # under the iterator_train__/iterator_valid__ prefixes.
+  model_kwargs:
+    # torchvision.ops.MLP builds Linear -> ReLU -> Linear from these: 18 input
+    # features (all dataset columns except `source`), one hidden layer of 64,
+    # and 2 output logits. ReLU is its default activation.
+    module:
+      type: torchvision.ops.MLP
+    module__in_channels: 18
+    module__hidden_channels: [64, 2]
+    # The MLP emits raw logits, so the loss must be CrossEntropyLoss - skorch's
+    # default for a classifier is NLLLoss, which expects log-probabilities.
+    criterion:
+      type: torch.nn.CrossEntropyLoss
+    # Mandatory here: skorch can only infer the classes from data it built the
+    # Dataset for, which is not the case when a DatasetProtocol is passed in.
+    classes: [0, 1]
+    device: cpu # change to cuda to run on an nvidia gpu
+    verbose: 1
+    # Rows arrive grouped by source file, so shuffling is not optional here.
+    iterator_train__shuffle: true
+    iterator_train__num_workers: 0
+    iterator_valid__shuffle: false
+  # Grouped with the training setup for readability; both are plain skorch
+  # parameters and must not also appear in model_kwargs.
+  batch_size: 256
+  max_epochs: 50
+  # Validation metrics, accumulated batch-wise by torchmetrics and recorded in
+  # the net's history once per epoch under the names given here. These names are
+  # what early_stopping.monitor refers to.
+  metrics:
+    -
+      name: accuracy
+      type: torchmetrics.classification.MulticlassAccuracy
+      args:
+      kwargs:
+        num_classes: 2
+    -
+      name: f1
+      type: torchmetrics.classification.MulticlassF1Score
+      args:
+      kwargs:
+        num_classes: 2
+    -
+      name: auroc
+      type: torchmetrics.classification.MulticlassAUROC
+      args:
+      kwargs:
+        num_classes: 2
+  # Patience is reset as soon as *any* monitored metric improves, and only
+  # counts down when none of them does. lower_is_better applies to all of them,
+  # so do not mix metrics that improve in opposite directions here.
+  early_stopping:
+    monitor: [accuracy, auroc]
+    patience: 5
+    lower_is_better: false
+    threshold: 1.0e-4
+    threshold_mode: rel
+  # Extra skorch callbacks; these cover before_train (on_train_begin),
+  # start_epoch (on_epoch_begin), end_epoch (on_epoch_end), after_train_batch
+  # and after_val_batch (on_batch_end, which gets a `training` flag) and
+  # after_train (on_train_end).
+  callbacks:
+    -
+      type: skorch.callbacks.ProgressBar
+      args:
+      kwargs:
+  # Scored by test() only. Left empty, the validation metrics above are reused.
+  test_metrics:
+    -
+      name: accuracy
+      type: torchmetrics.classification.MulticlassAccuracy
+      args:
+      kwargs:
+        num_classes: 2
+    -
+      name: confusion_matrix
+      type: torchmetrics.classification.MulticlassConfusionMatrix
+      args:
+      kwargs:
+        num_classes: 2
+  # skorch has no test phase, so these three hooks are dispatched by
+  # EpochTrainer.test() itself, as before_test(trainer),
+  # after_test_batch(trainer, batch, y_pred) and after_test(trainer, results).
+  test_callbacks:
+  optimizer_type: torch.optim.AdamW
+  # Forwarded to skorch as optimizer__*. There is no positional counterpart,
+  # since skorch passes the model parameters to the optimizer itself.
+  optimizer_kwargs:
+    lr: 0.001
+    weight_decay: 0.01
+  lr_scheduler_type: torch.optim.lr_scheduler.ReduceLROnPlateau
+  lr_scheduler_kwargs:
+    monitor: valid_loss
+    step_every: epoch
+    patience: 3
+  # Absent (or null) means no acceleration and no AccelerateMixin on the net at
+  # all. Set the type to enable mixed precision / multi-GPU / TPU training.
+  accelerator_type:
+  accelerator_args:
+  accelerator_kwargs:
+  # One of "pt" or "onnx"; onnx additionally needs a sample_input at save time.
+  export_format: pt
+  seed: 42

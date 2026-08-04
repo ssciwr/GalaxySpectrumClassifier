@@ -107,6 +107,9 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         self.pre_transform = pre_transform
         self.pre_filter = pre_filter
         self.n_workers = n_workers
+        # Consulted only by __getitem__/_split_labels, i.e. the batch path.
+        # to_frame() deliberately still returns the label column alongside the
+        # features, since to_xy() does its own splitting from the whole frame.
         self.label_columns = label_columns
         self.cache_on_disk = pre_transform is not None or pre_filter is not None
 
@@ -359,12 +362,18 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
                 when ``label_columns`` is a string, and carry a trailing
                 ``len(label_columns)`` axis when it is a sequence.
         """
+        # Refusing here is the whole point: skorch's own convention for a
+        # missing target is `y = torch.Tensor([0])`, which would let a model
+        # train to convergence against a constant fabricated label without ever
+        # failing. Better to be unusable than quietly wrong.
         if self.label_columns is None:
             raise ValueError(
                 "label_columns was not set, so features and labels cannot be "
                 "separated. Pass label_columns to the constructor."
             )
 
+        # Normalised to a list for the membership tests below, but the original
+        # form is kept around: str vs. sequence decides the label's shape.
         single_label = isinstance(self.label_columns, str)
         labels = [self.label_columns] if single_label else list(self.label_columns)
 
@@ -380,6 +389,9 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
                 "split, so it has to keep the label columns."
             )
 
+        # Built by walking `columns` rather than subtracting a set, so the
+        # frame's own column order is preserved - a model's input layer is
+        # positional, so a reordering here would silently scramble features.
         features = [column for column in columns if column not in labels]
 
         # .copy() throughout: pandas hands back read-only views when no cast is
