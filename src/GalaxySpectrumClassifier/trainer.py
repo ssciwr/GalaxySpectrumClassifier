@@ -284,19 +284,28 @@ class SimpleTrainer(TrainerProtocol):
         self.model.fit(X, y)
         return self.model
 
-    def train(self, dataset: DatasetProtocol) -> Trainable:
-        """Public entry point to train the model on ``dataset``.
+    def train(
+        self,
+        train_data: DatasetProtocol,
+        validation_data: DatasetProtocol | None = None,
+    ) -> Trainable:
+        """Public entry point to train the model on ``train_data``.
 
         Here this is a thin wrapper around ``fit``, since there is no epoch
         loop to run.
 
         Args:
-            dataset (DatasetProtocol): Dataset to train on.
+            train_data (DatasetProtocol): Dataset to train on.
+            validation_data (DatasetProtocol | None, optional): Ignored. Part
+                of ``TrainerProtocol.train`` for epoch-based trainers, which
+                validate once per epoch; a single ``.fit()`` has nowhere to use
+                it. Score a validation split with ``validate()`` instead.
+                Defaults to None.
 
         Returns:
             Trainable: The fitted model.
         """
-        return self.fit(dataset)
+        return self.fit(train_data)
 
     def _evaluate(self, dataset: DatasetProtocol) -> dict[str, float]:
         """Score the current model on ``dataset`` with every configured metric.
@@ -353,33 +362,33 @@ class SimpleTrainer(TrainerProtocol):
             results[name] = metric_fn(y, predictions, *args, **kwargs)
         return results
 
-    def validate(self, dataset: DatasetProtocol) -> dict[str, float]:
+    def validate(self, data: DatasetProtocol) -> dict[str, float]:
         """Score the model on a validation dataset.
 
         Intended for use during development, as opposed to a final held-out
         check; see ``test``.
 
         Args:
-            dataset (DatasetProtocol): Validation dataset to score against.
+            data (DatasetProtocol): Validation dataset to score against.
 
         Returns:
             dict[str, float]: Mapping of metric name to score.
         """
-        return self._evaluate(dataset)
+        return self._evaluate(data)
 
-    def test(self, dataset: DatasetProtocol) -> dict[str, float]:
+    def test(self, data: DatasetProtocol) -> dict[str, float]:
         """Score the model on a held-out test dataset.
 
         Intended as the final evaluation once model selection is done; see
         ``validate`` for the counterpart used during development.
 
         Args:
-            dataset (DatasetProtocol): Test dataset to score against.
+            data (DatasetProtocol): Test dataset to score against.
 
         Returns:
             dict[str, float]: Mapping of metric name to score.
         """
-        return self._evaluate(dataset)
+        return self._evaluate(data)
 
     def save_snapshot(self, path: str) -> None:
         """Save this trainer's config and fitted model to ``path``, a

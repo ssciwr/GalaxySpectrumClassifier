@@ -39,11 +39,18 @@ class Trainable(Predictable, Protocol):
 
 @runtime_checkable
 class TrainerProtocol(Configurable, Protocol):
-    def train(self, dataset: "DatasetProtocol") -> Any: ...
+    # The neutral `*_data` naming is deliberate: a trainer that fits in one shot
+    # wants whole datasets, while an epoch-based one hands them to a DataLoader,
+    # and the signature should not claim one reading over the other.
+    def train(
+        self,
+        train_data: "DatasetProtocol",
+        validation_data: "DatasetProtocol | None" = None,
+    ) -> Any: ...
 
-    def validate(self, dataset: "DatasetProtocol") -> Any: ...
+    def validate(self, data: "DatasetProtocol") -> Any: ...
 
-    def test(self, dataset: "DatasetProtocol") -> Any: ...
+    def test(self, data: "DatasetProtocol") -> Any: ...
 
     def build_model(
         self,
