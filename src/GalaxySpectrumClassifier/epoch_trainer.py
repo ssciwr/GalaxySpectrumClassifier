@@ -6,11 +6,10 @@ phase skorch has no concept of.
 
 The division of labour is deliberate. skorch owns the loop, the callback
 dispatch and the ``DataLoader`` construction; torchmetrics owns metric
-accumulation; ``accelerate`` owns device placement and mixed precision. What is
-written here is only what none of them provide: the ``TrainerProtocol`` surface,
-the test phase and its three hooks, early stopping over more than one metric, and
-export dispatch. The trainer *holds* a skorch net rather than being one, and
-drives it exclusively through documented public API.
+accumulation. What is written here is only what neither of them provides: the
+``TrainerProtocol`` surface, the test phase and its three hooks, early stopping
+over more than one metric, and export dispatch. The trainer *holds* a skorch net
+rather than being one, and drives it exclusively through documented public API.
 
 Data stays outside: the trainer needs nothing beyond ``DatasetProtocol``, whose
 ``__getitem__`` yields ``(features, labels)`` - exactly what a ``DataLoader``
@@ -61,26 +60,6 @@ def build_metrics(specs: list[dict[str, Any]]) -> MetricCollection:
             *(spec.get("args") or []), **(spec.get("kwargs") or {})
         )
     return MetricCollection(metrics)
-
-
-def accelerated(net_type: type) -> type:
-    """Build a subclass of ``net_type`` with Hugging Face accelerate support.
-
-    ``AccelerateMixin`` is a mixin by design, so acceleration can only be added
-    by inheritance. Doing it here, once, keeps that decision in the trainer's
-    constructor instead of on the training hot path.
-
-    Args:
-        net_type (type): A skorch ``NeuralNet`` subclass.
-
-    Returns:
-        type: A new subclass with ``AccelerateMixin`` mixed in.
-    """
-    # Imported here because it pulls in the accelerate library, which is only
-    # needed when acceleration is actually configured.
-    from skorch.hf import AccelerateMixin
-
-    return type(f"Accelerated{net_type.__name__}", (AccelerateMixin, net_type), {})
 
 
 class TorchMetricsScoring(Callback):
@@ -346,9 +325,6 @@ class EpochTrainer(TrainerProtocol):
         optimizer_kwargs: dict[str, Any] | None = None,
         lr_scheduler_type: str | None = None,
         lr_scheduler_kwargs: dict[str, Any] | None = None,
-        accelerator_type: str | None = None,
-        accelerator_args: list[Any] | None = None,
-        accelerator_kwargs: dict[str, Any] | None = None,
         export_format: str = "pt",
         seed: int = 42,
     ):
@@ -431,16 +407,6 @@ class EpochTrainer(TrainerProtocol):
             lr_scheduler_kwargs (dict[str, Any] | None, optional): Keyword
                 arguments for ``LRScheduler``, both its own (e.g.
                 ``step_every``) and the policy's. Defaults to None.
-            accelerator_type (str | None, optional): Dotted path to an
-                accelerator class, normally ``"accelerate.Accelerator"``. When
-                given, ``AccelerateMixin`` is mixed into the net class and the
-                accelerator is handed to it. Defaults to None (no
-                acceleration).
-            accelerator_args (list[Any] | None, optional): Positional arguments
-                for the accelerator's constructor. Defaults to None.
-            accelerator_kwargs (dict[str, Any] | None, optional): Keyword
-                arguments for the accelerator's constructor, e.g.
-                ``{"mixed_precision": "fp16"}``. Defaults to None.
             export_format (str, optional): One of ``EXPORT_FORMATS`` -
                 ``"pt"`` or ``"onnx"`` - selecting what ``save_model()``
                 writes. Defaults to "pt".
@@ -474,9 +440,6 @@ class EpochTrainer(TrainerProtocol):
             "optimizer_kwargs": optimizer_kwargs,
             "lr_scheduler_type": lr_scheduler_type,
             "lr_scheduler_kwargs": lr_scheduler_kwargs,
-            "accelerator_type": accelerator_type,
-            "accelerator_args": accelerator_args,
-            "accelerator_kwargs": accelerator_kwargs,
             "export_format": export_format,
             "seed": seed,
         }
@@ -500,9 +463,6 @@ class EpochTrainer(TrainerProtocol):
         self.optimizer_kwargs = optimizer_kwargs
         self.lr_scheduler_type = lr_scheduler_type
         self.lr_scheduler_kwargs = lr_scheduler_kwargs
-        self.accelerator_type = accelerator_type
-        self.accelerator_args = accelerator_args
-        self.accelerator_kwargs = accelerator_kwargs
 
         # Metrics are held by the trainer and shared by reference with the
         # scoring callback, so validate() and the in-training validation score
@@ -612,7 +572,7 @@ class EpochTrainer(TrainerProtocol):
         calibrator_args: list[Any] | None = None,
         calibrator_kwargs: dict[str, Any] | None = None,
     ) -> Trainable:
-        """Construct the skorch net, with accelerate mixed in if configured.
+        """Construct the skorch net from its configured type and arguments.
 
         Args:
             type (str): Dotted path of the skorch net class to construct.
@@ -679,15 +639,6 @@ class EpochTrainer(TrainerProtocol):
             net_kwargs[f"optimizer__{name}"] = value
 
         net_kwargs["callbacks"] = self._build_callbacks()
-
-        # The single accelerate decision, made here so the training loop never
-        # has to branch on whether acceleration is in play: with it, the net's
-        # class itself carries the mixin and its overridden train/eval steps.
-        if self.accelerator_type:
-            net_type = accelerated(net_type)
-            net_kwargs["accelerator"] = load_type(self.accelerator_type)(
-                *(self.accelerator_args or []), **(self.accelerator_kwargs or {})
-            )
 
         return net_type(*net_args, **net_kwargs)
 
@@ -779,10 +730,9 @@ class EpochTrainer(TrainerProtocol):
             callbacks["before_test"](self)
 
         metrics.reset()
-        # get_iterator reuses the net's own DataLoader configuration, and under
-        # acceleration also prepares it; evaluation_step likewise applies
-        # gather_for_metrics, so this loop is correct across processes. Between
-        # them there is no second inference path to keep in sync with skorch's.
+        # get_iterator reuses the net's own DataLoader configuration and
+        # evaluation_step its inference path, so there is no second copy of
+        # either to keep in sync with skorch's.
         for batch in self.model.get_iterator(data, training=False):
             _, y = batch
             y_pred = self.model.evaluation_step(batch)
@@ -848,8 +798,7 @@ class EpochTrainer(TrainerProtocol):
         The config is written as YAML and therefore has to be plain data;
         passing live objects as constructor keyword arguments rather than the
         ``{"type": ...}`` form makes it unwritable. Weights, optimizer state,
-        criterion state and history are written by skorch via ``torch.save``,
-        which also works for an accelerated net - unlike pickling it.
+        criterion state and history are written by skorch via ``torch.save``.
 
         Args:
             path (str): Directory to save the snapshot into.
@@ -890,8 +839,7 @@ class EpochTrainer(TrainerProtocol):
         return trainer
 
     def _export_module(self) -> torch.nn.Module:
-        """Return the plain torch module behind the net, unwrapped if accelerated
-        and switched to evaluation mode.
+        """Return the plain torch module behind the net, in evaluation mode.
 
         Exporting in training mode would bake dropout and batch-norm's training
         behaviour into the artefact. skorch puts the module back into training
@@ -901,11 +849,7 @@ class EpochTrainer(TrainerProtocol):
         Returns:
             torch.nn.Module: The module to export.
         """
-        module = self.model.module_
-        accelerator = getattr(self.model, "accelerator", None)
-        if accelerator is not None:
-            module = accelerator.unwrap_model(module)
-        return module.eval()
+        return self.model.module_.eval()
 
     def _module_kwargs(self) -> dict[str, Any]:
         """Return the module's own constructor kwargs, taken from the config.

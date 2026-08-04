@@ -105,11 +105,6 @@ trainer:
     monitor: valid_loss
     step_every: epoch
     patience: 3
-  # Absent (or null) means no acceleration and no AccelerateMixin on the net at
-  # all. Set the type to enable mixed precision / multi-GPU / TPU training.
-  accelerator_type:
-  accelerator_args:
-  accelerator_kwargs:
   # One of "pt" or "onnx"; onnx additionally needs a sample_input at save time.
   export_format: pt
   seed: 42

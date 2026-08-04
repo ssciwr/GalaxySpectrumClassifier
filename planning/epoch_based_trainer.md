@@ -10,7 +10,6 @@
 - early stopping has patience parameter (evaluation + countdown )
 - early stopping triggers if patience runs out without improvement of designated metrics
 - early stopping patience is reset upon found improvement of designated metrics.
-- huggingface accelerate integration
 - has snapshot serialization system based on torch
 
 ## Architecture and requirements, logic and API
@@ -41,7 +40,6 @@
         - runs after_test if exists upon completion
 - allow for export to .pt and onnx in save_model
     - export format derived from config or constructor argument, respectively
-- integration of huggingface accelerate on the hot path, and configuration of its parameters via constructor and config.
 - make use of type, args, kwargs passing together with established `load_type` paradigm
 - configuration structure (which also gives structure of constructo args/kwargs):
     - model: model type, args, kwargs, depending on type
@@ -58,13 +56,13 @@
 
 The feature list above specifies an epoch/batch-based `TrainerProtocol`
 implementation: epoch loop, callbacks at eight named points, early stopping with
-patience, HF accelerate on the hot path, torch-based snapshots, and `.pt`/ONNX export.
+patience, torch-based snapshots, and `.pt`/ONNX export.
 The question this section answers first is *what already exists in the dependency set*,
 so that only the genuinely missing pieces get written.
 
 Current relevant deps: `torch`, `torchmetrics` (declared but **unused** anywhere in
-`src/`), `skorch`, `scikit-learn`, `skops`, `pyaml`. `accelerate` is **not** installed
-and **not** declared; neither are `onnx`/`onnxscript`.
+`src/`), `skorch`, `scikit-learn`, `skops`, `pyaml`. `onnx`/`onnxscript` are **not**
+installed and **not** declared.
 
 ---
 
@@ -79,8 +77,7 @@ and **not** declared; neither are `onnx`/`onnxscript`.
 | Early stopping on a **set** of validation metrics | skorch monitors one history key; its `EarlyStopping` keeps the patience state in undocumented attributes | **Implement** on `Callback` (see §3.2) |
 | Batch-wise metrics | `torchmetrics`: stateful `update()`/`compute()`, `MetricCollection`, `.clone(prefix=)` | **Import** |
 | Optimizer / LR scheduler from `type` + args/kwargs | `torch.optim.*`, `torch.optim.lr_scheduler.*` via skorch's `optimizer=`/`optimizer__*` and `skorch.callbacks.LRScheduler(policy=, step_every=)` | **Import** |
-| accelerate on the hot path | `skorch.hf.AccelerateMixin` — overrides `train_step`, `train_step_single`, `_step_optimizer`, `get_iterator`, `evaluation_step`, `save_params`, `load_params`, `on_train_end` | **Import**, add dependency |
-| torch-based snapshots | `NeuralNet.save_params/load_params` (`f_params`/`f_optimizer`/`f_criterion`/`f_history`), accelerate-aware via the mixin overrides | **Import** |
+| torch-based snapshots | `NeuralNet.save_params/load_params` (`f_params`/`f_optimizer`/`f_criterion`/`f_history`) | **Import** |
 | YAML config beside the snapshot | Pattern exists: `trainer.py:384-418` | **Reuse pattern** |
 | `.pt` export | `torch.save` | **Import** |
 | ONNX export | `torch.onnx.export(..., dynamo=True)` — needs a sample input batch; requires `onnx` + `onnxscript` | **Import**, add deps |
@@ -111,18 +108,9 @@ and **not** declared; neither are `onnx`/`onnxscript`.
 - `skorch.helper.predefined_split(valid_ds)` supplies the externally built validation set
   as `train_split`, unchanged; `fit_loop` builds a validation iterator only when
   `dataset_valid is not None`, so it is what enables per-epoch validation at all.
-- `AccelerateMixin.get_iterator` calls `super().get_iterator(...)` and then
-  `accelerator.prepare(iterator)`, so the loader skorch builds still gets accelerated.
-- `AccelerateMixin.evaluation_step` already wraps `gather_for_metrics` around the
-  prediction, so a hand-written test loop built on `net.evaluation_step` is
-  distributed-correct for free.
 - `NeuralNetClassifier.check_data` only infers `classes_` from a skorch-native dataset;
   for anything else it silently fails and `classes_` raises on access.
   **`classes=[...]` must be passed explicitly** in the model config.
-- `AccelerateMixin` must be mixed in by inheritance (it is a mixin by design); the
-  *composition* decision applies to `EpochTrainer`, which holds a net instance.
-- `AccelerateMixin.on_train_end` unwraps the model when `unwrap_after_train=True`
-  (the default), so multi-process testing after training needs `unwrap_after_train=False`.
 
 ---
 
@@ -252,16 +240,12 @@ callback machinery.
 
 ### 3.3 `epoch_trainer.py` — `EpochTrainer(TrainerProtocol)`
 
-Constructor mirrors the six config sections (`model`, `training`, `testing`,
-`optimizer`, `learning_rate_scheduler`, `accelerator`), flattened into keyword arguments
+Constructor mirrors the five config sections (`model`, `training`, `testing`,
+`optimizer`, `learning_rate_scheduler`), flattened into keyword arguments
 the way `SimpleTrainer.__init__` already does, and stored in `self.config` for
 snapshotting. **No data argument of any kind appears in the constructor.**
 
-- **`build_model(...)`**: `load_type(model_type)` → net class. If an `accelerator`
-  section is present, build the accelerated class once at construction —
-  `type(f"Accelerated{cls.__name__}", (AccelerateMixin, cls), {})` — and pass
-  `accelerator=load_type(accelerator_type)(*args, **kwargs)`. This is the only accelerate
-  decision, and it happens in the constructor; the hot path has no accelerate branch.
+- **`build_model(...)`**: `load_type(model_type)` → net class.
   Optimizer / LR-scheduler / criterion types go through `resolve_type_kwargs` into
   `optimizer=`, `optimizer__*`, `LRScheduler(policy=...)`.
   Calibrator parameters from the protocol signature are accepted, **warned about**, and
@@ -282,9 +266,8 @@ snapshotting. **No data argument of any kind appears in the constructor.**
   `iterator_valid__*` config entries.
 - **`validate(data)` / `test(data)`**: both take a dataset and call one
   `_evaluate(dataset, metrics, callbacks)` helper that gets its loader from
-  `net.get_iterator(dataset, training=False)` — reusing skorch's own iterator config
-  *and* its accelerate preparation — and `net.evaluation_step(batch)` for inference,
-  which under acceleration already applies `gather_for_metrics` (Part 1). It fires
+  `net.get_iterator(dataset, training=False)` — reusing skorch's own iterator config —
+  and `net.evaluation_step(batch)` for inference. It fires
   `before_test`, updates the `MetricCollection` per batch, fires `after_test_batch`,
   then `compute()`s and fires `after_test`.
 - **`save_snapshot(path)`**: YAML config (mirroring `trainer.py:384`) alongside
@@ -335,16 +318,12 @@ at all: `fit_loop` builds a validation iterator only `if dataset_valid is not No
 instead of letting skorch carve one out of the training data. It is now doing its actual
 documented job on a real dataset, not standing in as a token.
 
-*"Should accelerate have its own config section?"* — Yes; added as a sixth top-level
-`accelerator: {type, args, kwargs}` section, resolved with `load_type` like everything
-else. Absent section means no acceleration and no `AccelerateMixin` in the class at all.
-
 *Separation:* the trainer takes datasets but knows nothing about them beyond
 `DatasetProtocol`. No label column, no dtype, no column names, no `to_frame()`, no
 `PandasDataset` import. The label split lives in the dataset (§3.1).
 
 *Why there is no `optimizer_args` / `lr_scheduler_args`.* The `type/args/kwargs` paradigm
-is followed for the model and the accelerator, but the optimizer and scheduler take only
+is followed for the model, but the optimizer and scheduler take only
 `optimizer_type`/`optimizer_kwargs` and `lr_scheduler_type`/`lr_scheduler_kwargs`. Torch's
 optimizers take exactly one positional parameter, `params`, and its schedulers take
 `optimizer` — both supplied by skorch itself. Every hyperparameter is keyword-able, so an
@@ -381,13 +360,13 @@ in a later iteration if the protocol wants splitting.
 
 ### 3.5 `pyproject.toml`
 
-Add `accelerate`, `onnx`, `onnxscript` to `dependencies`. Refresh `uv.lock`.
+Add `onnx`, `onnxscript` to `dependencies`. Refresh `uv.lock`.
 
 ### 3.6 `configs/` and `__init__.py`
 
 Add `configs/binary_classifier_epoch_example.yaml` following the structure of
-`configs/binary_classsifier_simple_example_torch.yaml`, with the six sections
-(`model`, `training`, `testing`, `optimizer`, `learning_rate_scheduler`, `accelerator`)
+`configs/binary_classsifier_simple_example_torch.yaml`, with the five sections
+(`model`, `training`, `testing`, `optimizer`, `learning_rate_scheduler`)
 — and `classes: [0, 1]` in `model_kwargs`, which is mandatory here (see Part 1). The
 config's `training` section carries the loader options as `iterator_train__shuffle`,
 `iterator_train__num_workers` and so on, alongside `batch_size`. Constructing the
@@ -449,23 +428,12 @@ Commands:
 - `uv run pre-commit run --all-files`
 
 **Still outstanding:** an end-to-end run of
-`configs/binary_classifier_epoch_example.yaml` over `data/classification_v2`, on CPU and
-once with an `Accelerator` configured. The accelerate path has not been exercised against
-real data yet — only its construction is covered.
+`configs/binary_classifier_epoch_example.yaml` over `data/classification_v2` on CPU.
 
 ---
 
 ## Risks worth stating up front
 
-- skorch marks `AccelerateMixin` as **experimental** and states that accelerated nets
-  cannot be pickled. This is in the class docstring (installed skorch 1.4.0,
-  `skorch/hf.py:827` and `:856`: *"This is an \*experimental\* feature."* … *"Since
-  accelerate is still quite young and backwards compatiblity breaking features might be
-  added, we treat its integration as an experimental feature. When accelerate's API
-  stabilizes, we will consider adding it to skorch proper."*), so it renders on the API
-  reference page for `skorch.hf.AccelerateMixin` rather than on the narrative
-  `user/huggingface` guide page. The chosen `save_params`/ONNX route sidesteps the
-  pickle limitation, but the API may shift on a skorch upgrade.
 - The trainer touches only documented, public skorch API: `fit`, `set_params`,
   `get_iterator`, `evaluation_step`, `history.record`, `save_params`/`load_params`,
   `predefined_split`, `Callback`, `LRScheduler` and the `iterator_*__*` config prefix.
@@ -474,6 +442,3 @@ real data yet — only its construction is covered.
   `EarlyStopping` (§3.2). The moment such an override becomes tempting again, that is the
   architecture smell the feature list calls out: stop and re-discuss rather than routing
   around it.
-- `AccelerateMixin.on_train_end` unwraps the model when `unwrap_after_train=True` (the
-  default), so multi-process testing after training needs `unwrap_after_train=False`.
-  `_export_module` unwraps explicitly before export, so that path is unaffected either way.
