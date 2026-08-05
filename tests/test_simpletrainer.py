@@ -304,7 +304,7 @@ def test_simple_trainer_fit_estimator_without_predict_proba(
     assert fitted is trainer.model
     assert not hasattr(fitted, "predict_proba")
     np.testing.assert_array_equal(fitted.predict(X), reference.predict(X))
-    assert trainer.validate(synthetic_dataset) == {
+    assert trainer.evaluate(synthetic_dataset) == {
         "accuracy_score": accuracy_score(y, reference.predict(X))
     }
 
@@ -329,7 +329,7 @@ def test_simple_trainer_needs_proba_metric_fails_without_predict_proba(
     trainer.fit(synthetic_dataset)
 
     with pytest.raises(AttributeError):
-        trainer.validate(synthetic_dataset)
+        trainer.evaluate(synthetic_dataset)
 
 
 def test_simple_trainer_calibrator_enables_proba_for_linear_svc(
@@ -353,7 +353,7 @@ def test_simple_trainer_calibrator_enables_proba_for_linear_svc(
     )
     trainer.fit(synthetic_dataset)
 
-    result = trainer.validate(synthetic_dataset)
+    result = trainer.evaluate(synthetic_dataset)
 
     assert hasattr(trainer.model, "predict_proba")
     assert 0.0 <= result["auc"] <= 1.0
@@ -372,7 +372,7 @@ def test_simple_trainer_fit_regression(synthetic_regression_dataset, tmp_path):
 
     assert fitted is trainer.model
     np.testing.assert_allclose(fitted.predict(X), reference.predict(X))
-    assert trainer.validate(synthetic_regression_dataset) == {
+    assert trainer.evaluate(synthetic_regression_dataset) == {
         "r2_score": r2_score(y, reference.predict(X))
     }
 
@@ -429,7 +429,7 @@ def test_simple_trainer_with_custom_metric(synthetic_dataset, tmp_path):
     X, y = to_xy(synthetic_dataset)
     expected = f1_score(y, trainer.model.predict(X))
 
-    assert trainer.validate(synthetic_dataset) == {"f1": expected}
+    assert trainer.evaluate(synthetic_dataset) == {"f1": expected}
 
 
 def test_simple_trainer_evaluate(synthetic_dataset, tmp_path):
@@ -443,8 +443,7 @@ def test_simple_trainer_evaluate(synthetic_dataset, tmp_path):
     X, y = to_xy(synthetic_dataset)
     expected = accuracy_score(y, trainer.model.predict(X))
 
-    assert trainer.validate(synthetic_dataset) == {"accuracy_score": expected}
-    assert trainer.test(synthetic_dataset) == {"accuracy_score": expected}
+    assert trainer.evaluate(synthetic_dataset) == {"accuracy_score": expected}
 
 
 def test_simple_trainer_save_load_snapshot(synthetic_dataset, tmp_path):
