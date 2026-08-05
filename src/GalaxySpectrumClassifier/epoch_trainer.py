@@ -673,13 +673,15 @@ class EpochTrainer(TrainerProtocol):
 
         Raises:
             OSError: If the snapshot cannot be written.
+            yaml.YAMLError: If the saved configuration contains values that
+                cannot be represented safely.
         """
         directory = self.output_path / Path(path)
         directory.mkdir(parents=True, exist_ok=True)
 
         # dumpy yaml config
         with open(directory / "config.yaml", "w") as f:
-            yaml.dump(self.config, f)
+            yaml.safe_dump(self.config, f)
 
         self.model.save_params(
             f_params=directory / "params.pt",

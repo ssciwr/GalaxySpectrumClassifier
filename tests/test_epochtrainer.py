@@ -545,6 +545,15 @@ def test_epochtrainer_save_snapshot_writes_full_training_state(tmp_path, create_
     assert trainer.model.optimizer_.state_dict()["state"]
 
 
+def test_epochtrainer_save_snapshot_rejects_unsafe_config_values(tmp_path, create_data):
+    trainer = EpochTrainer(
+        **_trainer_kwargs(tmp_path, create_data, output_path=tmp_path / "training")
+    )
+
+    with pytest.raises(yaml.representer.RepresenterError):
+        trainer.save_snapshot("snapshot")
+
+
 def test_epochtrainer_load_snapshot_restores_independently_written_state(
     tmp_path, create_data
 ):
