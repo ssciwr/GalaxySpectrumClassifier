@@ -55,6 +55,18 @@ def test_resolve_type_kwargs_resolves_type_spec():
     assert resolved["n_estimators"] == 10
 
 
+def test_resolve_type_kwargs_resolves_bare_type_string():
+    resolved = resolve_type_kwargs(
+        {
+            "module": "torch.nn.Linear",
+            "average": "binary",
+        }
+    )
+
+    assert resolved["module"] is torch.nn.Linear
+    assert resolved["average"] == "binary"
+
+
 def test_resolve_type_kwargs_ignores_dicts_with_extra_keys():
     # Only a dict shaped *exactly* {"type": ...} is treated as a type
     # reference - anything else (e.g. a dict that happens to have a "type"

@@ -20,16 +20,16 @@ issue. *Retracted* = withdrawn, no action. Status is yours to fill in.
 | M11 | Medium | `__init__.py` | [`EpochTrainer` not exported from the package](#m11-epochtrainer-is-not-exported-from-the-package) | fixed|
 | M13 | Medium | `tests/test_epochtrainer.py` | [Tests verify wiring, not behaviour](#m13-tests-verify-wiring-not-behaviour-in-the-places-that-matter-most) | fixed |
 | L8 | Medium (was Low) | `epoch_trainer.py` | [`max_epochs` changes meaning after `load_snapshot`](#l8-max_epochs-changes-meaning-after-load_snapshot) | fixed |
-| H2 | Low (was High) | `data.py`, `tests/test_epochtrainer.py` | [Regression: `label_columns` string form broadcasts the loss](#h2-regression-silently-trains-on-a-broadcast-loss) | |
+| H2 | Low (was High) | `data.py`, `tests/test_epochtrainer.py` | [Regression: `label_columns` string form broadcasts the loss](#h2-regression-silently-trains-on-a-broadcast-loss) | fixed |
 | H7 | Low (was High) | `epoch_trainer.py` | [Training data not shuffled by default](#h7-training-data-is-never-shuffled-by-default) | |
 | M5 | Low (was Medium) | `epoch_trainer.py` | [Constructor reseeds the process-global RNGs (docstring only)](#m5-constructing-a-trainer-reseeds-the-process-global-rngs) | |
 | L1 | Low | `configs/`, `notebooks/` | [Empty files committed](#l1-empty-files-committed) | |
-| L6 | Low | `utils.py`, `data.py` | [Two conventions for naming types in config](#l6-two-different-conventions-for-naming-types-in-config) | |
-| L9 | Low | `epoch_trainer.py` | [Duplicate metric names collapse silently](#l9-duplicate-metric-names-collapse-silently) | |
+| L6 | Low | `utils.py`, `data.py` | [Two conventions for naming types in config](#l6-two-different-conventions-for-naming-types-in-config) | fixed |
+| L9 | Low | `epoch_trainer.py` | [Duplicate metric names collapse silently](#l9-duplicate-metric-names-collapse-silently) | fixed |
 | L10 | Low | `utils.py` | [Stale `SimpleTrainer` comment](#l10-stale-comment-in-utilspy) | |
 | H6 | Low residual | `base.py`, `epoch_trainer.py` | [Protocol bodies inherited as silent no-ops (misnomer already fixed)](#h6-inheriting-from-protocol-turns-unimplemented-methods-into-silent-no-ops) | |
-| L2 | Folded into H3 | `epoch_trainer.py` | [`evaluate()` walks the dataset twice](#l2-evaluate-is-odataset-per-call-twice) | |
-| L3 | Folded into M2 | `epoch_trainer.py` | [ONNX export traces on the current `train_ds`](#l3-onnx-export-traces-on-training-data) | |
+| L2 | Folded into H3 | `epoch_trainer.py` | [`evaluate()` walks the dataset twice](#l2-evaluate-is-odataset-per-call-twice) | fixed |
+| L3 | Folded into M2 | `epoch_trainer.py` | [ONNX export traces on the current `train_ds`](#l3-onnx-export-traces-on-training-data) | fixed |
 | M8 | Out of scope | `data.py` | [Lazy mode reads every file at construction](#m8-lazy-mode-reads-every-file-at-construction-and-throws-the-result-away) | |
 | M9 | Out of scope | `tests/test_pandasdataset.py` | [Construction test asserts nothing (vacuous truth)](#m9-a-construction-test-asserts-nothing-vacuous-truth) | |
 | M12 | Out of scope | `epoch_trainer.py`, `simple_trainer.py` | [Metric/evaluate logic duplicated between trainers](#m12-_build_metrics--evaluate-duplicated-between-the-two-trainers-already-diverging) | |

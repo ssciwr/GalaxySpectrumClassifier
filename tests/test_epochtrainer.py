@@ -1,5 +1,6 @@
 from collections import Counter
 from copy import deepcopy
+import warnings
 
 import numpy as np
 import onnx
@@ -51,6 +52,19 @@ class _FixedPredictionModel:
 
     def predict_proba(self, data):
         return self.probabilities[: len(data)]
+
+
+class _CountingDataset:
+    def __init__(self, dataset):
+        self.dataset = dataset
+        self.getitem_calls = 0
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        self.getitem_calls += 1
+        return self.dataset[idx]
 
 
 def _trainer_kwargs(tmp_path, data_path, **overrides):
@@ -433,6 +447,24 @@ def test_epochtrainer_rejects_metric_args(tmp_path, create_data):
         )
 
 
+@pytest.mark.parametrize(
+    "metrics",
+    [
+        [
+            {"type": "sklearn.metrics.accuracy_score", "name": "score"},
+            {"type": "sklearn.metrics.f1_score", "name": "score"},
+        ],
+        [
+            {"type": "sklearn.metrics.accuracy_score"},
+            {"type": "sklearn.metrics.accuracy_score"},
+        ],
+    ],
+)
+def test_epochtrainer_rejects_duplicate_metric_names(tmp_path, create_data, metrics):
+    with pytest.raises(ValueError, match="Duplicate metric name"):
+        EpochTrainer(**_trainer_kwargs(tmp_path, create_data, metrics=metrics))
+
+
 def test_epochtrainer_train_fits_constructor_datasets(tmp_path, create_data):
     trainer = EpochTrainer(
         **_trainer_kwargs(tmp_path, create_data, max_epochs=1, batch_size=1000)
@@ -477,6 +509,17 @@ def test_epochtrainer_records_validation_metrics_and_evaluates_stably(
     assert "accuracy_score" in trainer.model.history[-1]
     assert first_results == second_results
     assert first_results == {"accuracy_score": expected}
+
+
+def test_epochtrainer_evaluate_walks_eval_dataset_once(tmp_path, create_data):
+    trainer = EpochTrainer(
+        **_trainer_kwargs(tmp_path, create_data, max_epochs=1, batch_size=1000)
+    )
+    trainer.eval_ds = _CountingDataset(trainer.eval_ds)
+
+    trainer.evaluate()
+
+    assert trainer.eval_ds.getitem_calls == len(trainer.eval_ds)
 
 
 def test_epochtrainer_records_custom_metric_in_history(tmp_path, create_data):
@@ -587,11 +630,14 @@ def test_epochtrainer_trains_regression_with_vector_targets(tmp_path, create_dat
         )
     )
 
-    trainer.train()
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter("always")
+        trainer.train()
 
     _, sample_y = trainer.train_ds[0]
     assert sample_y.shape == (1,)
     assert len(trainer.model.history) == 1
+    assert not any("broadcast" in str(warning.message) for warning in caught_warnings)
 
 
 def test_epochtrainer_evaluate_passes_multiclass_probability_matrix_to_metric(

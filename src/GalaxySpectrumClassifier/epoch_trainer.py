@@ -16,6 +16,8 @@ from skorch.callbacks import (
     EpochScoring,
     EarlyStopping,
 )
+from skorch.dataset import unpack_data
+from skorch.utils import to_numpy
 from sklearn.metrics import make_scorer
 from pathlib import Path
 from typing import Any
@@ -98,6 +100,9 @@ class EpochTrainer(TrainerProtocol):
                 evaluation dataset class.
             task (str): One of ``"binary-classification"``,
                 ``"multiclass-classification"``, or ``"regression"``.
+                Regression with scalar-output torch modules should configure
+                datasets with list-form ``label_columns`` such as
+                ``["target"]`` so batches carry targets shaped ``(B, 1)``.
             device (str, optional): Device on which model computation runs.
                 Defaults to "cpu".
             optimizer_kwargs (dict[str, Any] | None, optional): Named options
@@ -312,10 +317,12 @@ class EpochTrainer(TrainerProtocol):
 
         Raises:
             KeyError: If a declaration has no ``type`` entry.
-            ValueError: If a declaration uses unsupported ``args``.
+            ValueError: If a declaration uses unsupported ``args`` or a
+                duplicate metric name.
             ModuleNotFoundError: If a metric import path cannot be found.
         """
         metrics: list[MetricSpec] = []
+        names: set[str] = set()
         for spec in specs:
             if "args" in spec:
                 raise ValueError(
@@ -337,6 +344,9 @@ class EpochTrainer(TrainerProtocol):
             # Falls back to the metric's own name so results are keyed
             # sensibly even when the caller doesn't set `name` explicitly.
             name = spec.get("name", metric_name)
+            if name in names:
+                raise ValueError(f"Duplicate metric name: {name}")
+            names.add(name)
             metrics.append(
                 {
                     "name": name,
@@ -652,21 +662,16 @@ class EpochTrainer(TrainerProtocol):
             ValueError: If a probability-based metric is incompatible with the
                 configured task or the model's probability output.
         """
-        # predict() is cheap and always needed by at least the default
-        # metric; predict_proba() is only computed if some configured metric
-        # actually needs it, since not every estimator supports it cheaply
-        # (or at all, for plain regressors).
-        y_pred = self.model.predict(self.eval_ds)
-        y_proba = None
-        y = np.array([y for _, y in self.eval_ds])
+        needs_proba = any(metric["needs_proba"] for metric in self.metrics)
+        if needs_proba and self.task == "regression":
+            raise ValueError(
+                "A metric with needs_proba=True is configured, but "
+                "task='regression' has no predict_proba output."
+            )
 
-        if any(metric["needs_proba"] for metric in self.metrics):
-            if self.task == "regression":
-                raise ValueError(
-                    "A metric with needs_proba=True is configured, but "
-                    "task='regression' has no predict_proba output."
-                )
-            y_proba = self.model.predict_proba(self.eval_ds)
+        y_pred, y_proba, y = self._predict_eval_dataset()
+
+        if needs_proba:
             if self.task == "binary-classification":
                 if y_proba.shape[1] != 2:
                     raise ValueError(
@@ -690,6 +695,49 @@ class EpochTrainer(TrainerProtocol):
             )
 
         return results
+
+    def _predict_eval_dataset(self) -> tuple[np.ndarray, np.ndarray | None, np.ndarray]:
+        """Predict evaluation samples while keeping each batch's labels aligned."""
+        if not hasattr(self.model, "get_iterator"):
+            # Test doubles and sklearn-like stand-ins can still use the simpler
+            # public API; real skorch nets take the single-pass path below.
+            y_pred = self.model.predict(self.eval_ds)
+            y_proba = None
+            if any(metric["needs_proba"] for metric in self.metrics):
+                y_proba = self.model.predict_proba(self.eval_ds)
+            y = np.array([y for _, y in self.eval_ds])
+            return y_pred, y_proba, y
+
+        nonlin = self.model._get_predict_nonlinearity()
+        y_pred_batches = []
+        y_proba_batches = []
+        y_batches = []
+        needs_proba = any(metric["needs_proba"] for metric in self.metrics)
+        for batch in self.model.get_iterator(self.eval_ds, training=False):
+            _, batch_y = unpack_data(batch)
+            batch_pred = self.model.evaluation_step(batch, training=False)
+            batch_pred = batch_pred[0] if isinstance(batch_pred, tuple) else batch_pred
+            batch_proba = nonlin(batch_pred)
+            batch_proba_np = to_numpy(batch_proba)
+            y_proba_batches.append(batch_proba_np)
+            if self.task == "binary-classification":
+                y_pred_batches.append(
+                    (batch_proba_np[:, 1] > self.model.threshold).astype("uint8")
+                )
+            elif self.task == "multiclass-classification":
+                y_pred_batches.append(batch_proba_np.argmax(axis=1))
+            else:
+                y_pred_batches.append(batch_proba_np)
+            y_batches.append(to_numpy(batch_y))
+
+        y_pred = np.concatenate(y_pred_batches, 0)
+        y_proba = np.concatenate(y_proba_batches, 0) if needs_proba else None
+        y = np.concatenate(
+            [np.asarray(batch).reshape(len(batch), -1) for batch in y_batches], 0
+        )
+        if y.shape[1] == 1:
+            y = y[:, 0]
+        return y_pred, y_proba, y
 
     def save_snapshot(self, path: str) -> None:
         """Save trainer configuration and resumable training state together.
@@ -797,6 +845,8 @@ class EpochTrainer(TrainerProtocol):
                 # artifact as weights that torch.load can safely restrict.
                 torch.save(module.state_dict(), directory / "model.pt")
             elif export_format == "onnx":
+                # This sample only supplies the configured input shape for
+                # tracing; learned weights come from the initialized module.
                 sample, _ = self.train_ds[0]
                 torch.onnx.export(
                     module,

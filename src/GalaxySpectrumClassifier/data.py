@@ -273,7 +273,7 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
             OSError: If source data cannot be read.
         """
         if self.cache_on_disk:
-            return self.data_cache
+            return self.data_cache.copy()
         return pd.concat((self.read_data(f) for f in self.datafiles), ignore_index=True)
 
     def _normalize_index(

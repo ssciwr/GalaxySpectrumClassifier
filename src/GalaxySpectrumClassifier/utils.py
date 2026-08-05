@@ -1,4 +1,5 @@
 import importlib
+import re
 from typing import Any
 
 import numpy as np
@@ -7,7 +8,7 @@ import torch.utils.data
 from .base import DatasetProtocol
 
 
-# The three task kinds SimpleTrainer knows how to evaluate. This drives two
+# The three task kinds the trainers know how to evaluate. This drives two
 # things: which predict_proba() shape a "needs_proba" metric receives, and
 # which metric is used by default when the caller doesn't configure one.
 TASKS = ("binary-classification", "multiclass-classification", "regression")
@@ -90,9 +91,12 @@ def resolve_type_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
             AttributeError: If a declared import path names no object.
     """
     resolved = {}
+    type_path_pattern = re.compile(r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*)+$")
     for key, value in kwargs.items():
         if isinstance(value, dict) and value.keys() == {"type"}:
             resolved[key] = load_type(value["type"])
+        elif isinstance(value, str) and type_path_pattern.fullmatch(value):
+            resolved[key] = load_type(value)
         else:
             resolved[key] = value
     return resolved
