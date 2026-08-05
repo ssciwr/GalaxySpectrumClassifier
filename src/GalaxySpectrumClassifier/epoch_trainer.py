@@ -475,7 +475,7 @@ class EpochTrainer(TrainerProtocol):
             self.model.set_params(
                 train_split=predefined_split(self.val_ds),
             )
-        self.model.fit(self.train_ds)
+        self.model.fit(self.train_ds, y=None)
 
     def evaluate(self, data: DatasetProtocol | None = None) -> Any:
         if data is not None:
