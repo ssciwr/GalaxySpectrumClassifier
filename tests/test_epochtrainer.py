@@ -260,3 +260,48 @@ def test_epochtrainer_configures_custom_and_default_metrics(tmp_path, create_dat
     )
     assert custom_metric_callback.lower_is_better is True
     assert custom_metric_callback.use_caching is False
+
+
+def test_epochtrainer_train_fits_constructor_datasets(tmp_path, create_data):
+    trainer = EpochTrainer(
+        **_trainer_kwargs(tmp_path, create_data, max_epochs=1, batch_size=1000)
+    )
+
+    trainer.train()
+
+    assert trainer.model.initialized_ is True
+    assert len(trainer.model.history) == 1
+    assert np.isfinite(trainer.model.history[-1]["train_loss"])
+    assert np.isfinite(trainer.model.history[-1]["valid_loss"])
+    assert trainer.model.predict(trainer.eval_ds).shape == (len(trainer.eval_ds),)
+
+
+def test_epochtrainer_train_replaces_the_training_dataset(tmp_path, create_data):
+    trainer = EpochTrainer(
+        **_trainer_kwargs(tmp_path, create_data, max_epochs=1, batch_size=1000)
+    )
+    replacement_train = torch.utils.data.Subset(trainer.train_ds, range(8))
+    original_validation = trainer.val_ds
+
+    trainer.train(train_data=replacement_train)
+
+    assert trainer.train_ds is replacement_train
+    assert trainer.val_ds is original_validation
+    assert np.isfinite(trainer.model.history[-1]["train_loss"])
+    assert np.isfinite(trainer.model.history[-1]["valid_loss"])
+
+
+def test_epochtrainer_train_replaces_validation_dataset_and_split(
+    tmp_path, create_data
+):
+    trainer = EpochTrainer(
+        **_trainer_kwargs(tmp_path, create_data, max_epochs=1, batch_size=1000)
+    )
+    replacement_validation = torch.utils.data.Subset(trainer.val_ds, range(8))
+
+    trainer.train(validation_data=replacement_validation)
+
+    assert trainer.val_ds is replacement_validation
+    assert trainer.model.train_split.keywords["valid_ds"] is replacement_validation
+    assert np.isfinite(trainer.model.history[-1]["train_loss"])
+    assert np.isfinite(trainer.model.history[-1]["valid_loss"])
