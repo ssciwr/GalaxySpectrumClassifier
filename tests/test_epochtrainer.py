@@ -3,6 +3,7 @@ from collections import Counter
 import numpy as np
 import pytest
 import torch
+from sklearn.metrics import accuracy_score, log_loss, roc_auc_score
 from skorch import NeuralNetBinaryClassifier, NeuralNetClassifier, NeuralNetRegressor
 from skorch.callbacks import (
     Checkpoint,
@@ -21,6 +22,22 @@ from GalaxySpectrumClassifier.epoch_trainer import EpochTrainer
 def _as_float32(sample):
     """Provide BCEWithLogitsLoss-compatible features and targets."""
     return sample.astype(np.float32)
+
+
+class _FixedPredictionModel:
+    """Minimal predictor used where a real net cannot produce an invalid shape."""
+
+    def __init__(self, predictions, probabilities=None):
+        self.predictions = np.asarray(predictions)
+        self.probabilities = (
+            None if probabilities is None else np.asarray(probabilities)
+        )
+
+    def predict(self, data):
+        return self.predictions[: len(data)]
+
+    def predict_proba(self, data):
+        return self.probabilities[: len(data)]
 
 
 def _trainer_kwargs(tmp_path, data_path, **overrides):
@@ -350,3 +367,147 @@ def test_epochtrainer_train_replaces_validation_dataset_and_split(
     assert trainer.model.train_split.keywords["valid_ds"] is replacement_validation
     assert np.isfinite(trainer.model.history[-1]["train_loss"])
     assert np.isfinite(trainer.model.history[-1]["valid_loss"])
+
+
+def test_epochtrainer_train_then_evaluate_uses_configured_evaluation_data(
+    tmp_path, create_data
+):
+    trainer = EpochTrainer(
+        **_trainer_kwargs(tmp_path, create_data, max_epochs=1, batch_size=1000)
+    )
+
+    trainer.train()
+    results = trainer.evaluate()
+
+    expected_y = np.array([y.item() for _, y in trainer.eval_ds])
+    expected = accuracy_score(expected_y, trainer.model.predict(trainer.eval_ds))
+    assert results == {"accuracy_score": expected}
+
+
+def test_epochtrainer_evaluate_replaces_evaluation_data(tmp_path, create_data):
+    trainer = EpochTrainer(
+        **_trainer_kwargs(tmp_path, create_data, max_epochs=1, batch_size=1000)
+    )
+    replacement_evaluation = torch.utils.data.Subset(trainer.eval_ds, range(8))
+
+    trainer.train()
+    results = trainer.evaluate(replacement_evaluation)
+
+    expected_y = np.array([y.item() for _, y in replacement_evaluation])
+    expected = accuracy_score(expected_y, trainer.model.predict(replacement_evaluation))
+    assert trainer.eval_ds is replacement_evaluation
+    assert results == {"accuracy_score": expected}
+
+
+def test_epochtrainer_evaluate_binary_probability_metric_after_training(
+    tmp_path, create_data
+):
+    trainer = EpochTrainer(
+        **_trainer_kwargs(
+            tmp_path,
+            create_data,
+            max_epochs=1,
+            batch_size=1000,
+            metrics=[
+                {
+                    "type": "sklearn.metrics.roc_auc_score",
+                    "name": "auc",
+                    "needs_proba": True,
+                }
+            ],
+        )
+    )
+
+    trainer.train()
+    results = trainer.evaluate()
+
+    expected_y = np.array([y.item() for _, y in trainer.eval_ds])
+    probabilities = trainer.model.predict_proba(trainer.eval_ds)
+    assert results["auc"] == pytest.approx(
+        roc_auc_score(expected_y, probabilities[:, 1])
+    )
+    assert results["accuracy_score"] == accuracy_score(
+        expected_y, trainer.model.predict(trainer.eval_ds)
+    )
+
+
+def test_epochtrainer_evaluate_passes_multiclass_probability_matrix_to_metric(
+    tmp_path, create_data
+):
+    trainer = EpochTrainer(
+        **_trainer_kwargs(
+            tmp_path,
+            create_data,
+            task="multiclass-classification",
+            model_args=[6, 2],
+            loss_type="torch.nn.CrossEntropyLoss",
+            metrics=[
+                {
+                    "type": "sklearn.metrics.log_loss",
+                    "name": "multiclass_log_loss",
+                    "kwargs": {"labels": [0, 1, 2]},
+                    "needs_proba": True,
+                }
+            ],
+        )
+    )
+    data = torch.utils.data.Subset(trainer.eval_ds, range(3))
+    probabilities = np.array([[0.7, 0.2, 0.1], [0.1, 0.8, 0.1], [0.2, 0.3, 0.5]])
+    trainer.model = _FixedPredictionModel([0, 1, 2], probabilities)
+
+    results = trainer.evaluate(data)
+
+    expected_y = np.array([y.item() for _, y in data])
+    assert results["multiclass_log_loss"] == pytest.approx(
+        log_loss(expected_y, probabilities, labels=[0, 1, 2])
+    )
+
+
+def test_epochtrainer_evaluate_rejects_malformed_binary_probabilities(
+    tmp_path, create_data
+):
+    trainer = EpochTrainer(
+        **_trainer_kwargs(
+            tmp_path,
+            create_data,
+            metrics=[
+                {
+                    "type": "sklearn.metrics.roc_auc_score",
+                    "name": "auc",
+                    "needs_proba": True,
+                }
+            ],
+        )
+    )
+    trainer.model = _FixedPredictionModel(
+        [0, 1, 0],
+        [[0.6, 0.3, 0.1], [0.1, 0.8, 0.1], [0.2, 0.2, 0.6]],
+    )
+
+    with pytest.raises(ValueError, match="predict_proba returned 3 columns"):
+        trainer.evaluate(torch.utils.data.Subset(trainer.eval_ds, range(3)))
+
+
+def test_epochtrainer_evaluate_rejects_probability_metrics_for_regression(
+    tmp_path, create_data
+):
+    trainer = EpochTrainer(
+        **_trainer_kwargs(
+            tmp_path,
+            create_data,
+            task="regression",
+            model_args=[6, 1],
+            loss_type="torch.nn.MSELoss",
+            metrics=[
+                {
+                    "type": "sklearn.metrics.roc_auc_score",
+                    "name": "auc",
+                    "needs_proba": True,
+                }
+            ],
+        )
+    )
+    trainer.model = _FixedPredictionModel([0.1, 0.2, 0.3])
+
+    with pytest.raises(ValueError, match="task='regression' has no predict_proba"):
+        trainer.evaluate(torch.utils.data.Subset(trainer.eval_ds, range(3)))
