@@ -368,6 +368,8 @@ def test_epochtrainer_train_fits_constructor_datasets(tmp_path, create_data):
         **_trainer_kwargs(tmp_path, create_data, max_epochs=1, batch_size=1000)
     )
 
+    assert trainer.model.initialized_ is True
+
     trainer.train()
 
     assert trainer.model.initialized_ is True
@@ -375,6 +377,18 @@ def test_epochtrainer_train_fits_constructor_datasets(tmp_path, create_data):
     assert np.isfinite(trainer.model.history[-1]["train_loss"])
     assert np.isfinite(trainer.model.history[-1]["valid_loss"])
     assert trainer.model.predict(trainer.eval_ds).shape == (len(trainer.eval_ds),)
+
+
+def test_epochtrainer_evaluates_before_training(tmp_path, create_data):
+    trainer = EpochTrainer(
+        **_trainer_kwargs(tmp_path, create_data, max_epochs=1, batch_size=1000)
+    )
+
+    results = trainer.evaluate()
+
+    expected_y = np.array([y.item() for _, y in trainer.eval_ds])
+    expected = accuracy_score(expected_y, trainer.model.predict(trainer.eval_ds))
+    assert results == {"accuracy_score": expected}
 
 
 def test_epochtrainer_records_validation_metrics_and_evaluates_stably(
@@ -536,6 +550,20 @@ def test_epochtrainer_save_snapshot_writes_full_training_state(tmp_path, create_
     assert trainer.model.optimizer_.state_dict()["state"]
 
 
+def test_epochtrainer_save_snapshot_before_training(tmp_path, create_data):
+    trainer = EpochTrainer(
+        **_trainer_kwargs(tmp_path, create_data, max_epochs=1, batch_size=1000)
+    )
+
+    trainer.save_snapshot("untrained-snapshot")
+
+    snapshot = trainer.output_path / "untrained-snapshot"
+    assert (snapshot / "params.pt").is_file()
+    assert (snapshot / "optimizer.pt").is_file()
+    assert (snapshot / "criterion.pt").is_file()
+    assert (snapshot / "history.json").is_file()
+
+
 def test_epochtrainer_save_snapshot_rejects_unsafe_config_values(tmp_path, create_data):
     trainer = EpochTrainer(
         **_trainer_kwargs(tmp_path, create_data, output_path=tmp_path / "training")
@@ -667,6 +695,33 @@ def test_epochtrainer_export_model_default_reloads_with_skorch(tmp_path, create_
         *(manifest["model_args"] or []), **(manifest["model_kwargs"] or {})
     )
     restored = load_type(manifest["net_type"])(module, device=manifest["device"])
+    restored.initialize()
+    restored.load_params(f_params=export_path / "params.pt")
+    restored.module_.eval()
+    with torch.no_grad():
+        actual = restored.module_(inputs)
+
+    torch.testing.assert_close(actual, expected)
+
+
+def test_epochtrainer_export_model_before_training(tmp_path, create_data):
+    trainer = EpochTrainer(
+        **_trainer_kwargs(tmp_path, create_data, max_epochs=1, batch_size=1000)
+    )
+    inputs = torch.stack([trainer.train_ds[index][0] for index in range(2)])
+    trainer.model.module_.eval()
+    with torch.no_grad():
+        expected = trainer.model.module_(inputs)
+
+    trainer.export_model("untrained-export")
+
+    export_path = trainer.output_path / "untrained-export"
+    assert (export_path / "model.yaml").is_file()
+    assert (export_path / "params.pt").is_file()
+    module = load_type(trainer.config["model_type"])(
+        *(trainer.config["model_args"] or []), **(trainer.config["model_kwargs"] or {})
+    )
+    restored = type(trainer.model)(module, device=trainer.config["device"])
     restored.initialize()
     restored.load_params(f_params=export_path / "params.pt")
     restored.module_.eval()

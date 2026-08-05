@@ -289,6 +289,7 @@ class EpochTrainer(TrainerProtocol):
             train_split=predefined_split(self.val_ds),
             callbacks=self.callbacks,
         )
+        self.model.initialize()
 
     def _build_metrics(self, specs: list[dict[str, Any]]) -> list[MetricSpec]:
         """Validate and resolve configured metric declarations.
@@ -697,8 +698,6 @@ class EpochTrainer(TrainerProtocol):
         # build trainer from config
         trainer = cls.from_config(config)
 
-        # load and set model state
-        trainer.model.initialize()
         trainer.model.load_params(
             f_params=load_path / "params.pt",
             f_optimizer=load_path / "optimizer.pt",
