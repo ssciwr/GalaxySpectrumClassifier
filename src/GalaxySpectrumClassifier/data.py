@@ -68,7 +68,7 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
                 holding the target, split off from the features by
                 ``__getitem__``. A single string yields a scalar label per
                 sample, so a batch of them has shape ``(batch,)`` - what
-                ``CrossEntropyLoss`` expects. A sequence yields one label
+                scalar-target losses expect. A sequence yields one label
                 vector per sample, so a batch has shape
                 ``(batch, len(label_columns))``. A one-element sequence is
                 therefore *not* the same as a bare string. Defaults to None,
@@ -358,9 +358,11 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
 
         Returns:
             tuple[torch.Tensor, torch.Tensor]: Features as float32 and labels
-                as int64. Labels are scalar (single row) or 1D (several rows)
-                when ``label_columns`` is a string, and carry a trailing
-                ``len(label_columns)`` axis when it is a sequence.
+                with the dtype produced by ``transform`` (or by the source row
+                when no transform is given). Labels are scalar (single row) or
+                1D (several rows) when ``label_columns`` is a string, and
+                carry a trailing ``len(label_columns)`` axis when it is a
+                sequence.
         """
         # Refusing here is the whole point: skorch's own convention for a
         # missing target is `y = torch.Tensor([0])`, which would let a model
@@ -399,9 +401,11 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         x = torch.from_numpy(data[features].to_numpy(dtype=np.float32).copy())
         # A bare string selects a single column, which keeps the label one axis
         # flatter than the list form all the way through - scalar per sample
-        # rather than a length-1 vector.
+        # rather than a length-1 vector. Do not impose a dtype here: losses
+        # such as CrossEntropyLoss and BCEWithLogitsLoss require different
+        # target dtypes, so callers can choose one through ``transform``.
         selector = self.label_columns if single_label else labels
-        y = torch.from_numpy(np.asarray(data[selector], dtype=np.int64).copy())
+        y = torch.from_numpy(np.asarray(data[selector]).copy())
         return x, y
 
     def __getitem__(
