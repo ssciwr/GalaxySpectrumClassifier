@@ -10,16 +10,16 @@ issue. *Retracted* = withdrawn, no action. Status is yours to fill in.
 | H3 | High | `epoch_trainer.py` | [`evaluate()` can pair labels with the wrong predictions](#h3-evaluate-can-pair-labels-with-the-wrong-predictions) | fixed |
 | H4 | High | `epoch_trainer.py` | [Metric `args` dropped from epoch-time scoring, crash training](#h4-metric-args-are-silently-dropped-from-epoch-time-scoring-and-crash-training) | fixed |
 | H1 | Medium (was High) | `epoch_trainer.py`, `data.py`, `tests/test_epochtrainer.py` | [Multiclass: docstring's `transform` route can't split dtypes; no end-to-end test](#h1-multiclass-classification-cannot-be-trained-at-all) | fixed|
-| H5 | Medium (was High) | `epoch_trainer.py` | [Forced `load_best` + shared checkpoint directory](#h5-forced-load_best--a-shared-checkpoint-directory-can-hand-a-run-someone-elses-weights) | |
+| H5 | Medium (was High) | `epoch_trainer.py` | [Forced `load_best` + shared checkpoint directory](#h5-forced-load_best--a-shared-checkpoint-directory-can-hand-a-run-someone-elses-weights) | fixed |
 | M1 | Medium | `epoch_trainer.py` | [`save_snapshot` can write a snapshot `load_snapshot` cannot read](#m1-save_snapshot-can-write-a-snapshot-that-load_snapshot-cannot-read) | fixed |
 | M2 | Medium | `epoch_trainer.py` | [`train()`/`evaluate()` mutate datasets but not config](#m2-trainevaluate-mutate-the-trainers-datasets-but-not-its-config) | fixed |
 | M3 | Medium | `epoch_trainer.py`, `base.py` | [`train()` returns nothing despite annotation and protocol](#m3-train-returns-nothing-despite-its-annotation-docstring-and-the-protocol) |fixed |
-| M4 | Medium | `epoch_trainer.py` | [Default metric always appended, cannot be replaced](#m4-the-default-metric-is-always-appended-and-cannot-be-replaced-or-removed) | |
-| M6 | Medium | `epoch_trainer.py` | [Uninitialized net: snapshot/export/evaluate fail before `train()`](#m6-undocumented-failure-modes-before-train) | |
-| M10 | Medium | `CLAUDE.md`, `.gitignore` | [Documentation no longer matches the code](#m10-documentation-no-longer-matches-the-code) | |
+| M4 | Medium | `epoch_trainer.py` | [Default metric always appended, cannot be replaced](#m4-the-default-metric-is-always-appended-and-cannot-be-replaced-or-removed) | fixed |
+| M6 | Medium | `epoch_trainer.py` | [Uninitialized net: snapshot/export/evaluate fail before `train()`](#m6-undocumented-failure-modes-before-train) | fixed |
+| M10 | Medium | `CLAUDE.md`, `.gitignore` | [Documentation no longer matches the code](#m10-documentation-no-longer-matches-the-code) | fixed |
 | M11 | Medium | `__init__.py` | [`EpochTrainer` not exported from the package](#m11-epochtrainer-is-not-exported-from-the-package) | fixed|
-| M13 | Medium | `tests/test_epochtrainer.py` | [Tests verify wiring, not behaviour](#m13-tests-verify-wiring-not-behaviour-in-the-places-that-matter-most) | |
-| L8 | Medium (was Low) | `epoch_trainer.py` | [`max_epochs` changes meaning after `load_snapshot`](#l8-max_epochs-changes-meaning-after-load_snapshot) | |
+| M13 | Medium | `tests/test_epochtrainer.py` | [Tests verify wiring, not behaviour](#m13-tests-verify-wiring-not-behaviour-in-the-places-that-matter-most) | fixed |
+| L8 | Medium (was Low) | `epoch_trainer.py` | [`max_epochs` changes meaning after `load_snapshot`](#l8-max_epochs-changes-meaning-after-load_snapshot) | fixed |
 | H2 | Low (was High) | `data.py`, `tests/test_epochtrainer.py` | [Regression: `label_columns` string form broadcasts the loss](#h2-regression-silently-trains-on-a-broadcast-loss) | |
 | H7 | Low (was High) | `epoch_trainer.py` | [Training data not shuffled by default](#h7-training-data-is-never-shuffled-by-default) | |
 | M5 | Low (was Medium) | `epoch_trainer.py` | [Constructor reseeds the process-global RNGs (docstring only)](#m5-constructing-a-trainer-reseeds-the-process-global-rngs) | |

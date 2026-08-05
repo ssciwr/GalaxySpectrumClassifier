@@ -74,6 +74,8 @@ class EpochTrainer(TrainerProtocol):
         progressbar_values: list[str] | None = None,
         early_stopping_kwargs: dict[str, Any] | None = None,
         export_format: str = "default",
+        classes: list[Any] | None = None,
+        _allow_existing_output_path: bool = False,
         **additional_model_kwargs,
     ):
         """Configure datasets, model training, evaluation, and saved outputs.
@@ -81,7 +83,8 @@ class EpochTrainer(TrainerProtocol):
         Args:
             output_path (str): Base directory for snapshots and exports.
             max_epochs (int): Maximum number of training passes through the
-                training dataset.
+                training dataset across this trainer's lifecycle, including
+                any restored history after ``load_snapshot``.
             batch_size (int): Number of samples processed together.
             model_type (str): Dotted import path identifying the model class.
             loss_type (str): Dotted import path identifying the loss class.
@@ -154,6 +157,10 @@ class EpochTrainer(TrainerProtocol):
                 conditions for ending training early. Defaults to None.
             export_format (str, optional): Model export format. Must be one of
                 the supported formats. Defaults to "default".
+            classes (list[Any] | None, optional): Known class labels for
+                multiclass classification. Passed to skorch's
+                ``NeuralNetClassifier`` because fitting from a Dataset with
+                ``y=None`` cannot infer them. Defaults to None.
             **additional_model_kwargs: Additional named options preserved in
                 the trainer configuration for model-related use.
 
@@ -227,11 +234,12 @@ class EpochTrainer(TrainerProtocol):
             "progressbar_values": progressbar_values,
             "early_stopping_kwargs": early_stopping_kwargs,
             "export_format": export_format,
+            "classes": classes,
             **additional_model_kwargs,
         }
         self.task = task
         self.output_path = Path(output_path).resolve()
-        self.output_path.mkdir(parents=True, exist_ok=True)
+        self.output_path.mkdir(parents=True, exist_ok=_allow_existing_output_path)
 
         # set rng
         self.seed = seed
@@ -256,7 +264,7 @@ class EpochTrainer(TrainerProtocol):
         # Metrics come first: _build_callbacks turns each one into an
         # EpochScoring callback, and build_model in turn needs the finished
         # callback list to hand to the net.
-        used_metrics = (metrics or []) + DEFAULT_METRICS[task]
+        used_metrics = metrics if metrics is not None else DEFAULT_METRICS[task]
         self.metrics = self._build_metrics(used_metrics)
 
         self.callbacks = self._build_callbacks(
@@ -288,6 +296,7 @@ class EpochTrainer(TrainerProtocol):
             device=device,
             train_split=predefined_split(self.val_ds),
             callbacks=self.callbacks,
+            classes=classes,
         )
         self.model.initialize()
 
@@ -378,7 +387,8 @@ class EpochTrainer(TrainerProtocol):
             lr_scheduler_kwargs: Named learning-rate schedule options.
                 Defaults to None.
             checkpoint_kwargs: Named options for intermediate checkpoints.
-                Defaults to None.
+                The trainer owns ``dirname`` and ``load_best``. Defaults to
+                None.
             progressbar: Whether to report training progress. Defaults to True.
             progressbar_values: Additional metric names to include in progress
                 reporting. Defaults to None.
@@ -392,6 +402,8 @@ class EpochTrainer(TrainerProtocol):
 
         Raises:
             KeyError: If an additional callback declaration has no ``type``.
+            ValueError: If checkpoint declarations override trainer-owned
+                options.
             ModuleNotFoundError: If a callback or schedule import path cannot
                 be found.
         """
@@ -436,6 +448,12 @@ class EpochTrainer(TrainerProtocol):
 
         # set up checkpointing
         chkpt_kwargs = resolve_type_kwargs(checkpoint_kwargs or {})
+        checkpoint_owned = {"dirname", "load_best"} & chkpt_kwargs.keys()
+        if checkpoint_owned:
+            raise ValueError(
+                "checkpoint_kwargs cannot set trainer-owned option(s): "
+                f"{sorted(checkpoint_owned)}"
+            )
         chkpt_kwargs["load_best"] = True
         chkpt_kwargs["dirname"] = self.output_path / "snapshots"
         chkpt_callback = Checkpoint(**chkpt_kwargs)
@@ -453,6 +471,10 @@ class EpochTrainer(TrainerProtocol):
 
         # add train_end checkpoint
         end_chkpt_kwargs = resolve_type_kwargs(end_checkpoint_kwargs or {})
+        if "dirname" in end_chkpt_kwargs:
+            raise ValueError(
+                "end_checkpoint_kwargs cannot set trainer-owned option(s): ['dirname']"
+            )
         end_chkpt_kwargs["dirname"] = self.output_path / "snapshots"
         trainend_chkpt_callback = TrainEndCheckpoint(**end_chkpt_kwargs)
         cbs.append(trainend_chkpt_callback)
@@ -485,6 +507,7 @@ class EpochTrainer(TrainerProtocol):
         device: str = "cpu",
         train_split: Any = None,
         callbacks: list[Any] | None = None,
+        classes: list[Any] | None = None,
     ) -> Trainable:
         """Construct the configured neural model and its training interface.
 
@@ -522,6 +545,8 @@ class EpochTrainer(TrainerProtocol):
                 training. Defaults to None.
             callbacks (list[Any] | None, optional): Training callbacks.
                 Defaults to None.
+            classes (list[Any] | None, optional): Known class labels for
+                multiclass classifiers. Defaults to None.
 
         Raises:
             ValueError: If ``self.task`` is unsupported.
@@ -569,6 +594,9 @@ class EpochTrainer(TrainerProtocol):
 
         model_t = load_type(type)
         module = model_t(*(args or []), **(resolve_type_kwargs(kwargs or {})))
+        skorch_kwargs = {}
+        if self.task == "multiclass-classification" and classes is not None:
+            skorch_kwargs["classes"] = classes
 
         # build model
         net = skorch_modeltype(
@@ -584,6 +612,7 @@ class EpochTrainer(TrainerProtocol):
             device=device,
             train_split=train_split,
             callbacks=callbacks,
+            **skorch_kwargs,
         )
 
         # build calibrators: TODO
@@ -599,7 +628,18 @@ class EpochTrainer(TrainerProtocol):
         Raises:
             ValueError: If training samples are incompatible with the model.
         """
-        self.model.fit(self.train_ds, y=None)
+        max_epochs = self.config["max_epochs"]
+        completed_epochs = len(self.model.history)
+        remaining_epochs = max_epochs - completed_epochs
+        if remaining_epochs <= 0:
+            return self.model
+
+        configured_max_epochs = self.model.max_epochs
+        self.model.set_params(max_epochs=remaining_epochs)
+        try:
+            self.model.fit(self.train_ds, y=None)
+        finally:
+            self.model.set_params(max_epochs=configured_max_epochs)
         return self.model
 
     def evaluate(self) -> Any:
@@ -694,6 +734,7 @@ class EpochTrainer(TrainerProtocol):
         load_path = Path(path).resolve()
         with open(load_path / "config.yaml", "r") as f:
             config = yaml.safe_load(f)
+        config["_allow_existing_output_path"] = True
 
         # build trainer from config
         trainer = cls.from_config(config)

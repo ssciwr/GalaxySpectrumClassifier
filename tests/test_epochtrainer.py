@@ -30,6 +30,13 @@ def _as_float32(sample):
     return sample.astype(np.float32)
 
 
+def _as_float32_features_int64_labels(sample):
+    """Provide CrossEntropyLoss-compatible features and targets."""
+    transformed = sample.astype(np.float32)
+    transformed["source"] = transformed["source"].astype(np.int64)
+    return transformed
+
+
 class _FixedPredictionModel:
     """Minimal predictor used where a real net cannot produce an invalid shape."""
 
@@ -119,6 +126,14 @@ def test_epochtrainer_rejects_shuffled_evaluation_configuration(tmp_path, create
     assert not (tmp_path / "training").exists()
 
 
+def test_epochtrainer_rejects_reused_output_path(tmp_path, create_data):
+    output_path = tmp_path / "training"
+    EpochTrainer(**_trainer_kwargs(tmp_path, create_data, output_path=output_path))
+
+    with pytest.raises(FileExistsError):
+        EpochTrainer(**_trainer_kwargs(tmp_path, create_data, output_path=output_path))
+
+
 def test_epochtrainer_constructs_all_datasets_and_preserves_rebuild_config(
     tmp_path, create_data
 ):
@@ -164,9 +179,11 @@ def test_epochtrainer_constructs_all_datasets_and_preserves_rebuild_config(
     assert trainer.config["additional_setting"] == "preserved"
 
     # The stored configuration is the constructor's durable representation.
-    rebuilt = EpochTrainer.from_config(trainer.config)
+    rebuild_config = trainer.config.copy()
+    rebuild_config["output_path"] = str(tmp_path / "rebuilt")
+    rebuilt = EpochTrainer.from_config(rebuild_config)
     assert isinstance(rebuilt.model, NeuralNetBinaryClassifier)
-    assert rebuilt.config == trainer.config
+    assert rebuilt.config == rebuild_config
 
 
 def test_epochtrainer_seeds_numpy_and_torch_global_rngs(tmp_path, create_data):
@@ -234,6 +251,21 @@ def test_epochtrainer_selects_net_and_default_metric_for_each_task(
     assert [metric["name"] for metric in trainer.metrics] == [expected_metric]
 
 
+def test_epochtrainer_passes_multiclass_classes_to_skorch(tmp_path, create_data):
+    trainer = EpochTrainer(
+        **_trainer_kwargs(
+            tmp_path,
+            create_data,
+            task="multiclass-classification",
+            model_args=[6, 2],
+            loss_type="torch.nn.CrossEntropyLoss",
+            classes=[0, 1],
+        )
+    )
+
+    np.testing.assert_array_equal(trainer.model.classes_, np.array([0, 1]))
+
+
 def test_epochtrainer_adds_required_checkpoint_and_default_metric_callbacks(
     tmp_path, create_data
 ):
@@ -260,6 +292,21 @@ def test_epochtrainer_adds_required_checkpoint_and_default_metric_callbacks(
     assert trainer.callbacks.index(metric_callback) < trainer.callbacks.index(
         checkpoint
     )
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"checkpoint_kwargs": {"load_best": False}},
+        {"checkpoint_kwargs": {"dirname": "elsewhere"}},
+        {"end_checkpoint_kwargs": {"dirname": "elsewhere"}},
+    ],
+)
+def test_epochtrainer_rejects_checkpoint_options_owned_by_trainer(
+    tmp_path, create_data, override
+):
+    with pytest.raises(ValueError, match="trainer-owned option"):
+        EpochTrainer(**_trainer_kwargs(tmp_path, create_data, **override))
 
 
 def test_epochtrainer_adds_requested_callbacks(tmp_path, create_data):
@@ -303,7 +350,7 @@ def test_epochtrainer_adds_requested_callbacks(tmp_path, create_data):
     assert stopping.patience == 3
 
 
-def test_epochtrainer_configures_custom_and_default_metrics(tmp_path, create_data):
+def test_epochtrainer_uses_custom_metrics_without_default(tmp_path, create_data):
     trainer = EpochTrainer(
         **_trainer_kwargs(
             tmp_path,
@@ -321,10 +368,7 @@ def test_epochtrainer_configures_custom_and_default_metrics(tmp_path, create_dat
         )
     )
 
-    assert [metric["name"] for metric in trainer.metrics] == [
-        "validation_log_loss",
-        "accuracy_score",
-    ]
+    assert [metric["name"] for metric in trainer.metrics] == ["validation_log_loss"]
     custom_metric = trainer.metrics[0]
     assert custom_metric["kwargs"] == {"labels": [0, 1]}
     assert custom_metric["needs_proba"] is True
@@ -335,7 +379,7 @@ def test_epochtrainer_configures_custom_and_default_metrics(tmp_path, create_dat
         callback for callback in trainer.callbacks if isinstance(callback, EpochScoring)
     ]
     assert Counter(callback.name for callback in metric_callbacks) == Counter(
-        ["validation_log_loss", "accuracy_score"]
+        ["validation_log_loss"]
     )
     custom_metric_callback = next(
         callback
@@ -344,6 +388,32 @@ def test_epochtrainer_configures_custom_and_default_metrics(tmp_path, create_dat
     )
     assert custom_metric_callback.lower_is_better is True
     assert custom_metric_callback.use_caching is False
+
+
+def test_epochtrainer_empty_metrics_disables_metric_callbacks_and_evaluate(
+    tmp_path, create_data
+):
+    trainer = EpochTrainer(**_trainer_kwargs(tmp_path, create_data, metrics=[]))
+
+    assert trainer.metrics == []
+    assert not any(isinstance(callback, EpochScoring) for callback in trainer.callbacks)
+    assert trainer.evaluate() == {}
+
+
+def test_epochtrainer_explicit_default_metric_is_not_duplicated(tmp_path, create_data):
+    trainer = EpochTrainer(
+        **_trainer_kwargs(
+            tmp_path,
+            create_data,
+            metrics=[{"type": "sklearn.metrics.accuracy_score"}],
+        )
+    )
+
+    assert [metric["name"] for metric in trainer.metrics] == ["accuracy_score"]
+    metric_callbacks = [
+        callback for callback in trainer.callbacks if isinstance(callback, EpochScoring)
+    ]
+    assert [callback.name for callback in metric_callbacks] == ["accuracy_score"]
 
 
 def test_epochtrainer_rejects_metric_args(tmp_path, create_data):
@@ -409,6 +479,31 @@ def test_epochtrainer_records_validation_metrics_and_evaluates_stably(
     assert first_results == {"accuracy_score": expected}
 
 
+def test_epochtrainer_records_custom_metric_in_history(tmp_path, create_data):
+    trainer = EpochTrainer(
+        **_trainer_kwargs(
+            tmp_path,
+            create_data,
+            max_epochs=1,
+            batch_size=1000,
+            metrics=[
+                {
+                    "type": "sklearn.metrics.log_loss",
+                    "name": "validation_log_loss",
+                    "kwargs": {"labels": [0, 1]},
+                    "needs_proba": True,
+                    "lower_is_better": True,
+                }
+            ],
+        )
+    )
+
+    trainer.train()
+
+    assert "validation_log_loss" in trainer.model.history[-1]
+    assert "accuracy_score" not in trainer.model.history[-1]
+
+
 def test_epochtrainer_evaluate_binary_probability_metric_after_training(
     tmp_path, create_data
 ):
@@ -436,9 +531,67 @@ def test_epochtrainer_evaluate_binary_probability_metric_after_training(
     assert results["auc"] == pytest.approx(
         roc_auc_score(expected_y, probabilities[:, 1])
     )
-    assert results["accuracy_score"] == accuracy_score(
-        expected_y, trainer.model.predict(trainer.eval_ds)
+    assert set(results) == {"auc"}
+
+
+def test_epochtrainer_trains_multiclass_with_transform_controlled_dtypes(
+    tmp_path, create_data
+):
+    dataset_kwargs = {
+        "sep": ",",
+        "label_columns": "source",
+        "transform": "test_epochtrainer._as_float32_features_int64_labels",
+    }
+    trainer = EpochTrainer(
+        **_trainer_kwargs(
+            tmp_path,
+            create_data,
+            task="multiclass-classification",
+            model_args=[6, 2],
+            loss_type="torch.nn.CrossEntropyLoss",
+            train_dataset_kwargs=dataset_kwargs,
+            val_dataset_kwargs=dataset_kwargs,
+            test_dataset_kwargs=dataset_kwargs,
+            max_epochs=1,
+            batch_size=1000,
+            classes=[0, 1],
+        )
     )
+
+    trainer.train()
+
+    sample_x, sample_y = trainer.train_ds[0]
+    assert sample_x.dtype == torch.float32
+    assert sample_y.dtype == torch.int64
+    assert len(trainer.model.history) == 1
+
+
+def test_epochtrainer_trains_regression_with_vector_targets(tmp_path, create_data):
+    dataset_kwargs = {
+        "sep": ",",
+        "label_columns": ["source"],
+        "transform": "test_epochtrainer._as_float32",
+    }
+    trainer = EpochTrainer(
+        **_trainer_kwargs(
+            tmp_path,
+            create_data,
+            task="regression",
+            model_args=[6, 1],
+            loss_type="torch.nn.MSELoss",
+            train_dataset_kwargs=dataset_kwargs,
+            val_dataset_kwargs=dataset_kwargs,
+            test_dataset_kwargs=dataset_kwargs,
+            max_epochs=1,
+            batch_size=1000,
+        )
+    )
+
+    trainer.train()
+
+    _, sample_y = trainer.train_ds[0]
+    assert sample_y.shape == (1,)
+    assert len(trainer.model.history) == 1
 
 
 def test_epochtrainer_evaluate_passes_multiclass_probability_matrix_to_metric(
@@ -612,6 +765,26 @@ def test_epochtrainer_load_snapshot_restores_independently_written_state(
     )
 
 
+def test_epochtrainer_load_snapshot_raises_for_missing_state_file(
+    tmp_path, create_data
+):
+    trainer = EpochTrainer(
+        **_trainer_kwargs(
+            tmp_path,
+            create_data,
+            max_epochs=1,
+            batch_size=1000,
+            optimizer_kwargs={"momentum": 0.9},
+        )
+    )
+    trainer.train()
+    trainer.save_snapshot("incomplete")
+    (trainer.output_path / "incomplete" / "optimizer.pt").unlink()
+
+    with pytest.raises(FileNotFoundError):
+        EpochTrainer.load_snapshot(trainer.output_path / "incomplete")
+
+
 def test_epochtrainer_save_and_load_snapshot_round_trip(tmp_path, create_data):
     trainer = EpochTrainer(
         **_trainer_kwargs(
@@ -640,7 +813,9 @@ def test_epochtrainer_save_and_load_snapshot_round_trip(tmp_path, create_data):
     )
 
 
-def test_epochtrainer_loaded_snapshot_continues_training(tmp_path, create_data):
+def test_epochtrainer_loaded_snapshot_does_not_exceed_total_max_epochs(
+    tmp_path, create_data
+):
     trainer = EpochTrainer(
         **_trainer_kwargs(
             tmp_path,
@@ -661,14 +836,40 @@ def test_epochtrainer_loaded_snapshot_continues_training(tmp_path, create_data):
 
     loaded.train()
 
-    # Resuming must retain the restored state and append an epoch, rather than
-    # reinitializing the net as a fresh fit would.
-    assert len(loaded.model.history) == 2
+    assert len(loaded.model.history) == 1
     assert loaded.model.history[0] == first_epoch
-    assert any(
-        not torch.equal(parameter, restored_parameters[name])
+    assert all(
+        torch.equal(parameter, restored_parameters[name])
         for name, parameter in loaded.model.module_.state_dict().items()
     )
+
+
+def test_epochtrainer_loaded_snapshot_trains_remaining_epochs(tmp_path, create_data):
+    trainer = EpochTrainer(
+        **_trainer_kwargs(
+            tmp_path,
+            create_data,
+            max_epochs=1,
+            batch_size=1000,
+            optimizer_kwargs={"momentum": 0.9},
+        )
+    )
+    trainer.train()
+    trainer.save_snapshot("resume-more")
+    snapshot = trainer.output_path / "resume-more"
+    with (snapshot / "config.yaml").open() as config_file:
+        config = yaml.safe_load(config_file)
+    config["max_epochs"] = 2
+    with (snapshot / "config.yaml").open("w") as config_file:
+        yaml.safe_dump(config, config_file)
+
+    loaded = EpochTrainer.load_snapshot(snapshot)
+    first_epoch = deepcopy(loaded.model.history[0])
+
+    loaded.train()
+
+    assert len(loaded.model.history) == 2
+    assert loaded.model.history[0] == first_epoch
 
 
 def test_epochtrainer_export_model_default_reloads_with_skorch(tmp_path, create_data):

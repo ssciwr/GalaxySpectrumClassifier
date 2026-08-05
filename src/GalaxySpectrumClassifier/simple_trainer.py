@@ -73,7 +73,7 @@ class SimpleTrainer(TrainerProtocol):
                   labels or values.
                   Defaults to False.
                 * ``name`` (str, optional): Key used for this metric's score
-                  in the dict returned by ``validate``/``test``. Defaults to
+                  in the dict returned by ``evaluate``. Defaults to
                   the last dotted segment of ``type``.
 
                 Defaults to None, which selects the trainer's default metric
@@ -130,7 +130,7 @@ class SimpleTrainer(TrainerProtocol):
             calibrator_args,
             calibrator_kwargs,
         )
-        # Resolve metric specs to callables once up front, so validate()/test()
+        # Resolve metric specs to callables once up front, so evaluate()
         # don't repeat the load_type/lookup work on every call.
         self.metrics: list[MetricSpec] = self._build_metrics(
             metrics if metrics is not None else DEFAULT_METRICS[task]
