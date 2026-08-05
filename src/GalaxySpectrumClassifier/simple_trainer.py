@@ -384,7 +384,7 @@ class SimpleTrainer(TrainerProtocol):
         trainer.model = trainer._load_model(directory / "model.skops")
         return trainer
 
-    def save_model(self, path: str | Path) -> None:
+    def export_model(self, path: str | Path) -> None:
         """Save only the fitted model, without trainer configuration.
 
         Args:

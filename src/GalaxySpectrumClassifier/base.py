@@ -242,7 +242,7 @@ class TrainerProtocol(Configurable, Protocol):
         """
         ...
 
-    def save_model(self, path: str) -> None:
+    def export_model(self, path: str) -> None:
         """Save the trained model without the surrounding trainer state.
 
         Args:
