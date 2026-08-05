@@ -30,16 +30,16 @@ issue. *Retracted* = withdrawn, no action. Status is yours to fill in.
 | H6 | Low residual | `base.py`, `epoch_trainer.py` | [Protocol bodies inherited as silent no-ops (misnomer already fixed)](#h6-inheriting-from-protocol-turns-unimplemented-methods-into-silent-no-ops) | |
 | L2 | Folded into H3 | `epoch_trainer.py` | [`evaluate()` walks the dataset twice](#l2-evaluate-is-odataset-per-call-twice) | fixed |
 | L3 | Folded into M2 | `epoch_trainer.py` | [ONNX export traces on the current `train_ds`](#l3-onnx-export-traces-on-training-data) | fixed |
-| M8 | Out of scope | `data.py` | [Lazy mode reads every file at construction](#m8-lazy-mode-reads-every-file-at-construction-and-throws-the-result-away) | |
-| M9 | Out of scope | `tests/test_pandasdataset.py` | [Construction test asserts nothing (vacuous truth)](#m9-a-construction-test-asserts-nothing-vacuous-truth) | |
-| M12 | Out of scope | `epoch_trainer.py`, `simple_trainer.py` | [Metric/evaluate logic duplicated between trainers](#m12-_build_metrics--evaluate-duplicated-between-the-two-trainers-already-diverging) | |
+| M8 | Out of scope | `data.py` | [Lazy mode reads every file at construction](#m8-lazy-mode-reads-every-file-at-construction-and-throws-the-result-away) | created issue #19 |
+| M9 | Out of scope | `tests/test_pandasdataset.py` | [Construction test asserts nothing (vacuous truth)](#m9-a-construction-test-asserts-nothing-vacuous-truth) | created issue #20 |
+| M12 | Out of scope | `epoch_trainer.py`, `simple_trainer.py` | [Metric/evaluate logic duplicated between trainers](#m12-_build_metrics--evaluate-duplicated-between-the-two-trainers-already-diverging) | created issue #17 |
 | L11 | Out of scope | `data.py` | [`to_frame()` hands out the internal frame](#l11-to_frame-hands-out-the-internal-frame) | fixed |
-| L13 | Out of scope | `simple_trainer.py` | [`_load_model` trusts all skops types](#l13-simpletrainer_load_model-defeats-the-skops-safety-check) | |
-| M7 | Retracted | — | [No compatibility check between datasets (userland)](#m7-no-compatibility-check-between-the-three-configured-datasets) | |
+| L13 | Out of scope | `simple_trainer.py` | [`_load_model` trusts all skops types](#l13-simpletrainer_load_model-defeats-the-skops-safety-check) | created issue #18 |
+| M7 | Retracted | — | [No compatibility check between datasets (userland)](#m7-no-compatibility-check-between-the-three-configured-datasets) | created issue #15 |
 | L4 | Retracted | — | [Dead branch in `export_model`](#l4-dead-branch-in-export_model) | |
 | L5 | Retracted | — | [Export manifest records no input schema](#l5-the-export-manifest-records-no-input-schema) | |
 | L7 | Retracted | — | [`save_snapshot(path)` can collide with the checkpoint dir](#l7-save_snapshotpath-can-collide-with-the-checkpoint-directory) | |
-| L12 | Retracted | — | [Index dispatch / negative slice bounds](#l12-index-handling-in-__getitem__-is-shape-dispatched-by-isinstance) | |
+| L12 | Retracted | — | [Index dispatch / negative slice bounds](#l12-index-handling-in-__getitem__-is-shape-dispatched-by-isinstance) | created issue #16 |
 
 
 # Code review — `add-epoch-based-trainer`
