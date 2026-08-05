@@ -395,7 +395,7 @@ class SimpleTrainer(TrainerProtocol):
         with open(directory / "config.yaml") as f:
             config = yaml.safe_load(f)
         trainer = cls(**config)
-        trainer.model = cls.load_model(directory / "model.skops")
+        trainer.model = trainer._load_model(directory / "model.skops")
         return trainer
 
     def save_model(self, path: str | Path) -> None:
@@ -407,8 +407,7 @@ class SimpleTrainer(TrainerProtocol):
         """
         sio.dump(self.model, path)
 
-    @staticmethod
-    def load_model(path: str | Path) -> Trainable:
+    def _load_model(self, path: str | Path) -> Trainable:
         """Load a model previously exported with ``save_model()``.
 
         Args:

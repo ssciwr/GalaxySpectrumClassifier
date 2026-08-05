@@ -527,7 +527,7 @@ class EpochTrainer(TrainerProtocol):
 
         Optimizer, criterion and history are saved alongside the module
         parameters, so training can be picked up where it left off - that is
-        what distinguishes a snapshot from ``save_model()``. Restoring one
+        what distinguishes a snapshot from ``export_model()``. Restoring one
         needs the config as well as the saved state, see ``load_snapshot()``.
 
         The config is written as YAML and therefore has to be plain data;
@@ -583,10 +583,13 @@ class EpochTrainer(TrainerProtocol):
             f_criterion=load_path / "criterion.pt",
             f_history=load_path / "history.json",
         )
+        # A later train() calls fit(), which otherwise cold-starts and discards
+        # this restored module, optimizer, and history.
+        trainer.model.set_params(warm_start=True)
 
         return trainer
 
-    def save_model(self, path: str) -> None:
+    def export_model(self, path: str) -> None:
         """Export the trained torch module to ``path``, a directory below
         ``output_path`` that is created if it does not exist yet.
 
@@ -595,9 +598,7 @@ class EpochTrainer(TrainerProtocol):
         training should be continued later.
 
         The written format follows the ``export_format`` this trainer was
-        configured with. Only ``"default"`` can be read back by
-        ``load_model()``; the other formats are meant for use outside this
-        package. The net must have been trained before it can be exported.
+        configured with. The net must have been trained before it can be exported.
 
         Args:
             path (str): Directory to export the model into.
