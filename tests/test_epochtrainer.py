@@ -1,8 +1,10 @@
 from collections import Counter
+from copy import deepcopy
 
 import numpy as np
 import pytest
 import torch
+import yaml
 from sklearn.metrics import accuracy_score, log_loss, roc_auc_score
 from skorch import NeuralNetBinaryClassifier, NeuralNetClassifier, NeuralNetRegressor
 from skorch.callbacks import (
@@ -60,17 +62,17 @@ def _trainer_kwargs(tmp_path, data_path, **overrides):
         "train_dataset_kwargs": {
             "sep": ",",
             "label_columns": "source",
-            "transform": _as_float32,
+            "transform": "test_epochtrainer._as_float32",
         },
         "val_dataset_kwargs": {
             "sep": ",",
             "label_columns": "source",
-            "transform": _as_float32,
+            "transform": "test_epochtrainer._as_float32",
         },
         "test_dataset_kwargs": {
             "sep": ",",
             "label_columns": "source",
-            "transform": _as_float32,
+            "transform": "test_epochtrainer._as_float32",
         },
         "progressbar": False,
     }
@@ -511,3 +513,127 @@ def test_epochtrainer_evaluate_rejects_probability_metrics_for_regression(
 
     with pytest.raises(ValueError, match="task='regression' has no predict_proba"):
         trainer.evaluate(torch.utils.data.Subset(trainer.eval_ds, range(3)))
+
+
+def test_epochtrainer_save_snapshot_writes_full_training_state(tmp_path, create_data):
+    trainer = EpochTrainer(
+        **_trainer_kwargs(
+            tmp_path,
+            create_data,
+            max_epochs=1,
+            batch_size=1000,
+            optimizer_kwargs={"momentum": 0.9},
+        )
+    )
+    trainer.train()
+
+    trainer.save_snapshot("snapshot")
+
+    snapshot = trainer.output_path / "snapshot"
+    with (snapshot / "config.yaml").open() as config_file:
+        assert yaml.safe_load(config_file) == trainer.config
+    assert {path.name for path in snapshot.iterdir() if path.name != "config.yaml"} == {
+        "params.pt",
+        "optimizer.pt",
+        "criterion.pt",
+        "history.json",
+    }
+    assert trainer.model.optimizer_.state_dict()["state"]
+
+
+def test_epochtrainer_load_snapshot_restores_independently_written_state(
+    tmp_path, create_data
+):
+    trainer = EpochTrainer(
+        **_trainer_kwargs(
+            tmp_path,
+            create_data,
+            max_epochs=1,
+            batch_size=1000,
+            optimizer_kwargs={"momentum": 0.9},
+        )
+    )
+    trainer.train()
+    snapshot = tmp_path / "independent-snapshot"
+    snapshot.mkdir()
+    with (snapshot / "config.yaml").open("w") as config_file:
+        yaml.safe_dump(trainer.config, config_file)
+    trainer.model.save_params(
+        f_params=snapshot / "params.pt",
+        f_optimizer=snapshot / "optimizer.pt",
+        f_criterion=snapshot / "criterion.pt",
+        f_history=snapshot / "history.json",
+    )
+
+    loaded = EpochTrainer.load_snapshot(snapshot)
+
+    assert loaded.config == trainer.config
+    torch.testing.assert_close(
+        loaded.model.module_.state_dict(), trainer.model.module_.state_dict()
+    )
+    torch.testing.assert_close(
+        loaded.model.optimizer_.state_dict(), trainer.model.optimizer_.state_dict()
+    )
+    assert loaded.model.history == trainer.model.history
+    np.testing.assert_array_equal(
+        loaded.model.predict(loaded.eval_ds), trainer.model.predict(trainer.eval_ds)
+    )
+
+
+def test_epochtrainer_save_and_load_snapshot_round_trip(tmp_path, create_data):
+    trainer = EpochTrainer(
+        **_trainer_kwargs(
+            tmp_path,
+            create_data,
+            max_epochs=1,
+            batch_size=1000,
+            optimizer_kwargs={"momentum": 0.9},
+        )
+    )
+    trainer.train()
+    trainer.save_snapshot("round-trip")
+
+    loaded = EpochTrainer.load_snapshot(trainer.output_path / "round-trip")
+
+    assert loaded.config == trainer.config
+    torch.testing.assert_close(
+        loaded.model.module_.state_dict(), trainer.model.module_.state_dict()
+    )
+    torch.testing.assert_close(
+        loaded.model.optimizer_.state_dict(), trainer.model.optimizer_.state_dict()
+    )
+    assert loaded.model.history == trainer.model.history
+    np.testing.assert_array_equal(
+        loaded.model.predict(loaded.eval_ds), trainer.model.predict(trainer.eval_ds)
+    )
+
+
+def test_epochtrainer_loaded_snapshot_continues_training(tmp_path, create_data):
+    trainer = EpochTrainer(
+        **_trainer_kwargs(
+            tmp_path,
+            create_data,
+            max_epochs=1,
+            batch_size=1000,
+            optimizer_kwargs={"momentum": 0.9},
+        )
+    )
+    trainer.train()
+    trainer.save_snapshot("resume")
+    loaded = EpochTrainer.load_snapshot(trainer.output_path / "resume")
+    first_epoch = deepcopy(loaded.model.history[0])
+    restored_parameters = {
+        name: parameter.detach().clone()
+        for name, parameter in loaded.model.module_.state_dict().items()
+    }
+
+    loaded.train()
+
+    # Resuming must retain the restored state and append an epoch, rather than
+    # reinitializing the net as a fresh fit would.
+    assert len(loaded.model.history) == 2
+    assert loaded.model.history[0] == first_epoch
+    assert any(
+        not torch.equal(parameter, restored_parameters[name])
+        for name, parameter in loaded.model.module_.state_dict().items()
+    )
