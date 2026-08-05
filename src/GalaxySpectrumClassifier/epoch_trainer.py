@@ -1,5 +1,11 @@
 from .base import Trainable, DatasetProtocol, TrainerProtocol
-from .utils import load_type, resolve_type_kwargs, DEFAULT_METRICS, EXPORT_FORMATS
+from .utils import (
+    load_type,
+    resolve_type_kwargs,
+    DEFAULT_METRICS,
+    EXPORT_FORMATS,
+    TASKS,
+)
 from skorch import NeuralNetBinaryClassifier, NeuralNetClassifier, NeuralNetRegressor
 from skorch.helper import predefined_split
 from skorch.callbacks import (
@@ -77,6 +83,9 @@ class EpochTrainer(TrainerProtocol):
 
         if model_type is None:
             raise ValueError("Model type cannot be none")
+
+        if task not in TASKS:
+            raise ValueError(f"Unknown task {task}. Allowed tasks: {TASKS}")
 
         # construct config again from args
         self.config = {
@@ -222,6 +231,10 @@ class EpochTrainer(TrainerProtocol):
             )
         return metrics
 
+    @classmethod
+    def from_config(cls, cfg: dict[str, Any]) -> "EpochTrainer":
+        return cls(**cfg)
+
     def _build_callbacks(
         self,
         callbacks: list[dict[str, str | list[Any] | dict[str, Any]]] | None = None,
@@ -363,10 +376,10 @@ class EpochTrainer(TrainerProtocol):
             kwargs: Keyword constructor arguments for the module.
             calibrator_type: Dotted path to a calibrator class wrapping the net
                 as its ``estimator``. When given, the calibrator - not the bare
-                net - is returned. Defaults to None (no calibration).
+                net - is returned. Defaults to None (no calibration). Currently, the calibrator is ignored and not implemented. This will change in the future.
             calibrator_args: Extra positional arguments for the calibrator,
-                passed before ``estimator``.
-            calibrator_kwargs: Keyword arguments for the calibrator.
+                passed before ``estimator``. Currently, the calibrator is ignored and not implemented. This will change in the future.
+            calibrator_kwargs: Keyword arguments for the calibrator. Currently, the calibrator is ignored and not implemented. This will change in the future.
             loss_type: Dotted path to the criterion class.
             loss_kwargs: Criterion constructor arguments, forwarded to skorch
                 under the ``criterion__`` prefix.
