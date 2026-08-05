@@ -307,7 +307,7 @@ class SimpleTrainer(TrainerProtocol):
         """
         return self.fit(train_data)
 
-    def _evaluate(self, dataset: DatasetProtocol) -> dict[str, float]:
+    def evaluate(self, data: DatasetProtocol) -> dict[str, float]:
         """Score the current model on ``dataset`` with every configured metric.
 
         Args:
@@ -324,7 +324,7 @@ class SimpleTrainer(TrainerProtocol):
             dict[str, float]: Mapping of each metric's ``name`` to its score,
                 in the same order the metrics were configured in.
         """
-        X, y = to_xy(dataset, **self.data_xy_kwargs)
+        X, y = to_xy(data, **self.data_xy_kwargs)
 
         # predict() is cheap and always needed by at least the default
         # metric; predict_proba() is only computed if some configured metric
@@ -361,34 +361,6 @@ class SimpleTrainer(TrainerProtocol):
             predictions = y_proba if needs_proba else y_pred
             results[name] = metric_fn(y, predictions, *args, **kwargs)
         return results
-
-    def validate(self, data: DatasetProtocol) -> dict[str, float]:
-        """Score the model on a validation dataset.
-
-        Intended for use during development, as opposed to a final held-out
-        check; see ``test``.
-
-        Args:
-            data (DatasetProtocol): Validation dataset to score against.
-
-        Returns:
-            dict[str, float]: Mapping of metric name to score.
-        """
-        return self._evaluate(data)
-
-    def test(self, data: DatasetProtocol) -> dict[str, float]:
-        """Score the model on a held-out test dataset.
-
-        Intended as the final evaluation once model selection is done; see
-        ``validate`` for the counterpart used during development.
-
-        Args:
-            data (DatasetProtocol): Test dataset to score against.
-
-        Returns:
-            dict[str, float]: Mapping of metric name to score.
-        """
-        return self._evaluate(data)
 
     def save_snapshot(self, path: str) -> None:
         """Save this trainer's config and fitted model to ``path``, a
