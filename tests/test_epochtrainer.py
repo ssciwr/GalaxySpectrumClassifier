@@ -106,6 +106,19 @@ def test_epochtrainer_rejects_invalid_configuration_before_creating_output(
     assert not (tmp_path / "training").exists()
 
 
+def test_epochtrainer_rejects_shuffled_evaluation_configuration(tmp_path, create_data):
+    kwargs = _trainer_kwargs(
+        tmp_path,
+        create_data,
+        val_loader_kwargs={"shuffle": True},
+    )
+
+    with pytest.raises(ValueError, match="cannot set shuffle=True"):
+        EpochTrainer(**kwargs)
+
+    assert not (tmp_path / "training").exists()
+
+
 def test_epochtrainer_constructs_all_datasets_and_preserves_rebuild_config(
     tmp_path, create_data
 ):
@@ -244,6 +257,9 @@ def test_epochtrainer_adds_required_checkpoint_and_default_metric_callbacks(
     assert checkpoint.load_best is True
     assert end_checkpoint.dirname == trainer.output_path / "snapshots"
     assert metric_callback.name == "accuracy_score"
+    assert trainer.callbacks.index(metric_callback) < trainer.callbacks.index(
+        checkpoint
+    )
 
 
 def test_epochtrainer_adds_requested_callbacks(tmp_path, create_data):
@@ -344,7 +360,7 @@ def test_epochtrainer_train_fits_constructor_datasets(tmp_path, create_data):
     assert trainer.model.predict(trainer.eval_ds).shape == (len(trainer.eval_ds),)
 
 
-def test_epochtrainer_train_then_evaluate_uses_configured_evaluation_data(
+def test_epochtrainer_records_validation_metrics_and_evaluates_stably(
     tmp_path, create_data
 ):
     trainer = EpochTrainer(
@@ -352,11 +368,14 @@ def test_epochtrainer_train_then_evaluate_uses_configured_evaluation_data(
     )
 
     trainer.train()
-    results = trainer.evaluate()
+    first_results = trainer.evaluate()
+    second_results = trainer.evaluate()
 
     expected_y = np.array([y.item() for _, y in trainer.eval_ds])
     expected = accuracy_score(expected_y, trainer.model.predict(trainer.eval_ds))
-    assert results == {"accuracy_score": expected}
+    assert "accuracy_score" in trainer.model.history[-1]
+    assert first_results == second_results
+    assert first_results == {"accuracy_score": expected}
 
 
 def test_epochtrainer_evaluate_binary_probability_metric_after_training(

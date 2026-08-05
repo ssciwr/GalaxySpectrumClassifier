@@ -137,7 +137,9 @@ class EpochTrainer(TrainerProtocol):
             train_loader_kwargs (dict[str, Any] | None, optional): Named
                 options controlling training-data batching. Defaults to None.
             val_loader_kwargs (dict[str, Any] | None, optional): Named options
-                controlling validation-data batching. Defaults to None.
+                controlling validation-data batching. ``shuffle=True`` is not
+                supported because evaluation metrics require prediction order
+                to match target order. Defaults to None.
             seed (int, optional): Seed for trainer-managed random state.
                 Defaults to 42.
             checkpoint_kwargs (dict[str, Any] | None, optional): Named options
@@ -156,8 +158,9 @@ class EpochTrainer(TrainerProtocol):
                 the trainer configuration for model-related use.
 
         Raises:
-            ValueError: If the task or export format is unsupported, or a model,
-                loss, or optimizer type is missing.
+            ValueError: If the task or export format is unsupported, a model,
+                loss, or optimizer type is missing, or validation batching is
+                configured to shuffle samples.
             ModuleNotFoundError: If a configured import path cannot be found.
             OSError: If the output directory or configured datasets cannot be
                 created or read.
@@ -178,6 +181,12 @@ class EpochTrainer(TrainerProtocol):
 
         if task not in TASKS:
             raise ValueError(f"Unknown task {task}. Allowed tasks: {TASKS}")
+
+        if val_loader_kwargs is not None and val_loader_kwargs.get("shuffle"):
+            raise ValueError(
+                "val_loader_kwargs cannot set shuffle=True because evaluation "
+                "metrics require predictions and targets in the same order"
+            )
 
         # construct config again from args
         self.config = {
@@ -401,6 +410,25 @@ class EpochTrainer(TrainerProtocol):
 
             cbs.append(lr_callback)
 
+        # Metrics must precede checkpointing: the best checkpoint saves history
+        # and restores it after training, so it must include the epoch scores.
+        for metric in self.metrics:
+            scorer = make_scorer(
+                metric["callable"],
+                response_method=(
+                    "predict_proba" if metric["needs_proba"] else "predict"
+                ),
+                **metric["kwargs"],
+            )
+            metric_callback = EpochScoring(
+                scoring=scorer,
+                lower_is_better=metric["lower_is_better"],
+                on_train=False,
+                name=metric["name"],
+                use_caching=metric["use_caching"],
+            )
+            cbs.append(metric_callback)
+
         # set up checkpointing
         chkpt_kwargs = resolve_type_kwargs(checkpoint_kwargs or {})
         chkpt_kwargs["load_best"] = True
@@ -423,29 +451,6 @@ class EpochTrainer(TrainerProtocol):
         end_chkpt_kwargs["dirname"] = self.output_path / "snapshots"
         trainend_chkpt_callback = TrainEndCheckpoint(**end_chkpt_kwargs)
         cbs.append(trainend_chkpt_callback)
-
-        # build metric callbacks from the metrics
-        for metric in self.metrics:
-            # make_scorer adapts the raw metric to the (estimator, X, y)
-            # signature EpochScoring calls it with, and routes it through
-            # predict_proba for probability metrics - the same distinction
-            # `needs_proba` makes in evaluate().
-            scorer = make_scorer(
-                metric["callable"],
-                response_method=(
-                    "predict_proba" if metric["needs_proba"] else "predict"
-                ),
-                **metric["kwargs"],
-            )
-            metric_callback = EpochScoring(
-                scoring=scorer,
-                lower_is_better=metric["lower_is_better"],
-                on_train=False,
-                name=metric["name"],
-                use_caching=metric["use_caching"],
-            )
-
-            cbs.append(metric_callback)
 
         # add early stopping
         if early_stopping_kwargs is not None:
