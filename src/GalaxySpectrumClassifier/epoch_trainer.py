@@ -1,4 +1,4 @@
-from .base import Trainable, DatasetProtocol, TrainerProtocol
+from .base import Trainable, TrainerProtocol
 from .utils import (
     load_type,
     resolve_type_kwargs,
@@ -580,19 +580,8 @@ class EpochTrainer(TrainerProtocol):
 
         return net
 
-    def train(
-        self,
-        train_data: DatasetProtocol | None = None,
-        validation_data: DatasetProtocol | None = None,
-    ) -> Any:
-        """Fit the model using configured or replacement datasets.
-
-        Args:
-            train_data (DatasetProtocol | None, optional): Replacement training
-                dataset. Defaults to None, which uses the configured dataset.
-            validation_data (DatasetProtocol | None, optional): Replacement
-                validation dataset. Defaults to None, which uses the configured
-                validation dataset.
+    def train(self) -> Any:
+        """Fit the model using its configured training and validation datasets.
 
         Returns:
             Any: The underlying fitting operation's result.
@@ -600,21 +589,10 @@ class EpochTrainer(TrainerProtocol):
         Raises:
             ValueError: If training samples are incompatible with the model.
         """
-        if train_data is not None:
-            self.train_ds = train_data
-        if validation_data is not None:
-            self.val_ds = validation_data
-            self.model.set_params(
-                train_split=predefined_split(self.val_ds),
-            )
         self.model.fit(self.train_ds, y=None)
 
-    def evaluate(self, data: DatasetProtocol | None = None) -> Any:
-        """Evaluate the current model using each configured metric.
-
-        Args:
-            data (DatasetProtocol | None, optional): Replacement evaluation
-                dataset. Defaults to None, which uses the configured dataset.
+    def evaluate(self) -> Any:
+        """Evaluate the current model using its configured evaluation dataset.
 
         Returns:
             dict[str, float]: Mapping from configured metric names to scores.
@@ -623,9 +601,6 @@ class EpochTrainer(TrainerProtocol):
             ValueError: If a probability-based metric is incompatible with the
                 configured task or the model's probability output.
         """
-        if data is not None:
-            self.eval_ds = data
-
         # predict() is cheap and always needed by at least the default
         # metric; predict_proba() is only computed if some configured metric
         # actually needs it, since not every estimator supports it cheaply

@@ -344,37 +344,6 @@ def test_epochtrainer_train_fits_constructor_datasets(tmp_path, create_data):
     assert trainer.model.predict(trainer.eval_ds).shape == (len(trainer.eval_ds),)
 
 
-def test_epochtrainer_train_replaces_the_training_dataset(tmp_path, create_data):
-    trainer = EpochTrainer(
-        **_trainer_kwargs(tmp_path, create_data, max_epochs=1, batch_size=1000)
-    )
-    replacement_train = torch.utils.data.Subset(trainer.train_ds, range(8))
-    original_validation = trainer.val_ds
-
-    trainer.train(train_data=replacement_train)
-
-    assert trainer.train_ds is replacement_train
-    assert trainer.val_ds is original_validation
-    assert np.isfinite(trainer.model.history[-1]["train_loss"])
-    assert np.isfinite(trainer.model.history[-1]["valid_loss"])
-
-
-def test_epochtrainer_train_replaces_validation_dataset_and_split(
-    tmp_path, create_data
-):
-    trainer = EpochTrainer(
-        **_trainer_kwargs(tmp_path, create_data, max_epochs=1, batch_size=1000)
-    )
-    replacement_validation = torch.utils.data.Subset(trainer.val_ds, range(8))
-
-    trainer.train(validation_data=replacement_validation)
-
-    assert trainer.val_ds is replacement_validation
-    assert trainer.model.train_split.keywords["valid_ds"] is replacement_validation
-    assert np.isfinite(trainer.model.history[-1]["train_loss"])
-    assert np.isfinite(trainer.model.history[-1]["valid_loss"])
-
-
 def test_epochtrainer_train_then_evaluate_uses_configured_evaluation_data(
     tmp_path, create_data
 ):
@@ -387,21 +356,6 @@ def test_epochtrainer_train_then_evaluate_uses_configured_evaluation_data(
 
     expected_y = np.array([y.item() for _, y in trainer.eval_ds])
     expected = accuracy_score(expected_y, trainer.model.predict(trainer.eval_ds))
-    assert results == {"accuracy_score": expected}
-
-
-def test_epochtrainer_evaluate_replaces_evaluation_data(tmp_path, create_data):
-    trainer = EpochTrainer(
-        **_trainer_kwargs(tmp_path, create_data, max_epochs=1, batch_size=1000)
-    )
-    replacement_evaluation = torch.utils.data.Subset(trainer.eval_ds, range(8))
-
-    trainer.train()
-    results = trainer.evaluate(replacement_evaluation)
-
-    expected_y = np.array([y.item() for _, y in replacement_evaluation])
-    expected = accuracy_score(expected_y, trainer.model.predict(replacement_evaluation))
-    assert trainer.eval_ds is replacement_evaluation
     assert results == {"accuracy_score": expected}
 
 
@@ -460,8 +414,9 @@ def test_epochtrainer_evaluate_passes_multiclass_probability_matrix_to_metric(
     data = torch.utils.data.Subset(trainer.eval_ds, range(3))
     probabilities = np.array([[0.7, 0.2, 0.1], [0.1, 0.8, 0.1], [0.2, 0.3, 0.5]])
     trainer.model = _FixedPredictionModel([0, 1, 2], probabilities)
+    trainer.eval_ds = data
 
-    results = trainer.evaluate(data)
+    results = trainer.evaluate()
 
     expected_y = np.array([y.item() for _, y in data])
     assert results["multiclass_log_loss"] == pytest.approx(
@@ -491,7 +446,7 @@ def test_epochtrainer_evaluate_rejects_malformed_binary_probabilities(
     )
 
     with pytest.raises(ValueError, match="predict_proba returned 3 columns"):
-        trainer.evaluate(torch.utils.data.Subset(trainer.eval_ds, range(3)))
+        trainer.evaluate()
 
 
 def test_epochtrainer_evaluate_rejects_probability_metrics_for_regression(
@@ -516,7 +471,7 @@ def test_epochtrainer_evaluate_rejects_probability_metrics_for_regression(
     trainer.model = _FixedPredictionModel([0.1, 0.2, 0.3])
 
     with pytest.raises(ValueError, match="task='regression' has no predict_proba"):
-        trainer.evaluate(torch.utils.data.Subset(trainer.eval_ds, range(3)))
+        trainer.evaluate()
 
 
 def test_epochtrainer_save_snapshot_writes_full_training_state(tmp_path, create_data):
