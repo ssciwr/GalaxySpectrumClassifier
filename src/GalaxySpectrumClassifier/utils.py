@@ -21,6 +21,8 @@ DEFAULT_METRICS = {
     "regression": [{"type": "sklearn.metrics.r2_score"}],
 }
 
+EXPORT_FORMATS = ["onnx", "default", "pt", "safetensors"]
+
 
 def identity(x: Any) -> Any:
     """Identity function

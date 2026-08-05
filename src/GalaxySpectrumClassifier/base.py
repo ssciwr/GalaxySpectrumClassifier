@@ -32,6 +32,10 @@ class Predictable(Configurable, Protocol):
 class Trainable(Predictable, Protocol):
     def fit(self, data, *args, **kwargs): ...
 
+    def initialize(self): ...
+
+    def save_params(self): ...
+
 
 @runtime_checkable
 class TrainerProtocol(Configurable, Protocol):

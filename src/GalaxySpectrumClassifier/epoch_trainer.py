@@ -1,9 +1,5 @@
 from .base import Trainable, DatasetProtocol, TrainerProtocol
-from .utils import (
-    load_type,
-    resolve_type_kwargs,
-    DEFAULT_METRICS,
-)
+from .utils import load_type, resolve_type_kwargs, DEFAULT_METRICS, EXPORT_FORMATS
 from skorch import NeuralNetBinaryClassifier, NeuralNetClassifier, NeuralNetRegressor
 from skorch.helper import predefined_split
 from skorch.callbacks import (
@@ -21,6 +17,7 @@ from collections.abc import Callable
 import yaml
 import numpy as np
 import torch
+
 
 MetricSpec = dict[str, Callable[..., Any] | list[Any] | dict[str, Any] | bool]
 
@@ -64,8 +61,23 @@ class EpochTrainer(TrainerProtocol):
         progressbar: bool = True,
         progressbar_values: list[str] | None = None,
         early_stopping_kwargs: dict[str, Any] | None = None,
+        export_format: str = "default",
         **additional_model_kwargs,
     ):
+        if export_format not in EXPORT_FORMATS:
+            raise ValueError(
+                f"Unknown export format: {export_format}. Allowed formats: {EXPORT_FORMATS}"
+            )
+
+        if optimizer_type is None:
+            raise ValueError("Optimizer type cannot be none")
+
+        if loss_type is None:
+            raise ValueError("Loss type cannot be none")
+
+        if model_type is None:
+            raise ValueError("Model type cannot be none")
+
         # construct config again from args
         self.config = {
             "output_path": output_path,
@@ -104,6 +116,7 @@ class EpochTrainer(TrainerProtocol):
             "progressbar": progressbar,
             "progressbar_values": progressbar_values,
             "early_stopping_kwargs": early_stopping_kwargs,
+            "export_format": export_format,
             **additional_model_kwargs,
         }
         self.task = task
@@ -264,7 +277,7 @@ class EpochTrainer(TrainerProtocol):
         # set up checkpointing
         chkpt_kwargs = resolve_type_kwargs(checkpoint_kwargs or {})
         chkpt_kwargs["load_best"] = True
-
+        chkpt_kwargs["dirname"] = self.output_path / "snapshots"
         chkpt_callback = Checkpoint(**chkpt_kwargs)
         cbs.append(chkpt_callback)
 
@@ -280,6 +293,7 @@ class EpochTrainer(TrainerProtocol):
 
         # add train_end checkpoint
         end_chkpt_kwargs = resolve_type_kwargs(end_checkpoint_kwargs or {})
+        end_chkpt_kwargs["dirname"] = self.output_path / "snapshots"
         trainend_chkpt_callback = TrainEndCheckpoint(**end_chkpt_kwargs)
         cbs.append(trainend_chkpt_callback)
 
@@ -377,13 +391,6 @@ class EpochTrainer(TrainerProtocol):
             Trainable: The constructed net, or the calibrator wrapping it if
                 ``calibrator_type`` was given.
         """
-
-        if optimizer_type is None:
-            raise ValueError("Optimizer type cannot be none")
-
-        if loss_type is None:
-            raise ValueError("Loss type cannot be none")
-
         # build model type
         skorch_modeltype = None
 
@@ -501,6 +508,23 @@ class EpochTrainer(TrainerProtocol):
         return results
 
     def save_snapshot(self, path: str) -> None:
+        """Save this trainer's config and the full training state of its net
+        to ``path``, a directory below ``output_path`` that is created if it
+        does not exist yet.
+
+        Optimizer, criterion and history are saved alongside the module
+        parameters, so training can be picked up where it left off - that is
+        what distinguishes a snapshot from ``save_model()``. Restoring one
+        needs the config as well as the saved state, see ``load_snapshot()``.
+
+        The config is written as YAML and therefore has to be plain data;
+        passing live objects as constructor keyword arguments rather than the
+        ``{"type": ...}`` form makes it unwritable. The net must have been
+        trained before it can be snapshotted.
+
+        Args:
+            path (str): Directory to save the snapshot into.
+        """
         directory = self.output_path / Path(path)
         directory.mkdir(parents=True, exist_ok=True)
 
@@ -508,24 +532,151 @@ class EpochTrainer(TrainerProtocol):
         with open(directory / "config.yaml", "w") as f:
             yaml.dump(self.config, f)
 
-        # save model now
+        self.model.save_params(
+            f_params=directory / "params.pt",
+            f_optimizer=directory / "optimizer.pt",
+            f_criterion=directory / "criterion.pt",
+            f_history=directory / "history.json",
+        )
 
     @classmethod
     def load_snapshot(cls, path: str) -> "TrainerProtocol":
-        ...
+        """Reconstruct a trainer previously saved with ``save_snapshot()``.
+
+        Training can be resumed from the returned trainer: its net carries the
+        optimizer, criterion and history of the snapshot, not just the module
+        parameters.
+
+        Args:
+            path (str): Directory previously written by ``save_snapshot()``.
+
+        Returns:
+            TrainerProtocol: A new instance with the saved config, and its net
+                restored to the state it was snapshotted in.
+        """
         # load config
-        load_path = Path(path).resolve() / "config.yaml"
-        with open(load_path, "r") as f:
+        load_path = Path(path).resolve()
+        with open(load_path / "config.yaml", "r") as f:
             config = yaml.safe_load(f)
 
         # build trainer from config
         trainer = cls.from_config(config)
 
         # load and set model state
+        trainer.model.initialize()
+        trainer.model.load_params(
+            f_params=load_path / "params.pt",
+            f_optimizer=load_path / "optimizer.pt",
+            f_criterion=load_path / "criterion.pt",
+            f_history=load_path / "history.json",
+        )
 
         return trainer
 
-    def save_model(self, path: str) -> None: ...
+    def save_model(self, path: str) -> None:
+        """Export the trained torch module to ``path``, a directory below
+        ``output_path`` that is created if it does not exist yet.
+
+        Only the module is exported, without the optimizer, criterion and
+        history that make a snapshot resumable - use ``save_snapshot()`` when
+        training should be continued later.
+
+        The written format follows the ``export_format`` this trainer was
+        configured with. Only ``"default"`` can be read back by
+        ``load_model()``; the other formats are meant for use outside this
+        package. The net must have been trained before it can be exported.
+
+        Args:
+            path (str): Directory to export the model into.
+        """
+        directory = self.output_path / Path(path)
+        directory.mkdir(parents=True, exist_ok=True)
+
+        export_format = self.config["export_format"]
+        net_type = type(self.model)
+        with open(directory / "model.yaml", "w") as f:
+            yaml.dump(
+                {
+                    "net_type": f"{net_type.__module__}.{net_type.__qualname__}",
+                    "model_type": self.config["model_type"],
+                    "model_args": self.config["model_args"],
+                    "model_kwargs": self.config["model_kwargs"],
+                    "device": self.config["device"],
+                    "export_format": export_format,
+                },
+                f,
+            )
+
+        # An export must not capture train-mode behaviour such as active
+        # dropout or batchnorm still updating its running stats, and must not
+        # leave the module in a different mode than it found it in either.
+        module = self.model.module_
+        was_training = module.training
+        module.eval()
+        try:
+            if export_format == "default":
+                self.model.save_params(f_params=directory / "params.pt")
+            elif export_format == "safetensors":
+                self.model.save_params(
+                    f_params=directory / "params.safetensors", use_safetensors=True
+                )
+            elif export_format == "pt":
+                torch.save(module, directory / "model.pt")
+            elif export_format == "onnx":
+                sample, _ = self.train_ds[0]
+                torch.onnx.export(
+                    module,
+                    (sample.unsqueeze(0).float().to(self.config["device"]),),
+                    directory / "model.onnx",
+                    input_names=["input"],
+                    output_names=["output"],
+                    # Without this the graph is pinned to the single sample
+                    # used to trace it and only ever accepts batches of one.
+                    # Given positionally rather than keyed by name, since the
+                    # keys would have to match the module's forward parameter
+                    # names, which are the user's to choose.
+                    dynamic_shapes=({0: "batch"},),
+                )
+            else:
+                raise ValueError(
+                    f"Unknown export format: {export_format}. "
+                    f"Allowed formats: {EXPORT_FORMATS}"
+                )
+        finally:
+            module.train(was_training)
 
     @staticmethod
-    def load_model(path: str) -> Trainable: ...
+    def load_model(path: str) -> Trainable:
+        """Load a model previously exported with ``save_model()``.
+
+        Args:
+            path (str): Directory previously written by ``save_model()``.
+
+        Raises:
+            ValueError: If the export was not written in the ``"default"``
+                format, which is the only one that can be read back.
+
+        Returns:
+            Trainable: The trained net on its own; no trainer configuration is
+                restored, and it carries neither optimizer state nor history.
+        """
+        directory = Path(path).resolve()
+        with open(directory / "model.yaml", "r") as f:
+            model_config = yaml.safe_load(f)
+
+        export_format = model_config["export_format"]
+        if export_format != "default":
+            raise ValueError(
+                f"Can only load models exported with export_format='default', "
+                f"got {export_format!r}."
+            )
+
+        module = load_type(model_config["model_type"])(
+            *(model_config["model_args"] or []),
+            **resolve_type_kwargs(model_config["model_kwargs"] or {}),
+        )
+        net = load_type(model_config["net_type"])(module, device=model_config["device"])
+        net.initialize()
+        net.load_params(f_params=directory / "params.pt")
+
+        return net
