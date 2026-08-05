@@ -676,7 +676,9 @@ def test_epochtrainer_export_model_default_reloads_with_skorch(tmp_path, create_
     torch.testing.assert_close(actual, expected)
 
 
-def test_epochtrainer_export_model_pt_reloads_with_torch(tmp_path, create_data):
+def test_epochtrainer_export_model_pt_reloads_weights_with_safe_torch_load(
+    tmp_path, create_data
+):
     trainer = EpochTrainer(
         **_trainer_kwargs(
             tmp_path,
@@ -696,11 +698,15 @@ def test_epochtrainer_export_model_pt_reloads_with_torch(tmp_path, create_data):
 
     export_path = trainer.output_path / "pt-export"
     with (export_path / "model.yaml").open() as manifest_file:
-        assert yaml.safe_load(manifest_file)["export_format"] == "pt"
-    restored = torch.load(export_path / "model.pt", weights_only=False)
-    restored.eval()
+        manifest = yaml.safe_load(manifest_file)
+    assert manifest["export_format"] == "pt"
+    module = load_type(manifest["model_type"])(
+        *(manifest["model_args"] or []), **(manifest["model_kwargs"] or {})
+    )
+    module.load_state_dict(torch.load(export_path / "model.pt", weights_only=True))
+    module.eval()
     with torch.no_grad():
-        actual = restored(inputs)
+        actual = module(inputs)
 
     torch.testing.assert_close(actual, expected)
 

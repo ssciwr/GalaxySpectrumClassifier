@@ -635,7 +635,9 @@ class EpochTrainer(TrainerProtocol):
                     f_params=directory / "params.safetensors", use_safetensors=True
                 )
             elif export_format == "pt":
-                torch.save(module, directory / "model.pt")
+                # The manifest reconstructs the architecture, leaving this
+                # artifact as weights that torch.load can safely restrict.
+                torch.save(module.state_dict(), directory / "model.pt")
             elif export_format == "onnx":
                 sample, _ = self.train_ds[0]
                 torch.onnx.export(
