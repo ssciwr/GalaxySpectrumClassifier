@@ -18,6 +18,11 @@ from GalaxySpectrumClassifier.data import PandasDataset
 from GalaxySpectrumClassifier.epoch_trainer import EpochTrainer
 
 
+def _as_float32(sample):
+    """Provide BCEWithLogitsLoss-compatible features and targets."""
+    return sample.astype(np.float32)
+
+
 def _trainer_kwargs(tmp_path, data_path, **overrides):
     """Return a minimal, real-data configuration for constructor tests."""
     kwargs = {
@@ -25,8 +30,8 @@ def _trainer_kwargs(tmp_path, data_path, **overrides):
         "max_epochs": 2,
         "batch_size": 4,
         "model_type": "torch.nn.Linear",
-        "model_args": [6, 2],
-        "loss_type": "torch.nn.CrossEntropyLoss",
+        "model_args": [6, 1],
+        "loss_type": "torch.nn.BCEWithLogitsLoss",
         "optimizer_type": "torch.optim.SGD",
         "train_dataset_type": "GalaxySpectrumClassifier.data.PandasDataset",
         "val_dataset_type": "GalaxySpectrumClassifier.data.PandasDataset",
@@ -35,9 +40,21 @@ def _trainer_kwargs(tmp_path, data_path, **overrides):
         "train_dataset_args": [str(data_path)],
         "val_dataset_args": [str(data_path)],
         "test_dataset_args": [str(data_path)],
-        "train_dataset_kwargs": {"sep": ",", "label_columns": "source"},
-        "val_dataset_kwargs": {"sep": ",", "label_columns": "source"},
-        "test_dataset_kwargs": {"sep": ",", "label_columns": "source"},
+        "train_dataset_kwargs": {
+            "sep": ",",
+            "label_columns": "source",
+            "transform": _as_float32,
+        },
+        "val_dataset_kwargs": {
+            "sep": ",",
+            "label_columns": "source",
+            "transform": _as_float32,
+        },
+        "test_dataset_kwargs": {
+            "sep": ",",
+            "label_columns": "source",
+            "transform": _as_float32,
+        },
         "progressbar": False,
     }
     kwargs.update(overrides)
@@ -98,8 +115,8 @@ def test_epochtrainer_constructs_all_datasets_and_preserves_rebuild_config(
     assert isinstance(trainer.model, NeuralNetBinaryClassifier)
     assert isinstance(trainer.model.module, torch.nn.Linear)
     assert trainer.model.module.in_features == 6
-    assert trainer.model.module.out_features == 2
-    assert trainer.model.criterion is torch.nn.CrossEntropyLoss
+    assert trainer.model.module.out_features == 1
+    assert trainer.model.criterion is torch.nn.BCEWithLogitsLoss
     assert trainer.model.optimizer is torch.optim.SGD
     assert trainer.model.get_params()["optimizer__lr"] == 0.25
     assert trainer.model.get_params()["criterion__reduction"] == "sum"
@@ -137,17 +154,45 @@ def test_epochtrainer_seeds_numpy_and_torch_global_rngs(tmp_path, create_data):
 
 
 @pytest.mark.parametrize(
-    ("task", "expected_type", "expected_metric"),
+    ("task", "expected_type", "expected_metric", "model_args", "loss_type"),
     [
-        ("binary-classification", NeuralNetBinaryClassifier, "accuracy_score"),
-        ("multiclass-classification", NeuralNetClassifier, "accuracy_score"),
-        ("regression", NeuralNetRegressor, "r2_score"),
+        (
+            "binary-classification",
+            NeuralNetBinaryClassifier,
+            "accuracy_score",
+            [6, 1],
+            "torch.nn.BCEWithLogitsLoss",
+        ),
+        (
+            "multiclass-classification",
+            NeuralNetClassifier,
+            "accuracy_score",
+            [6, 2],
+            "torch.nn.CrossEntropyLoss",
+        ),
+        (
+            "regression",
+            NeuralNetRegressor,
+            "r2_score",
+            [6, 1],
+            "torch.nn.MSELoss",
+        ),
     ],
 )
 def test_epochtrainer_selects_net_and_default_metric_for_each_task(
-    tmp_path, create_data, task, expected_type, expected_metric
+    tmp_path, create_data, task, expected_type, expected_metric, model_args, loss_type
 ):
-    trainer = EpochTrainer(**_trainer_kwargs(tmp_path, create_data, task=task))
+    # These coherent model/loss pairs make each constructor case meaningful;
+    # they deliberately do not impose task-specific validation on callers.
+    trainer = EpochTrainer(
+        **_trainer_kwargs(
+            tmp_path,
+            create_data,
+            task=task,
+            model_args=model_args,
+            loss_type=loss_type,
+        )
+    )
 
     assert isinstance(trainer.model, expected_type)
     assert [metric["name"] for metric in trainer.metrics] == [expected_metric]
