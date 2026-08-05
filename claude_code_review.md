@@ -33,7 +33,7 @@ issue. *Retracted* = withdrawn, no action. Status is yours to fill in.
 | M8 | Out of scope | `data.py` | [Lazy mode reads every file at construction](#m8-lazy-mode-reads-every-file-at-construction-and-throws-the-result-away) | |
 | M9 | Out of scope | `tests/test_pandasdataset.py` | [Construction test asserts nothing (vacuous truth)](#m9-a-construction-test-asserts-nothing-vacuous-truth) | |
 | M12 | Out of scope | `epoch_trainer.py`, `simple_trainer.py` | [Metric/evaluate logic duplicated between trainers](#m12-_build_metrics--evaluate-duplicated-between-the-two-trainers-already-diverging) | |
-| L11 | Out of scope | `data.py` | [`to_frame()` hands out the internal frame](#l11-to_frame-hands-out-the-internal-frame) | |
+| L11 | Out of scope | `data.py` | [`to_frame()` hands out the internal frame](#l11-to_frame-hands-out-the-internal-frame) | fixed |
 | L13 | Out of scope | `simple_trainer.py` | [`_load_model` trusts all skops types](#l13-simpletrainer_load_model-defeats-the-skops-safety-check) | |
 | M7 | Retracted | — | [No compatibility check between datasets (userland)](#m7-no-compatibility-check-between-the-three-configured-datasets) | |
 | L4 | Retracted | — | [Dead branch in `export_model`](#l4-dead-branch-in-export_model) | |

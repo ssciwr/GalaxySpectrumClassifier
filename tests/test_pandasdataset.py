@@ -320,7 +320,10 @@ def test_pandasdataset_to_frame_matches_dataset_order(create_data, tmp_path):
         create_data, sep=",", cache_path=cache_path, pre_filter=lambda df: df
     )
 
-    assert cached.to_frame() is cached.data_cache
+    cached_frame = cached.to_frame()
+    assert cached_frame is not cached.data_cache
+    cached_frame.iloc[0, cached_frame.columns.get_loc("source")] = -1
+    assert cached.data_cache.iloc[0]["source"] != -1
 
 
 def test_pandasdataset_getitem_without_label_columns_raises(create_data):
