@@ -11,9 +11,9 @@ from .utils import load_type, resolve_type_kwargs, to_xy
 from .utils import TASKS, DEFAULT_METRICS
 
 # One resolved, ready-to-call metric: (result key, the loaded callable, its
-# extra positional args, its extra keyword args, whether it should be scored
-# against predict_proba() output instead of predict()).
-MetricSpec = dict[str, Callable[..., Any] | list[Any] | dict[str, Any] | bool]
+# extra keyword args, whether it should be scored against predict_proba() output
+# instead of predict()).
+MetricSpec = dict[str, Callable[..., Any] | dict[str, Any] | bool]
 
 
 class SimpleTrainer(TrainerProtocol):
@@ -66,8 +66,6 @@ class SimpleTrainer(TrainerProtocol):
 
                 * ``type`` (str, required): Dotted path to a metric callable
                   identifying a callable that accepts targets and predictions.
-                * ``args`` (list[Any], optional): Extra positional arguments
-                  passed after the targets and predictions.
                 * ``kwargs`` (dict[str, Any], optional): Extra keyword
                   arguments passed to the metric.
                 * ``needs_proba`` (bool, optional): If True, the metric is
@@ -232,16 +230,21 @@ class SimpleTrainer(TrainerProtocol):
 
         Raises:
             KeyError: If a declaration has no ``type`` entry.
+            ValueError: If a declaration uses unsupported ``args``.
             ModuleNotFoundError: If a metric import path cannot be found.
         """
         metrics: list[MetricSpec] = []
         for spec in specs:
+            if "args" in spec:
+                raise ValueError(
+                    "Metric specs do not support 'args'; pass metric options "
+                    "through 'kwargs'."
+                )
             metric_fn = load_type(spec["type"])
             # Only used as the default result key below, see `name`.
             metric_name = spec["type"].rsplit(".", 1)[-1]
-            # `or []`/`or {}` also catches an explicit `None` in the config,
-            # not just a missing key.
-            args = spec.get("args") or []
+            # `or {}` also catches an explicit `None` in the config, not just
+            # a missing key.
             kwargs = spec.get("kwargs") or {}
             needs_proba = spec.get("needs_proba", False)
             # Falls back to the metric's own name so results are keyed
@@ -251,7 +254,6 @@ class SimpleTrainer(TrainerProtocol):
                 {
                     "name": name,
                     "callable": metric_fn,
-                    "args": args,
                     "kwargs": kwargs,
                     "needs_proba": needs_proba,
                 }
@@ -343,9 +345,10 @@ class SimpleTrainer(TrainerProtocol):
 
         results: dict[str, float] = {}
         for metric in self.metrics:
-            name, metric_fn, args, kwargs, needs_proba = metric.values()
-            predictions = y_proba if needs_proba else y_pred
-            results[name] = metric_fn(y, predictions, *args, **kwargs)
+            predictions = y_proba if metric["needs_proba"] else y_pred
+            results[metric["name"]] = metric["callable"](
+                y, predictions, **metric["kwargs"]
+            )
         return results
 
     def save_snapshot(self, path: str) -> None:
@@ -361,7 +364,7 @@ class SimpleTrainer(TrainerProtocol):
         directory.mkdir(parents=True, exist_ok=True)
         with open(directory / "config.yaml", "w") as f:
             pyaml.dump(self.config, f)
-        self.save_model(directory / "model.skops")
+        self.export_model(directory / "model.skops")
 
     @classmethod
     def load_snapshot(cls, path: str) -> "SimpleTrainer":

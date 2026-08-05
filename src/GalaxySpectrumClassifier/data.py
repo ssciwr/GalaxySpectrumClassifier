@@ -405,8 +405,8 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         single_label = isinstance(self.label_columns, str)
         labels = [self.label_columns] if single_label else list(self.label_columns)
 
-        # A single sample is a Series indexed by column name; several samples
-        # are a DataFrame whose columns are those same names.
+        # Normal retrieval keeps samples as DataFrames so pandas preserves
+        # per-column dtypes. A transform may still deliberately return a Series.
         columns = data.index if isinstance(data, pd.Series) else data.columns
 
         missing = [column for column in labels if column not in columns]
@@ -453,17 +453,28 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         """
         indices_frames = self._map_index(idx)
 
+        def _transform_one(i: int, df: pd.DataFrame):
+            return self.transform(df.iloc[[i], :])
+
         if isinstance(indices_frames, Sequence) and isinstance(
             indices_frames[0], Sequence
         ):
-            data = pd.DataFrame(
-                [self.transform(df.iloc[i, :]) for i, df in indices_frames],
-            )
+            transformed = [_transform_one(i, df) for i, df in indices_frames]
+            if all(isinstance(sample, pd.DataFrame) for sample in transformed):
+                data = pd.concat(transformed, ignore_index=True)
+            else:
+                data = pd.DataFrame(transformed)
+            return self._split_labels(data)
         else:
             i, df = indices_frames
-            data = self.transform(df.iloc[i, :])
+            data = _transform_one(i, df)
+            x, y = self._split_labels(data)
+            if x.ndim > 1 and x.shape[0] == 1:
+                x = x.squeeze(0)
+            if y.ndim > 0 and y.shape[0] == 1:
+                y = y.squeeze(0)
 
-        return self._split_labels(data)
+            return x, y
 
     def __len__(self):
         """Return the total number of samples in the dataset.

@@ -76,7 +76,6 @@ def test_simple_trainer_init_binary_minimal(tmp_path):
     assert trainer.model.random_state == 42
     assert trainer.metrics[0]["name"] == "accuracy_score"
     assert trainer.metrics[0]["callable"] == accuracy_score
-    assert trainer.metrics[0]["args"] == []
     assert trainer.metrics[0]["kwargs"] == {}
     assert trainer.metrics[0]["needs_proba"] is False
 
@@ -110,6 +109,21 @@ def test_simple_trainer_init_binary_with_custom_metric(tmp_path):
     assert trainer.metrics[0]["name"] == "auc"
     assert trainer.metrics[0]["callable"] == roc_auc_score
     assert trainer.metrics[0]["needs_proba"] is True
+
+
+def test_simple_trainer_rejects_metric_args(tmp_path):
+    with pytest.raises(ValueError, match="Metric specs do not support 'args'"):
+        SimpleTrainer(
+            output_path=str(tmp_path / "training"),
+            model_type="sklearn.ensemble.RandomForestClassifier",
+            metrics=[
+                {
+                    "type": "sklearn.metrics.fbeta_score",
+                    "name": "f2",
+                    "args": [2.0],
+                }
+            ],
+        )
 
 
 def test_simple_trainer_init_multiclass_minimal(tmp_path):

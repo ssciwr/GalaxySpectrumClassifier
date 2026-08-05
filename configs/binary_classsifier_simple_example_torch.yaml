@@ -41,19 +41,16 @@ trainer:
     -
       name: accuracy
       type: sklearn.metrics.accuracy_score
-      args:
       kwargs:
       needs_proba: false
     -
       name: balanced_accuracy
       type: sklearn.metrics.balanced_accuracy_score
-      args:
       kwargs:
       needs_proba: false
     -
       name: f1
       type: sklearn.metrics.f1_score
-      args:
       kwargs:
         average: binary
         zero_division: 0
@@ -61,7 +58,6 @@ trainer:
     -
       name: precision
       type: sklearn.metrics.precision_score
-      args:
       kwargs:
         average: binary
         zero_division: 0
@@ -69,7 +65,6 @@ trainer:
     -
       name: recall
       type: sklearn.metrics.recall_score
-      args:
       kwargs:
         average: binary
         zero_division: 0
@@ -77,7 +72,6 @@ trainer:
     -
       name: matthews_corrcoef
       type: sklearn.metrics.matthews_corrcoef
-      args:
       kwargs:
       needs_proba: false
     # The three below score against predict_proba()[:, 1] - these are the ones
@@ -85,25 +79,21 @@ trainer:
     -
       name: roc_auc
       type: sklearn.metrics.roc_auc_score
-      args:
       kwargs:
       needs_proba: true
     -
       name: average_precision
       type: sklearn.metrics.average_precision_score
-      args:
       kwargs:
       needs_proba: true
     -
       name: log_loss
       type: sklearn.metrics.log_loss
-      args:
       kwargs:
       needs_proba: true
     -
       name: brier
       type: sklearn.metrics.brier_score_loss
-      args:
       kwargs:
       needs_proba: true
   seed: 42

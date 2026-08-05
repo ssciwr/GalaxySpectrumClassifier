@@ -25,7 +25,7 @@ import numpy as np
 import torch
 
 
-MetricSpec = dict[str, Callable[..., Any] | list[Any] | dict[str, Any] | bool]
+MetricSpec = dict[str, Callable[..., Any] | dict[str, Any] | bool]
 
 
 class EpochTrainer(TrainerProtocol):
@@ -116,9 +116,9 @@ class EpochTrainer(TrainerProtocol):
             lr_scheduler_kwargs (dict[str, Any] | None, optional): Named
                 learning-rate schedule options. Defaults to None.
             metrics (list[dict[str, Any]] | None, optional): Metric
-                declarations. Each includes ``type`` and can include ``args``,
-                ``kwargs``, ``name``, ``needs_proba``, ``lower_is_better``, and
-                ``use_caching``. Defaults to None.
+                declarations. Each includes ``type`` and can include
+                ``kwargs``, ``name``, ``needs_proba``, ``lower_is_better``,
+                and ``use_caching``. Defaults to None.
             callbacks (list[dict[str, str | list[Any] | dict[str, Any]]] | None,
                 optional): Additional callback declarations, each with ``type``
                 and optional ``args`` and ``kwargs``. Defaults to None.
@@ -302,16 +302,21 @@ class EpochTrainer(TrainerProtocol):
 
         Raises:
             KeyError: If a declaration has no ``type`` entry.
+            ValueError: If a declaration uses unsupported ``args``.
             ModuleNotFoundError: If a metric import path cannot be found.
         """
         metrics: list[MetricSpec] = []
         for spec in specs:
+            if "args" in spec:
+                raise ValueError(
+                    "Metric specs do not support 'args'; pass metric options "
+                    "through 'kwargs'."
+                )
             metric_fn = load_type(spec["type"])
             # Only used as the default result key below, see `name`.
             metric_name = spec["type"].rsplit(".", 1)[-1]
-            # `or []`/`or {}` also catches an explicit `None` in the config,
-            # not just a missing key.
-            args = spec.get("args") or []
+            # `or {}` also catches an explicit `None` in the config, not just
+            # a missing key.
             kwargs = spec.get("kwargs") or {}
             needs_proba = spec.get("needs_proba", False)
             # Both are EpochScoring settings rather than metric arguments, so
@@ -326,7 +331,6 @@ class EpochTrainer(TrainerProtocol):
                 {
                     "name": name,
                     "callable": metric_fn,
-                    "args": args,
                     "kwargs": kwargs,
                     "needs_proba": needs_proba,
                     "lower_is_better": lower_is_better,
@@ -585,7 +589,7 @@ class EpochTrainer(TrainerProtocol):
 
         return net
 
-    def train(self) -> Any:
+    def train(self) -> Trainable:
         """Fit the model using its configured training and validation datasets.
 
         Returns:
@@ -595,6 +599,7 @@ class EpochTrainer(TrainerProtocol):
             ValueError: If training samples are incompatible with the model.
         """
         self.model.fit(self.train_ds, y=None)
+        return self.model
 
     def evaluate(self) -> Any:
         """Evaluate the current model using its configured evaluation dataset.
@@ -640,7 +645,7 @@ class EpochTrainer(TrainerProtocol):
         for metric in self.metrics:
             predictions = y_proba if metric["needs_proba"] else y_pred
             results[metric["name"]] = metric["callable"](
-                y, predictions, *metric["args"], **metric["kwargs"]
+                y, predictions, **metric["kwargs"]
             )
 
         return results

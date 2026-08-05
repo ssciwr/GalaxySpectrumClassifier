@@ -346,6 +346,23 @@ def test_epochtrainer_configures_custom_and_default_metrics(tmp_path, create_dat
     assert custom_metric_callback.use_caching is False
 
 
+def test_epochtrainer_rejects_metric_args(tmp_path, create_data):
+    with pytest.raises(ValueError, match="Metric specs do not support 'args'"):
+        EpochTrainer(
+            **_trainer_kwargs(
+                tmp_path,
+                create_data,
+                metrics=[
+                    {
+                        "type": "sklearn.metrics.fbeta_score",
+                        "name": "f2",
+                        "args": [2.0],
+                    }
+                ],
+            )
+        )
+
+
 def test_epochtrainer_train_fits_constructor_datasets(tmp_path, create_data):
     trainer = EpochTrainer(
         **_trainer_kwargs(tmp_path, create_data, max_epochs=1, batch_size=1000)

@@ -170,7 +170,9 @@ def test_pandasdataset_getitem_integer_indices(create_data):
     def expected(frame, position):
         row = frame.loc[frame.index[position], ["a", "b", "source"]]
         return (
-            torch.from_numpy(row[["a", "b"]].to_numpy(dtype=np.float32)),
+            torch.from_numpy(
+                frame.loc[[frame.index[position]], ["a", "b"]].to_numpy().squeeze(0)
+            ),
             torch.tensor(int(row["source"])),
         )
 
@@ -405,14 +407,12 @@ def test_pandasdataset_getitem_dtypes(create_data):
     )
 
     x, y = dataset[0]
-    assert x.dtype == torch.float32
-    # The row also contains floating-point features, so pandas represents this
-    # untransformed mixed row as float64. The dataset must not override it.
-    assert y.dtype == torch.float64
+    assert x.dtype == torch.float64
+    assert y.dtype == torch.int64
 
     x, y = dataset[0:4]
-    assert x.dtype == torch.float32
-    assert y.dtype == torch.float64
+    assert x.dtype == torch.float64
+    assert y.dtype == torch.int64
 
 
 def test_pandasdataset_transform_can_control_output_dtype(create_data):
@@ -431,6 +431,29 @@ def test_pandasdataset_transform_can_control_output_dtype(create_data):
 
     assert x.dtype == torch.float32
     assert y.dtype == torch.float32
+
+
+def test_pandasdataset_transform_can_split_feature_and_label_dtypes(create_data):
+    def as_float32_features_int64_label(sample):
+        transformed = sample.astype(np.float32)
+        transformed["source"] = transformed["source"].astype(np.int64)
+        return transformed
+
+    dataset = PandasDataset(
+        create_data,
+        sep=",",
+        read_kwargs={"index_col": 0},
+        label_columns="source",
+        transform=as_float32_features_int64_label,
+    )
+
+    x, y = dataset[0]
+    assert x.dtype == torch.float32
+    assert y.dtype == torch.int64
+
+    x, y = dataset[0:4]
+    assert x.dtype == torch.float32
+    assert y.dtype == torch.int64
 
 
 def test_pandasdataset_works_with_dataloader_without_collate_fn(create_data):
