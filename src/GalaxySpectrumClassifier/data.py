@@ -424,7 +424,7 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
 
         # .copy() throughout: pandas hands back read-only views when no cast is
         # needed, and those would alias the dataset's cached frame.
-        x = torch.from_numpy(data[features].to_numpy(dtype=np.float32).copy())
+        x = torch.from_numpy(data[features].to_numpy().copy())
         # A bare string selects a single column, which keeps the label one axis
         # flatter than the list form all the way through - scalar per sample
         # rather than a length-1 vector. Do not impose a dtype here: losses
