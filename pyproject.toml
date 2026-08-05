@@ -40,7 +40,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-tests = ["pytest", "pytest-cov", "nbval"]
+tests = ["pytest", "pytest-cov", "nbval", "safetensors"]
 docs = [
     "nbsphinx",
     "nbsphinx-link",

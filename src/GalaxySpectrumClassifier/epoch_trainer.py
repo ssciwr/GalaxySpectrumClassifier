@@ -658,39 +658,3 @@ class EpochTrainer(TrainerProtocol):
                 )
         finally:
             module.train(was_training)
-
-    @staticmethod
-    def load_model(path: str) -> Trainable:
-        """Load a model previously exported with ``save_model()``.
-
-        Args:
-            path (str): Directory previously written by ``save_model()``.
-
-        Raises:
-            ValueError: If the export was not written in the ``"default"``
-                format, which is the only one that can be read back.
-
-        Returns:
-            Trainable: The trained net on its own; no trainer configuration is
-                restored, and it carries neither optimizer state nor history.
-        """
-        directory = Path(path).resolve()
-        with open(directory / "model.yaml", "r") as f:
-            model_config = yaml.safe_load(f)
-
-        export_format = model_config["export_format"]
-        if export_format != "default":
-            raise ValueError(
-                f"Can only load models exported with export_format='default', "
-                f"got {export_format!r}."
-            )
-
-        module = load_type(model_config["model_type"])(
-            *(model_config["model_args"] or []),
-            **resolve_type_kwargs(model_config["model_kwargs"] or {}),
-        )
-        net = load_type(model_config["net_type"])(module, device=model_config["device"])
-        net.initialize()
-        net.load_params(f_params=directory / "params.pt")
-
-        return net
