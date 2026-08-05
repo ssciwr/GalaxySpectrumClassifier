@@ -29,6 +29,12 @@ MetricSpec = dict[str, Callable[..., Any] | list[Any] | dict[str, Any] | bool]
 
 
 class EpochTrainer(TrainerProtocol):
+    """Train a neural model over repeated passes through configured datasets.
+
+    The trainer owns training, validation, and evaluation datasets, along with
+    model configuration, progress reporting, checkpointing, and metrics.
+    """
+
     def __init__(
         self,
         output_path: str,
@@ -70,6 +76,92 @@ class EpochTrainer(TrainerProtocol):
         export_format: str = "default",
         **additional_model_kwargs,
     ):
+        """Configure datasets, model training, evaluation, and saved outputs.
+
+        Args:
+            output_path (str): Base directory for snapshots and exports.
+            max_epochs (int): Maximum number of training passes through the
+                training dataset.
+            batch_size (int): Number of samples processed together.
+            model_type (str): Dotted import path identifying the model class.
+            loss_type (str): Dotted import path identifying the loss class.
+            optimizer_type (str): Dotted import path identifying the optimizer
+                class.
+            train_dataset_type (str): Dotted import path identifying the
+                training dataset class.
+            val_dataset_type (str): Dotted import path identifying the
+                validation dataset class.
+            test_dataset_type (str): Dotted import path identifying the
+                evaluation dataset class.
+            task (str): One of ``"binary-classification"``,
+                ``"multiclass-classification"``, or ``"regression"``.
+            device (str, optional): Device on which model computation runs.
+                Defaults to "cpu".
+            optimizer_kwargs (dict[str, Any] | None, optional): Named options
+                for the optimizer. Defaults to None.
+            loss_kwargs (dict[str, Any] | None, optional): Named options for
+                the loss. Defaults to None.
+            model_args (list[Any] | None, optional): Positional arguments for
+                the model class. Defaults to None.
+            model_kwargs (dict[str, Any] | None, optional): Named arguments
+                for the model class. Defaults to None.
+            calibrator_type (str | None, optional): Import path for an optional
+                model-calibration configuration. Defaults to None.
+            calibrator_args (list[Any] | None, optional): Positional
+                calibration arguments. Defaults to None.
+            calibrator_kwargs (dict[str, Any] | None, optional): Named
+                calibration arguments. Defaults to None.
+            lr_scheduler_type (str | None, optional): Import path for an
+                optional learning-rate schedule. Defaults to None.
+            lr_scheduler_kwargs (dict[str, Any] | None, optional): Named
+                learning-rate schedule options. Defaults to None.
+            metrics (list[dict[str, Any]] | None, optional): Metric
+                declarations. Each includes ``type`` and can include ``args``,
+                ``kwargs``, ``name``, ``needs_proba``, ``lower_is_better``, and
+                ``use_caching``. Defaults to None.
+            callbacks (list[dict[str, str | list[Any] | dict[str, Any]]] | None,
+                optional): Additional callback declarations, each with ``type``
+                and optional ``args`` and ``kwargs``. Defaults to None.
+            train_dataset_args (list[Any] | None, optional): Positional
+                arguments for the training dataset. Defaults to None.
+            train_dataset_kwargs (dict[str, Any] | None, optional): Named
+                arguments for the training dataset. Defaults to None.
+            val_dataset_args (list[Any] | None, optional): Positional arguments
+                for the validation dataset. Defaults to None.
+            val_dataset_kwargs (dict[str, Any] | None, optional): Named
+                arguments for the validation dataset. Defaults to None.
+            test_dataset_args (list[Any] | None, optional): Positional
+                arguments for the evaluation dataset. Defaults to None.
+            test_dataset_kwargs (dict[str, Any] | None, optional): Named
+                arguments for the evaluation dataset. Defaults to None.
+            train_loader_kwargs (dict[str, Any] | None, optional): Named
+                options controlling training-data batching. Defaults to None.
+            val_loader_kwargs (dict[str, Any] | None, optional): Named options
+                controlling validation-data batching. Defaults to None.
+            seed (int, optional): Seed for trainer-managed random state.
+                Defaults to 42.
+            checkpoint_kwargs (dict[str, Any] | None, optional): Named options
+                for intermediate training checkpoints. Defaults to None.
+            end_checkpoint_kwargs (dict[str, Any] | None, optional): Named
+                options for the final training checkpoint. Defaults to None.
+            progressbar (bool, optional): Whether training progress is shown.
+                Defaults to True.
+            progressbar_values (list[str] | None, optional): Additional metric
+                names to display with progress. Defaults to None.
+            early_stopping_kwargs (dict[str, Any] | None, optional): Named
+                conditions for ending training early. Defaults to None.
+            export_format (str, optional): Model export format. Must be one of
+                the supported formats. Defaults to "default".
+            **additional_model_kwargs: Additional named options preserved in
+                the trainer configuration for model-related use.
+
+        Raises:
+            ValueError: If the task or export format is unsupported, or a model,
+                loss, or optimizer type is missing.
+            ModuleNotFoundError: If a configured import path cannot be found.
+            OSError: If the output directory or configured datasets cannot be
+                created or read.
+        """
         if export_format not in EXPORT_FORMATS:
             raise ValueError(
                 f"Unknown export format: {export_format}. Allowed formats: {EXPORT_FORMATS}"
@@ -190,15 +282,18 @@ class EpochTrainer(TrainerProtocol):
         )
 
     def _build_metrics(self, specs: list[dict[str, Any]]) -> list[MetricSpec]:
-        """Resolve metric spec dicts into ready-to-call metrics.
+        """Validate and resolve configured metric declarations.
 
         Args:
-            specs (list[dict[str, Any]]): Metric specifications as documented
-                on the ``metrics`` parameter of ``__init__``.
+            specs (list[dict[str, Any]]): Metric declarations using the
+                ``metrics`` constructor format.
 
         Returns:
-            list[MetricSpec]: One entry per spec, in the same order, each
-                holding the resolved callable and how to call it.
+            list[MetricSpec]: Resolved metric declarations in input order.
+
+        Raises:
+            KeyError: If a declaration has no ``type`` entry.
+            ModuleNotFoundError: If a metric import path cannot be found.
         """
         metrics: list[MetricSpec] = []
         for spec in specs:
@@ -233,6 +328,18 @@ class EpochTrainer(TrainerProtocol):
 
     @classmethod
     def from_config(cls, cfg: dict[str, Any]) -> "EpochTrainer":
+        """Create a trainer from constructor configuration.
+
+        Args:
+            cfg (dict[str, Any]): Values accepted by ``__init__``.
+
+        Returns:
+            EpochTrainer: A trainer configured from ``cfg``.
+
+        Raises:
+            TypeError: If required configuration values are missing.
+            ValueError: If configuration values are invalid.
+        """
         return cls(**cfg)
 
     def _build_callbacks(
@@ -246,26 +353,33 @@ class EpochTrainer(TrainerProtocol):
         early_stopping_kwargs: dict[str, Any] | None = None,
         end_checkpoint_kwargs: dict[str, Any] | None = None,
     ) -> list[Any]:
-        """Build the full list of callbacks the net is trained with.
-
-        Expects ``self.metrics`` to be built already, since every configured
-        metric becomes one ``EpochScoring`` callback over the validation split.
+        """Create the configured training callbacks and metric observers.
 
         Args:
-            callbacks: Callback specs, each a dict with ``type`` (a dotted
-                path) plus optional ``args``/``kwargs``. Defaults to None.
-            lr_scheduler_type: Dotted path to a torch LR scheduler to wrap in
-                an ``LRScheduler`` callback. Defaults to None (no scheduling).
-            lr_scheduler_kwargs: Keyword arguments for the ``LRScheduler``
-                callback. Defaults to None.
-            checkpoint_kwargs: Keyword arguments shared by the per-epoch
-                ``Checkpoint`` and the ``TrainEndCheckpoint``. Defaults to None.
-            progressbar: Whether to attach a ``ProgressBar``. Defaults to True.
-            progressbar_values: Extra history keys to show in the progress
-                bar's postfix, on top of train/valid loss. Defaults to None.
+            callbacks: Additional callback declarations, each with an import
+                path and optional positional and named arguments. Defaults to
+                None.
+            lr_scheduler_type: Import path for an optional learning-rate
+                schedule. Defaults to None.
+            lr_scheduler_kwargs: Named learning-rate schedule options.
+                Defaults to None.
+            checkpoint_kwargs: Named options for intermediate checkpoints.
+                Defaults to None.
+            progressbar: Whether to report training progress. Defaults to True.
+            progressbar_values: Additional metric names to include in progress
+                reporting. Defaults to None.
+            early_stopping_kwargs: Named conditions for ending training early.
+                Defaults to None.
+            end_checkpoint_kwargs: Named options for the final checkpoint.
+                Defaults to None.
 
         Returns:
-            list[Any]: The constructed callbacks, in attachment order.
+            list[Any]: Configured callbacks in execution order.
+
+        Raises:
+            KeyError: If an additional callback declaration has no ``type``.
+            ModuleNotFoundError: If a callback or schedule import path cannot
+                be found.
         """
         cbs = []
         if callbacks is not None:
@@ -362,47 +476,50 @@ class EpochTrainer(TrainerProtocol):
         train_split: Any = None,
         callbacks: list[Any] | None = None,
     ) -> Trainable:
-        """Construct the skorch net around the torch module (and, optionally,
-        a calibrator around that net).
-
-        The first six parameters are ``TrainerProtocol.build_model``'s; the
-        keyword-only ones after them carry the net-level settings an
-        epoch-based trainer additionally needs. Which skorch net class is used
-        follows from ``self.task``.
+        """Construct the configured neural model and its training interface.
 
         Args:
-            type (str): Dotted path to the torch ``nn.Module`` to train.
-            args: Positional constructor arguments for the module.
-            kwargs: Keyword constructor arguments for the module.
-            calibrator_type: Dotted path to a calibrator class wrapping the net
-                as its ``estimator``. When given, the calibrator - not the bare
-                net - is returned. Defaults to None (no calibration). Currently, the calibrator is ignored and not implemented. This will change in the future.
-            calibrator_args: Extra positional arguments for the calibrator,
-                passed before ``estimator``. Currently, the calibrator is ignored and not implemented. This will change in the future.
-            calibrator_kwargs: Keyword arguments for the calibrator. Currently, the calibrator is ignored and not implemented. This will change in the future.
-            loss_type: Dotted path to the criterion class.
-            loss_kwargs: Criterion constructor arguments, forwarded to skorch
-                under the ``criterion__`` prefix.
-            optimizer_type: Dotted path to the optimizer class.
-            optimizer_kwargs: Optimizer constructor arguments, forwarded under
-                the ``optimizer__`` prefix.
-            train_loader_kwargs: DataLoader arguments for training, forwarded
-                under the ``iterator_train__`` prefix.
-            val_loader_kwargs: DataLoader arguments for validation, forwarded
-                under the ``iterator_valid__`` prefix.
-            max_epochs: Number of epochs to train for.
-            batch_size: Batch size used by both iterators.
-            device: Torch device string. Defaults to "cpu".
-            train_split: skorch ``train_split``, normally a
-                ``predefined_split`` over the validation dataset.
-            callbacks: Callbacks to attach, as built by ``_build_callbacks``.
+            type (str): Dotted import path identifying the model class.
+            args (list[Any] | None, optional): Positional model-construction
+                arguments. Defaults to None.
+            kwargs (dict[str, Any] | None, optional): Named model-construction
+                arguments. Defaults to None.
+            calibrator_type (str | None, optional): Reserved calibration
+                configuration. It is accepted for interface compatibility but
+                does not change the returned model. Defaults to None.
+            calibrator_args (list[Any] | None, optional): Reserved positional
+                calibration arguments. Defaults to None.
+            calibrator_kwargs (dict[str, Any] | None, optional): Reserved named
+                calibration arguments. Defaults to None.
+            loss_type (str): Dotted import path identifying the training loss.
+            loss_kwargs (dict[str, Any] | None, optional): Named loss options.
+                Defaults to None.
+            optimizer_type (str | None, optional): Dotted import path
+                identifying the optimizer. Defaults to None.
+            optimizer_kwargs (dict[str, Any] | None, optional): Named optimizer
+                options. Defaults to None.
+            train_loader_kwargs (dict[str, Any] | None, optional): Named
+                training-batching options. Defaults to None.
+            val_loader_kwargs (dict[str, Any] | None, optional): Named
+                validation-batching options. Defaults to None.
+            max_epochs (int | None, optional): Maximum training passes.
+                Defaults to None.
+            batch_size (int | None, optional): Samples per batch. Defaults to
+                None.
+            device (str, optional): Device for model computation. Defaults to
+                "cpu".
+            train_split (Any, optional): Validation data selection used during
+                training. Defaults to None.
+            callbacks (list[Any] | None, optional): Training callbacks.
+                Defaults to None.
 
         Raises:
-            ValueError: If ``self.task`` is not a known task.
+            ValueError: If ``self.task`` is unsupported.
+            ModuleNotFoundError: If a model, loss, or optimizer import path
+                cannot be found.
 
         Returns:
-            Trainable: The constructed net, or the calibrator wrapping it if
-                ``calibrator_type`` was given.
+            Trainable: A newly constructed trainable neural model.
         """
         # build model type
         skorch_modeltype = None
@@ -468,6 +585,21 @@ class EpochTrainer(TrainerProtocol):
         train_data: DatasetProtocol | None = None,
         validation_data: DatasetProtocol | None = None,
     ) -> Any:
+        """Fit the model using configured or replacement datasets.
+
+        Args:
+            train_data (DatasetProtocol | None, optional): Replacement training
+                dataset. Defaults to None, which uses the configured dataset.
+            validation_data (DatasetProtocol | None, optional): Replacement
+                validation dataset. Defaults to None, which uses the configured
+                validation dataset.
+
+        Returns:
+            Any: The underlying fitting operation's result.
+
+        Raises:
+            ValueError: If training samples are incompatible with the model.
+        """
         if train_data is not None:
             self.train_ds = train_data
         if validation_data is not None:
@@ -478,6 +610,19 @@ class EpochTrainer(TrainerProtocol):
         self.model.fit(self.train_ds, y=None)
 
     def evaluate(self, data: DatasetProtocol | None = None) -> Any:
+        """Evaluate the current model using each configured metric.
+
+        Args:
+            data (DatasetProtocol | None, optional): Replacement evaluation
+                dataset. Defaults to None, which uses the configured dataset.
+
+        Returns:
+            dict[str, float]: Mapping from configured metric names to scores.
+
+        Raises:
+            ValueError: If a probability-based metric is incompatible with the
+                configured task or the model's probability output.
+        """
         if data is not None:
             self.eval_ds = data
 
@@ -521,22 +666,13 @@ class EpochTrainer(TrainerProtocol):
         return results
 
     def save_snapshot(self, path: str) -> None:
-        """Save this trainer's config and the full training state of its net
-        to ``path``, a directory below ``output_path`` that is created if it
-        does not exist yet.
-
-        Optimizer, criterion and history are saved alongside the module
-        parameters, so training can be picked up where it left off - that is
-        what distinguishes a snapshot from ``export_model()``. Restoring one
-        needs the config as well as the saved state, see ``load_snapshot()``.
-
-        The config is written as YAML and therefore has to be plain data;
-        passing live objects as constructor keyword arguments rather than the
-        ``{"type": ...}`` form makes it unwritable. The net must have been
-        trained before it can be snapshotted.
+        """Save trainer configuration and resumable training state together.
 
         Args:
-            path (str): Directory to save the snapshot into.
+            path (str): Directory name relative to ``output_path``.
+
+        Raises:
+            OSError: If the snapshot cannot be written.
         """
         directory = self.output_path / Path(path)
         directory.mkdir(parents=True, exist_ok=True)
@@ -554,18 +690,17 @@ class EpochTrainer(TrainerProtocol):
 
     @classmethod
     def load_snapshot(cls, path: str) -> "TrainerProtocol":
-        """Reconstruct a trainer previously saved with ``save_snapshot()``.
-
-        Training can be resumed from the returned trainer: its net carries the
-        optimizer, criterion and history of the snapshot, not just the module
-        parameters.
+        """Restore a trainer with the saved model and training state.
 
         Args:
-            path (str): Directory previously written by ``save_snapshot()``.
+            path (str): Directory containing a saved snapshot.
 
         Returns:
-            TrainerProtocol: A new instance with the saved config, and its net
-                restored to the state it was snapshotted in.
+            TrainerProtocol: A trainer restored from the snapshot.
+
+        Raises:
+            FileNotFoundError: If required snapshot files are absent.
+            ValueError: If the saved configuration is invalid.
         """
         # load config
         load_path = Path(path).resolve()
@@ -590,18 +725,14 @@ class EpochTrainer(TrainerProtocol):
         return trainer
 
     def export_model(self, path: str) -> None:
-        """Export the trained torch module to ``path``, a directory below
-        ``output_path`` that is created if it does not exist yet.
-
-        Only the module is exported, without the optimizer, criterion and
-        history that make a snapshot resumable - use ``save_snapshot()`` when
-        training should be continued later.
-
-        The written format follows the ``export_format`` this trainer was
-        configured with. The net must have been trained before it can be exported.
+        """Export the trained model without resumable trainer state.
 
         Args:
-            path (str): Directory to export the model into.
+            path (str): Directory name relative to ``output_path``.
+
+        Raises:
+            ValueError: If the configured export format is unsupported.
+            OSError: If the export files cannot be written.
         """
         directory = self.output_path / Path(path)
         directory.mkdir(parents=True, exist_ok=True)

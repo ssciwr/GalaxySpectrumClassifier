@@ -25,35 +25,30 @@ EXPORT_FORMATS = ["onnx", "default", "pt", "safetensors"]
 
 
 def identity(x: Any) -> Any:
-    """Identity function
+    """Return a value without changing it.
 
     Args:
-        x (Any): Any input
+        x (Any): Value to pass through unchanged.
 
     Returns:
-        Any: The input, unchanged
+        Any: The same value supplied as ``x``.
     """
     return x
 
 
 def load_type(path: str) -> type:
-    """Load the type/callable named by the dotted path ``path``.
-
-    The boundary between module and attribute is not assumed to sit at the
-    last dot - it can't be, for anything nested inside another object, e.g.
-    ``"pandas.DataFrame.dropna"``. Instead the longest importable prefix is
-    imported and the remaining segments are walked with ``getattr``.
+    """Resolve a dotted import path to the object it identifies.
 
     Args:
         path (str): Dotted path, e.g. ``"sklearn.metrics.f1_score"`` or
-            ``"pandas.DataFrame.dropna"``.
+            ``"package.module.Object"``.
 
     Raises:
-        ModuleNotFoundError: If no prefix of the path is an importable module.
-        AttributeError: If a segment after the imported prefix does not exist.
+        ModuleNotFoundError: If the path does not identify an available module.
+        AttributeError: If a named object does not exist within the module.
 
     Returns:
-        type: The loaded type
+        type: The type or callable named by ``path``.
     """
     parts = path.split(".")
     for i in range(len(parts) - 1, 0, -1):
@@ -78,24 +73,21 @@ def load_type(path: str) -> type:
 
 
 def resolve_type_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
-    """Resolve any top-level ``{"type": "dotted.path.Name"}`` value in
-    ``kwargs`` to the class/callable it names, via ``load_type``.
+    """Resolve import-path values contained in named configuration options.
 
-    This lets a kwarg that needs a live type (e.g. skorch's ``module``,
-    which wants the ``nn.Module`` subclass itself) be written as a plain,
-    YAML-safe string instead of a live object - which matters for
-    ``SimpleTrainer``, whose constructor kwargs are exactly what
-    ``save_snapshot()`` writes to disk as ``config.yaml``. Passing a live
-    object directly (instead of this dict form) still works for
-    constructing the model, it just makes that trainer un-snapshottable.
+    A value written as ``{"type": "package.module.Object"}`` is replaced by
+    the object it names. All other top-level values are retained unchanged.
 
     Args:
-        kwargs (dict[str, Any]): Keyword arguments, e.g. as given to
-            ``model_kwargs``/``calibrator_kwargs``.
+            kwargs (dict[str, Any]): Named configuration values to resolve.
 
     Returns:
-        dict[str, Any]: Same dict, with any ``{"type": ...}`` values
-            replaced by the resolved class/callable.
+            dict[str, Any]: A new mapping with resolvable type declarations
+                replaced by their named objects.
+
+        Raises:
+            ModuleNotFoundError: If a declared import path cannot be found.
+            AttributeError: If a declared import path names no object.
     """
     resolved = {}
     for key, value in kwargs.items():
@@ -115,45 +107,37 @@ def to_xy(
     class_map: dict[Any, int] | None = None,
     dtype=np.float32,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Materialise ``dataset`` as (X, y) arrays.
+    """Convert a dataset or subset into feature and target arrays.
 
-    ``dataset`` is anything implementing ``DatasetProtocol``, or a
-    ``torch.utils.data.Subset`` of one, so an individual split can be
-    materialised on its own. Nested subsets are unwrapped, and their indices
-    are positions into the underlying dataset, exactly as for ``__getitem__``.
-
-    Rows are taken in the dataset's own order, which is not guaranteed to be
-    randomised, so a contiguous slice of the result is not a valid split.
+    The returned rows preserve the supplied dataset's order. Duplicate feature
+    rows may be removed before conversion when requested.
 
     Args:
-        dataset (DatasetProtocol | torch.utils.data.Subset): Dataset, or subset
-            of one, to materialise.
-        task (str, optional): One of ``TASKS``. Classification tasks return an
-            integer label array, regression returns the label column
-            unconverted. Defaults to "binary-classification".
-        label_column (str, optional): Column holding the label. Defaults to
-            "source".
-        feature_columns (list[str] | None, optional): Columns to use as
-            features. Defaults to every column except ``label_column``.
-        drop_duplicates (bool, optional): If True, collapse rows with identical
-            feature values to the first occurrence, so a duplicate cannot land
-            on both sides of a later split. Defaults to True.
+        dataset (DatasetProtocol | torch.utils.data.Subset): Dataset providing
+            a tabular representation, or a subset of one.
+        task (str, optional): Learning-task kind. Classification targets are
+            returned as integer indices; regression targets retain their data
+            type. Defaults to "binary-classification".
+        label_column (str, optional): Column containing the target value.
+            Defaults to "source".
+        feature_columns (list[str] | None, optional): Ordered feature-column
+            names. Defaults to all columns except ``label_column``.
+        drop_duplicates (bool, optional): Whether repeated feature rows should
+            be represented only once. Defaults to True.
         class_map (dict[Any, int] | None, optional): Mapping from label value
             to class index, applied to every label of a classification task.
-            Supply it when the labels are not already encoded as indices, so
-            that the same value maps to the same index for every split.
-            Defaults to None, in which case the label column is used as-is.
-        dtype (_type_, optional): NumPy dtype for the returned feature matrix.
-            Defaults to np.float32.
+            Used to make classification targets consistent across datasets.
+            Defaults to None, which expects values already usable as indices.
+        dtype (Any, optional): Data type for the feature matrix. Defaults to
+            np.float32.
 
     Raises:
-        ValueError: If ``label_column`` is not present in the data or if
-            ``task`` is unknown.
-        KeyError: If ``class_map`` is given and a label is missing from it.
+        ValueError: If the target column is absent or the task is unsupported.
+        KeyError: If a classification target is not present in ``class_map``.
 
     Returns:
-        tuple[np.ndarray, np.ndarray]: ``X`` of shape
-            ``(n_samples, n_features)`` and ``y`` of shape ``(n_samples,)``.
+        tuple[np.ndarray, np.ndarray]: Feature matrix and one target value per
+            retained sample.
     """
     # Subsets only carry indices into their parent, so unwrap down to the
     # dataset itself while composing the indices into that one frame.

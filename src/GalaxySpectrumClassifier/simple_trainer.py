@@ -17,10 +17,10 @@ MetricSpec = dict[str, Callable[..., Any] | list[Any] | dict[str, Any] | bool]
 
 
 class SimpleTrainer(TrainerProtocol):
-    """Trains, validates and tests a single scikit-learn-compatible estimator for in-memory datasets.
+    """Train and evaluate one model using fully materialized datasets.
 
-    The dataset is only ever passed to ``to_xy``, so any dataset implementing
-    ``DatasetProtocol`` works, as does a ``torch.utils.data.Subset`` of one.
+    The trainer converts each supplied dataset into features and targets before
+    fitting or scoring the configured model.
     """
 
     def __init__(
@@ -37,75 +37,60 @@ class SimpleTrainer(TrainerProtocol):
         seed: int = 42,
         data_xy_kwargs: dict[str, Any] | None = None,
     ):
-        """Build the underlying model/calibrator and resolve the metrics to evaluate with.
+        """Configure a model, optional calibration, and evaluation metrics.
 
         Args:
-            model_type (str): Dotted path to the sklearn estimator class to
-                train, e.g. ``"sklearn.linear_model.LogisticRegression"``.
-                Resolved via ``load_type``.
+            output_path (str): Directory used as the base for saved artifacts.
+            model_type (str): Dotted import path identifying the model class.
             model_args (list[Any] | None, optional): Positional arguments
-                forwarded to the model's constructor. Defaults to None (no
-                positional arguments).
+                used to construct the model. Defaults to None.
             model_kwargs (dict[str, Any] | None, optional): Keyword arguments
-                forwarded to the model's constructor. Defaults to None (no
-                keyword arguments).
-            calibrator_type (str | None, optional): Dotted path to a
-                scikit-learn calibrator class (e.g.
-                ``"sklearn.calibration.CalibratedClassifierCV"``) that wraps
-                the constructed model as its ``estimator``. When given, the
-                calibrator - not the raw model - becomes ``self.model`` and
-                is what gets trained/evaluated. Defaults to None (no
-                calibration).
+                used to construct the model. A value declared as
+                ``{"type": "..."}`` is resolved to an object. Defaults to None.
+            calibrator_type (str | None, optional): Dotted import path for an
+                optional wrapper that calibrates the model. Defaults to None.
             calibrator_args (list[Any] | None, optional): Extra positional
-                arguments forwarded to the calibrator's constructor, after
-                ``estimator``. Defaults to None.
-            calibrator_kwargs (dict[str, Any] | None, optional): Keyword
-                arguments forwarded to the calibrator's constructor. Defaults
+                arguments used to construct the calibration wrapper. Defaults
                 to None.
-            task (str, optional): One of ``TASKS`` -
-                ``"binary-classification"``, ``"multiclass-classification"``
-                or ``"regression"``. Governs (1) which default metric is used
-                when ``metrics`` is not given, and (2) how ``predict_proba()``
-                output is shaped before being handed to a metric that needs
-                it - sliced to the positive class's 1D probability column for
-                binary classification, left as the full
-                ``(n_samples, n_classes)`` matrix for multiclass, and never
-                computed for regression. Defaults to "binary-classification".
+            calibrator_kwargs (dict[str, Any] | None, optional): Keyword
+                arguments used to construct the calibration wrapper. Defaults
+                to None.
+            task (str, optional): One of ``"binary-classification"``,
+                ``"multiclass-classification"``, or ``"regression"``. It
+                selects the default metric and determines which prediction
+                form probability-based metrics receive. Defaults to
+                "binary-classification".
             metrics (list[dict[str, Any]] | None, optional): Metric
-                specifications to evaluate with in ``validate``/``test``. Each
+                specifications to use during evaluation. Each
                 entry is a dict with keys:
 
                 * ``type`` (str, required): Dotted path to a metric callable
-                  (e.g. ``"sklearn.metrics.f1_score"``), resolved via
-                  ``load_type``. Both plain scoring functions and any custom
-                  callable following the same ``(y_true, y_pred, **kwargs)``
-                  convention work.
+                  identifying a callable that accepts targets and predictions.
                 * ``args`` (list[Any], optional): Extra positional arguments
-                  passed to the metric after ``(y_true, predictions)``.
+                  passed after the targets and predictions.
                 * ``kwargs`` (dict[str, Any], optional): Extra keyword
                   arguments passed to the metric.
                 * ``needs_proba`` (bool, optional): If True, the metric is
-                  scored against ``predict_proba()`` output (shaped per
-                  ``task``, see above) instead of ``predict()`` output.
+                  scored against probability predictions rather than predicted
+                  labels or values.
                   Defaults to False.
                 * ``name`` (str, optional): Key used for this metric's score
                   in the dict returned by ``validate``/``test``. Defaults to
                   the last dotted segment of ``type``.
 
-                Defaults to None, in which case ``DEFAULT_METRICS[task]`` is
-                used - a single ``accuracy_score`` for classification tasks,
-                ``r2_score`` for regression.
-            seed (int, optional): Seed for ``self.rng``. Note this does not
-                seed the underlying sklearn estimator itself; pass a
-                ``random_state`` via ``model_kwargs`` for that. Defaults to
-                42.
+                Defaults to None, which selects the trainer's default metric
+                for ``task``.
+            seed (int, optional): Seed used for trainer-managed random state.
+                Defaults to 42.
             data_xy_kwargs (dict[str, Any] | None, optional): Extra keyword
-                arguments forwarded to ``to_xy(dataset, ...)`` when called in
-                ``fit``, ``validate`` and ``test``. Defaults to None (no extra
-                keyword arguments).
+                options used whenever a dataset is converted to arrays.
+                Defaults to None.
 
         Raises:
-            ValueError: If ``task`` is not one of ``TASKS``.
+            ValueError: If ``task`` is unsupported, or calibration is requested
+                for regression.
+            ModuleNotFoundError: If a configured model, calibrator, or metric
+                import path cannot be found.
         """
 
         if task == "regression" and calibrator_type is not None:
@@ -164,31 +149,29 @@ class SimpleTrainer(TrainerProtocol):
         calibrator_args: list[Any] | None = None,
         calibrator_kwargs: dict[str, Any] | None = None,
     ) -> Trainable:
-        """Construct the estimator (and, optionally, a calibrator wrapping it).
+        """Construct the configured model and optional calibration wrapper.
 
         Args:
-            type (str): Dotted path ``"module.path.ClassName"`` of the
-                estimator to construct, resolved via ``load_type``.
+            type (str): Dotted import path identifying the model class.
             args (list[Any] | None, optional): Positional constructor
-                arguments for the estimator. Defaults to None (treated as an
-                empty list).
+                arguments for the model. Defaults to None.
             kwargs (dict[str, Any] | None, optional): Keyword constructor
-                arguments for the estimator. Defaults to None (treated as an
-                empty dict).
-            calibrator_type (str | None, optional): Dotted path of a
-                calibrator class to construct around the estimator, which is
-                passed to it as its ``estimator=`` keyword argument. Defaults
-                to None, meaning no calibration is applied.
+                arguments for the model. Defaults to None.
+            calibrator_type (str | None, optional): Dotted import path for an
+                optional calibration wrapper. Defaults to None.
             calibrator_args (list[Any] | None, optional): Additional
-                positional arguments for the calibrator's constructor, passed
-                after ``estimator``. Defaults to None.
+                positional arguments for the calibration wrapper. Defaults to
+                None.
             calibrator_kwargs (dict[str, Any] | None, optional): Additional
-                keyword arguments for the calibrator's constructor. Defaults
-                to None.
+                named arguments for the calibration wrapper. Defaults to None.
 
         Returns:
-            Trainable: The constructed estimator, or the calibrator wrapping
-                it if ``calibrator_type`` was given.
+            Trainable: The constructed model, optionally wrapped for
+                calibration.
+
+        Raises:
+            ModuleNotFoundError: If a configured import path cannot be found.
+            AttributeError: If a configured import path identifies no object.
         """
         modeltype = load_type(type)
 
@@ -221,28 +204,35 @@ class SimpleTrainer(TrainerProtocol):
 
     @classmethod
     def from_config(cls, cfg: dict[str, Any]) -> "SimpleTrainer":
-        """Create a new instance from a config dict.
+        """Create a trainer from constructor configuration.
 
         Args:
             cfg (dict[str, Any]): Keyword arguments matching ``__init__``'s
-                signature, e.g. as loaded from a YAML config file.
+                signature.
 
         Returns:
-            SimpleTrainer: Newly constructed instance.
+            SimpleTrainer: A trainer configured from ``cfg``.
+
+        Raises:
+            TypeError: If required configuration values are missing.
+            ValueError: If configuration values are incompatible.
         """
         # TODO: needs verification. json schema? pydantic?
         return cls(**cfg)
 
     def _build_metrics(self, specs: list[dict[str, Any]]) -> list[MetricSpec]:
-        """Resolve metric spec dicts into ready-to-call metrics.
+        """Validate and resolve configured metric declarations.
 
         Args:
-            specs (list[dict[str, Any]]): Metric specifications as documented
-                on the ``metrics`` parameter of ``__init__``.
+            specs (list[dict[str, Any]]): Metric declarations using the
+                ``metrics`` configuration format.
 
         Returns:
-            list[MetricSpec]: One entry per spec, in the same order, each
-                holding the resolved callable and how to call it.
+            list[MetricSpec]: Resolved metrics in declaration order.
+
+        Raises:
+            KeyError: If a declaration has no ``type`` entry.
+            ModuleNotFoundError: If a metric import path cannot be found.
         """
         metrics: list[MetricSpec] = []
         for spec in specs:
@@ -269,16 +259,18 @@ class SimpleTrainer(TrainerProtocol):
         return metrics
 
     def fit(self, dataset: DatasetProtocol) -> Trainable:
-        """Fit the model on the whole dataset.
-
-        This performs one, non-resumable fit: calling it again re-fits from
-        scratch unless the estimator was configured to continue training.
+        """Fit the configured model using every retained sample in a dataset.
 
         Args:
-            dataset (DatasetProtocol): Dataset to train on.
+            dataset (DatasetProtocol): Dataset supplying training features and
+                targets.
 
         Returns:
-            Trainable: The fitted model (the same object as ``self.model``).
+            Trainable: The fitted managed model.
+
+        Raises:
+            ValueError: If the dataset cannot be converted for the configured
+                task or is incompatible with the model.
         """
         X, y = to_xy(dataset, **self.data_xy_kwargs)
         self.model.fit(X, y)
@@ -289,40 +281,34 @@ class SimpleTrainer(TrainerProtocol):
         train_data: DatasetProtocol,
         validation_data: DatasetProtocol | None = None,
     ) -> Trainable:
-        """Public entry point to train the model on ``train_data``.
-
-        Here this is a thin wrapper around ``fit``, since there is no epoch
-        loop to run.
+        """Fit the configured model using training data.
 
         Args:
-            train_data (DatasetProtocol): Dataset to train on.
-            validation_data (DatasetProtocol | None, optional): Ignored. Part
-                of ``TrainerProtocol.train`` for epoch-based trainers, which
-                validate once per epoch; a single ``.fit()`` has nowhere to use
-                it. Score a validation split with ``validate()`` instead.
+            train_data (DatasetProtocol): Dataset supplying training features
+                and targets.
+            validation_data (DatasetProtocol | None, optional): Accepted for
+                interface compatibility; it does not affect this trainer.
                 Defaults to None.
 
         Returns:
-            Trainable: The fitted model.
+            Trainable: The fitted managed model.
         """
         return self.fit(train_data)
 
     def evaluate(self, data: DatasetProtocol) -> dict[str, float]:
-        """Score the current model on ``dataset`` with every configured metric.
+        """Score the current model with each configured metric.
 
         Args:
-            dataset (DatasetProtocol): Dataset to evaluate on. Nothing here
-                re-fits the model.
+            data (DatasetProtocol): Dataset supplying evaluation features and
+                targets. The model is not fitted again.
 
         Raises:
-            ValueError: If a ``needs_proba`` metric is configured together
-                with ``task="regression"``, or if
-                ``task="binary-classification"`` but ``predict_proba`` did not
-                return exactly two columns.
+            ValueError: If a probability-based metric is incompatible with the
+                configured task or the model's probability output.
 
         Returns:
-            dict[str, float]: Mapping of each metric's ``name`` to its score,
-                in the same order the metrics were configured in.
+            dict[str, float]: Mapping from each configured metric name to its
+                score.
         """
         X, y = to_xy(data, **self.data_xy_kwargs)
 
@@ -363,16 +349,13 @@ class SimpleTrainer(TrainerProtocol):
         return results
 
     def save_snapshot(self, path: str) -> None:
-        """Save this trainer's config and fitted model to ``path``, a
-        directory that is created if it does not exist yet.
-
-        The config is written as YAML and therefore has to be plain data;
-        passing live objects as constructor keyword arguments rather than the
-        ``{"type": ...}`` form makes it unwritable. The model is saved as in
-        ``save_model()``.
+        """Save trainer configuration and its fitted model together.
 
         Args:
-            path (str): Directory to save the snapshot into.
+            path (str): Directory name relative to ``output_path``.
+
+        Raises:
+            OSError: If the snapshot cannot be written.
         """
         directory = self.output_path / Path(path)
         directory.mkdir(parents=True, exist_ok=True)
@@ -382,14 +365,17 @@ class SimpleTrainer(TrainerProtocol):
 
     @classmethod
     def load_snapshot(cls, path: str) -> "SimpleTrainer":
-        """Reconstruct a trainer previously saved with ``save_snapshot()``.
+        """Restore a trainer and model from a saved snapshot.
 
         Args:
-            path (str): Directory previously passed to ``save_snapshot()``.
+            path (str): Directory containing a saved snapshot.
 
         Returns:
-            SimpleTrainer: A new instance with the saved config and the
-                saved (fitted) model.
+            SimpleTrainer: A trainer with the saved configuration and model.
+
+        Raises:
+            FileNotFoundError: If required snapshot files are absent.
+            ValueError: If the saved configuration is invalid.
         """
         directory = Path(path)
         with open(directory / "config.yaml") as f:
@@ -399,23 +385,28 @@ class SimpleTrainer(TrainerProtocol):
         return trainer
 
     def save_model(self, path: str | Path) -> None:
-        """Export only the fitted model to ``path``, without the trainer
-        config or metrics, for use elsewhere.
+        """Save only the fitted model, without trainer configuration.
 
         Args:
-            path (str | Path): File path to save the model to.
+            path (str | Path): Destination file for the model.
+
+        Raises:
+            OSError: If the model cannot be written.
         """
         sio.dump(self.model, path)
 
     def _load_model(self, path: str | Path) -> Trainable:
-        """Load a model previously exported with ``save_model()``.
+        """Load a model saved independently of a trainer.
 
         Args:
-            path (str | Path): File path previously passed to ``save_model()``.
+            path (str | Path): File containing the saved model.
 
         Returns:
-            Trainable: The fitted model on its own; no trainer configuration
-                is restored.
+            Trainable: The restored model without trainer configuration.
+
+        Raises:
+            FileNotFoundError: If ``path`` does not exist.
+            ValueError: If the file cannot be interpreted as a saved model.
         """
         untrusted = sio.get_untrusted_types(file=path)
         return sio.load(path, trusted=untrusted)
