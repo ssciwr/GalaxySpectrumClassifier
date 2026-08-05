@@ -2,10 +2,7 @@
 from GalaxySpectrumClassifier._version import version as __version__  # noqa: F401
 from .data import PandasDataset
 from .utils import to_xy
-from .trainer import SimpleTrainer
+from .simple_trainer import SimpleTrainer
+from .epoch_trainer import EpochTrainer
 
-__all__ = [
-    "PandasDataset",
-    "SimpleTrainer",
-    "to_xy",
-]
+__all__ = ["PandasDataset", "SimpleTrainer", "to_xy", "EpochTrainer"]

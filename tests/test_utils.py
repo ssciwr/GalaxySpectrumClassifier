@@ -55,6 +55,18 @@ def test_resolve_type_kwargs_resolves_type_spec():
     assert resolved["n_estimators"] == 10
 
 
+def test_resolve_type_kwargs_resolves_bare_type_string():
+    resolved = resolve_type_kwargs(
+        {
+            "module": "torch.nn.Linear",
+            "average": "binary",
+        }
+    )
+
+    assert resolved["module"] is torch.nn.Linear
+    assert resolved["average"] == "binary"
+
+
 def test_resolve_type_kwargs_ignores_dicts_with_extra_keys():
     # Only a dict shaped *exactly* {"type": ...} is treated as a type
     # reference - anything else (e.g. a dict that happens to have a "type"
@@ -73,10 +85,16 @@ def test_resolve_type_kwargs_empty():
 def test_to_xy_builds_arrays_from_a_dataset(create_data):
     dataset = PandasDataset(create_data, sep=",")
 
-    # The fixture has no default 'source' label column, so the documented error
-    # should be raised before attempting to build X/y.
-    with pytest.raises(ValueError, match="label column 'source' not found"):
-        to_xy(dataset)
+    # An absent label column must be reported before any attempt to build X/y.
+    with pytest.raises(ValueError, match="label column 'not_a_column' not found"):
+        to_xy(dataset, label_column="not_a_column")
+
+    # to_xy reads to_frame(), not __getitem__, so it needs no label_columns on
+    # the dataset and defaults to the 'source' column the fixture provides.
+    X_default, y_default = to_xy(dataset, drop_duplicates=False)
+    assert X_default.shape == (1000, 6)
+    assert y_default.shape == (1000,)
+    assert set(np.unique(y_default)) <= {0, 1}
 
     X, y = to_xy(
         dataset,

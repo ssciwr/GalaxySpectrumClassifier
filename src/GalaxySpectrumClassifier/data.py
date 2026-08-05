@@ -11,6 +11,13 @@ from .utils import identity, load_type
 
 
 class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
+    """Present delimited files as one indexed feature-and-target dataset.
+
+    Each matching row is a sample. Optional preprocessing creates a reusable
+    tabular cache, while an optional transform prepares samples at retrieval
+    time.
+    """
+
     def __init__(
         self,
         path: str,
@@ -25,48 +32,47 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         pre_transform: Callable | str | None = None,
         pre_filter: Callable | str | None = None,
         n_workers: int = 1,
+        label_columns: str | Sequence[str] | None = None,
     ):
-        """Index every delimited text file under ``path`` as a single dataset,
-        where each row of each matched file is one sample.
+        """Create a dataset from matching delimited files below a directory.
 
         Args:
-            path (str): Directory to search recursively for files matching
-                ``suffix``.
-            cache_path (str | None, optional): Directory to write the
-                concatenated, preprocessed data to. Required when
-                ``pre_transform`` or ``pre_filter`` is given, and unused
-                otherwise. Defaults to None.
-            engine (str, optional): ``pandas.read_csv`` parser engine.
-                Defaults to "python".
-            comment (str, optional): Prefix marking comment lines; passed
-                through to ``pandas.read_csv``. Defaults to "#".
-            na_values (list[str], optional): Strings treated as missing values.
-                Defaults to ["nan", "NaN"].
-            sep (str, optional): Field separator passed to ``pandas.read_csv``;
-                may be a regular expression. Defaults to ",".
-            read_kwargs (dict | None, optional): Extra keyword arguments
-                forwarded to ``pandas.read_csv``. Defaults to None.
-            suffix (str, optional): Suffix used to select files while walking
-                ``path``. Defaults to ".dat".
-            transform (Callable | str | None, optional): Callable applied to
-                each sample before it is returned by ``__getitem__``. May also
-                be given as a dotted path to a callable, which is resolved at
-                construction time. Defaults to None.
-            pre_transform (Callable | str | None, optional): Callable applied
-                to each file's data after ``pre_filter``, before the files are
-                concatenated and cached. Supplying it switches the dataset into
-                ``cache_on_disk`` mode. May also be given as a dotted path, see
-                ``transform``. Defaults to None.
-            pre_filter (Callable | str | None, optional): Callable applied to
-                each file's data before ``pre_transform``. Supplying it also
-                switches the dataset into ``cache_on_disk`` mode. May also be
-                given as a dotted path, see ``transform``. Defaults to None.
-            n_workers (int, optional): Number of parallel workers used to read
-                and preprocess files. Defaults to 1.
+            path (str): Root directory to search recursively for data files.
+            cache_path (str | None, optional): Directory for processed data.
+                Required whenever preprocessing is requested. Defaults to None.
+            engine (str, optional): Name of the parser mode to use while
+                reading input files. Defaults to "python".
+            comment (str, optional): Prefix identifying non-data lines in an
+                input file. Defaults to "#".
+            na_values (tuple, optional): Text values that represent missing
+                data. Defaults to ("nan", "NaN").
+            sep (str, optional): Delimiter that separates fields in each input
+                row. Defaults to ",".
+            read_kwargs (dict | None, optional): Additional parsing options
+                used for every input file. Defaults to None.
+            suffix (str, optional): File suffix identifying dataset members.
+                Defaults to ".dat".
+            transform (Callable | str | None, optional): Callable, or import
+                path to one, that prepares a retrieved sample. It must retain
+                the configured target columns. Defaults to None.
+            pre_transform (Callable | str | None, optional): Callable, or
+                import path to one, that changes each file before it is cached.
+                Defaults to None.
+            pre_filter (Callable | str | None, optional): Callable, or import
+                path to one, that selects or removes rows before preprocessing.
+                Defaults to None.
+            n_workers (int, optional): Number of workers available while
+                preparing cached data. Defaults to 1.
+            label_columns (str | Sequence[str] | None, optional): Name of one
+                target column or an ordered collection of target columns. A
+                string produces one target value per sample; a collection
+                preserves a target dimension, including for one column.
+                Defaults to None.
 
         Raises:
-            ValueError: If ``pre_transform`` or ``pre_filter`` is given but
-                ``cache_path`` is None.
+            ValueError: If preprocessing is requested without ``cache_path``.
+            FileNotFoundError: If ``path`` or a discovered input file cannot
+                be read.
         """
         self.path = Path(path).resolve()
         self.datafiles: list[Path] = []
@@ -96,6 +102,10 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         self.pre_transform = pre_transform
         self.pre_filter = pre_filter
         self.n_workers = n_workers
+        # Consulted only by __getitem__/_split_labels, i.e. the batch path.
+        # to_frame() deliberately still returns the label column alongside the
+        # features, since to_xy() does its own splitting from the whole frame.
+        self.label_columns = label_columns
         self.cache_on_disk = pre_transform is not None or pre_filter is not None
 
         if self.cache_on_disk and cache_path is None:
@@ -116,23 +126,34 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
 
     @classmethod
     def from_config(cls, cfg: dict[str, Any]) -> "PandasDataset":
-        """Create a new instance from a config file
+        """Create a dataset from constructor configuration.
 
         Args:
-            cfg (dict[str, Any]): Configuration file content in the form of a dictionary. Needs to contain all necessary args and kwargs as required by __init__.
+            cfg (dict[str, Any]): Values accepted by ``__init__``.
 
         Returns:
-            PandasDataset: Newly created PandasDataset instance
+            PandasDataset: A dataset configured from ``cfg``.
+
+        Raises:
+            TypeError: If required configuration values are missing.
+            ValueError: If the configuration requests preprocessing without a
+                cache location.
         """
         return cls(**cfg)
 
     def _preprocess(self):
-        """Read, filter and transform every matched file, concatenate the
-        results into a single DataFrame, and write it to
-        ``cache_path/data.csv``. An existing cache file is read back instead.
+        """Return the persistent, processed representation of all data files.
+
+        Existing processed data is reused when available. Otherwise, the
+        dataset applies its configured preprocessing and makes the result
+        available for later retrieval.
 
         Returns:
-            pd.DataFrame: The concatenated, filtered and transformed data.
+            pd.DataFrame: All processed rows, with their original columns.
+
+        Raises:
+            OSError: If processed data cannot be read or written.
+            ValueError: If the input files cannot be combined into one table.
         """
 
         if (self.cache_path / "data.csv").exists():
@@ -151,6 +172,17 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         else:
 
             def _preprocess_single(path):
+                """Apply this dataset's preprocessing choices to one file.
+
+                Args:
+                    path (Path): Source data file to process.
+
+                Returns:
+                    pd.DataFrame: Processed rows from ``path``.
+
+                Raises:
+                    OSError: If ``path`` cannot be read.
+                """
                 df = self.read_data(path)
                 if self.pre_filter:
                     df = self.pre_filter(df)
@@ -171,14 +203,16 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         return df
 
     def _filter_datafiles(self, path: Path, data_list: list[Path]):
-        """Recursively collect every file under ``path`` whose suffix matches
-        ``self.suffix``, appending their resolved paths to ``data_list``
-        in place.
+        """Collect matching data files below a directory.
 
         Args:
-            path (Path): Directory to walk recursively.
-            data_list (list[Path]): List to append matching file paths to;
-                mutated in place rather than returned.
+            path (Path): Directory whose descendants should be considered.
+            data_list (list[Path]): Mutable destination for resolved matching
+                file paths.
+
+        Raises:
+            FileNotFoundError: If ``path`` does not exist.
+            NotADirectoryError: If ``path`` is not a directory.
         """
         for obj in path.iterdir():
             if obj.is_dir():
@@ -189,10 +223,13 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
                 continue
 
     def _get_num_datapoints(self) -> int:
-        """Compute the total number of rows across the dataset.
+        """Count all rows available through the dataset.
 
         Returns:
-            int: Total row count summed over all files.
+            int: Total number of samples.
+
+        Raises:
+            OSError: If an input file cannot be read while counting rows.
         """
         if self.cache_on_disk:
             return len(self.data_cache)
@@ -203,14 +240,18 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
             return n
 
     def read_data(self, input: Path) -> pd.DataFrame:
-        """Read a single data file into a DataFrame, skipping comment lines and
-        parsing the header and data rows according to the configured separator.
+        """Read one source file using this dataset's parsing configuration.
 
         Args:
-            input (Path): Path to the file to read.
+            input (Path): Data file that contributes rows to the dataset.
 
         Returns:
-            pd.DataFrame: One row per sample, one column per field.
+            pd.DataFrame: Parsed rows and columns from ``input``.
+
+        Raises:
+            FileNotFoundError: If ``input`` does not exist.
+            ValueError: If its contents cannot be parsed with the configured
+                options.
         """
         data = pd.read_csv(
             input,
@@ -223,34 +264,29 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         return data
 
     def to_frame(self) -> pd.DataFrame:
-        """Return every sample as one DataFrame, in dataset-index order.
-
-        Row ``i`` of the returned frame is the sample ``self[i]`` is built from.
+        """Return all untransformed samples in dataset order.
 
         Returns:
-            pd.DataFrame: All samples of this dataset.
+            pd.DataFrame: One row per sample, including target columns.
+
+        Raises:
+            OSError: If source data cannot be read.
         """
         if self.cache_on_disk:
-            return self.data_cache
+            return self.data_cache.copy()
         return pd.concat((self.read_data(f) for f in self.datafiles), ignore_index=True)
 
     def _normalize_index(
         self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple
     ):
-        """Normalize supported index types to scalar or explicit positions.
-
-        Tensor and NumPy indices are converted to Python lists, slices are
-        expanded to a list of global row positions, tuples are converted to
-        lists, and scalar indices are returned unchanged. Negative indices are
-        intentionally not normalized here; they are rejected later by
-        ``_map_index``.
+        """Convert supported index forms into explicit dataset positions.
 
         Args:
             idx (int | slice | torch.Tensor | np.ndarray | list | tuple): Scalar
                 row index, slice, or collection of global row indices.
 
         Returns:
-            int | list: A scalar index or a list of explicit global row indices.
+            int | list: One position or a list of positions.
         """
         if isinstance(idx, torch.Tensor) or isinstance(idx, np.ndarray):
             return idx.tolist()
@@ -270,23 +306,33 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
     def _map_index(
         self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple
     ) -> list[tuple[int, pd.DataFrame]] | tuple[int, pd.DataFrame]:
-        """Resolve global row index/indices to DataFrame row positions.
+        """Locate requested global positions in their source tables.
 
         Args:
-            idx: Global row index, slice, or collection of indices in
-                ``[0, len(self))``.
+            idx: Global position, slice, or collection of positions.
 
         Raises:
-            IndexError: If an index is negative or outside the dataset range.
-            ValueError: If an empty collection of indices is passed.
+            IndexError: If a position is negative or outside the dataset.
+            ValueError: If no positions are supplied.
 
         Returns:
             tuple[int, pd.DataFrame] | list[tuple[int, pd.DataFrame]]: For each
-                requested index, the DataFrame holding that row and the row's
-                position within it.
+                requested position, its row position and source table.
         """
 
         def _map_single_index(idx: int) -> tuple[int, pd.DataFrame]:
+            """Locate one dataset position in its source table.
+
+            Args:
+                idx (int): Global dataset position to locate.
+
+            Returns:
+                tuple[int, pd.DataFrame]: Row position within the source table
+                    and the table containing it.
+
+            Raises:
+                IndexError: If ``idx`` is negative or outside the dataset.
+            """
             if idx < 0:
                 raise IndexError("Indices cannot be negative")
 
@@ -326,36 +372,112 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         else:
             return _map_single_index(index)
 
-    def __getitem__(
-        self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple
-    ) -> torch.Tensor:
-        """Return the sample(s) at ``idx`` as a tensor, applying
-        ``self.transform`` first if one is set.
+    def _split_labels(
+        self, data: pd.Series | pd.DataFrame
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Separate feature values and targets from retrieved sample data.
 
         Args:
-            idx (int | slice | torch.Tensor | np.ndarray | list | tuple): Row
-                index (or indices) to fetch.
+            data (pd.Series | pd.DataFrame): One sample or a table of samples
+                after any retrieval-time transformation.
+
+        Raises:
+            ValueError: If no target columns were configured or a configured
+                target column is absent from ``data``.
 
         Returns:
-            torch.Tensor: The (optionally transformed) row values.
+            tuple[torch.Tensor, torch.Tensor]: Float feature tensor and target
+                tensor. Target shape follows whether ``label_columns`` was a
+                string or a sequence.
+        """
+        # Refusing here is the whole point: skorch's own convention for a
+        # missing target is `y = torch.Tensor([0])`, which would let a model
+        # train to convergence against a constant fabricated label without ever
+        # failing. Better to be unusable than quietly wrong.
+        if self.label_columns is None:
+            raise ValueError(
+                "label_columns was not set, so features and labels cannot be "
+                "separated. Pass label_columns to the constructor."
+            )
+
+        # Normalised to a list for the membership tests below, but the original
+        # form is kept around: str vs. sequence decides the label's shape.
+        single_label = isinstance(self.label_columns, str)
+        labels = [self.label_columns] if single_label else list(self.label_columns)
+
+        # Normal retrieval keeps samples as DataFrames so pandas preserves
+        # per-column dtypes. A transform may still deliberately return a Series.
+        columns = data.index if isinstance(data, pd.Series) else data.columns
+
+        missing = [column for column in labels if column not in columns]
+        if missing:
+            raise ValueError(
+                f"label column(s) {missing} not found in the sample; have "
+                f"{list(columns)}. Note that `transform` is applied before the "
+                "split, so it has to keep the label columns."
+            )
+
+        # Built by walking `columns` rather than subtracting a set, so the
+        # frame's own column order is preserved - a model's input layer is
+        # positional, so a reordering here would silently scramble features.
+        features = [column for column in columns if column not in labels]
+
+        # .copy() throughout: pandas hands back read-only views when no cast is
+        # needed, and those would alias the dataset's cached frame.
+        x = torch.from_numpy(data[features].to_numpy().copy())
+        # A bare string selects a single column, which keeps the label one axis
+        # flatter than the list form all the way through - scalar per sample
+        # rather than a length-1 vector. Do not impose a dtype here: losses
+        # such as CrossEntropyLoss and BCEWithLogitsLoss require different
+        # target dtypes, so callers can choose one through ``transform``.
+        selector = self.label_columns if single_label else labels
+        y = torch.from_numpy(np.asarray(data[selector]).copy())
+        return x, y
+
+    def __getitem__(
+        self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Retrieve and prepare one or more feature-and-target samples.
+
+        Args:
+            idx (int | slice | torch.Tensor | np.ndarray | list | tuple):
+                Position or positions to retrieve.
+
+        Raises:
+            IndexError: If a requested position is outside the dataset.
+            ValueError: If target columns are not configured or are removed by
+                the sample transformation.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: Prepared features and targets.
         """
         indices_frames = self._map_index(idx)
+
+        def _transform_one(i: int, df: pd.DataFrame):
+            return self.transform(df.iloc[[i], :])
 
         if isinstance(indices_frames, Sequence) and isinstance(
             indices_frames[0], Sequence
         ):
-            data = pd.DataFrame(
-                [self.transform(df.iloc[i, :]) for i, df in indices_frames],
-            )
+            transformed = [_transform_one(i, df) for i, df in indices_frames]
+            if all(isinstance(sample, pd.DataFrame) for sample in transformed):
+                data = pd.concat(transformed, ignore_index=True)
+            else:
+                data = pd.DataFrame(transformed)
+            return self._split_labels(data)
         else:
             i, df = indices_frames
-            data = self.transform(df.iloc[i, :])
+            data = _transform_one(i, df)
+            x, y = self._split_labels(data)
+            if x.ndim > 1 and x.shape[0] == 1:
+                x = x.squeeze(0)
+            if y.ndim > 0 and y.shape[0] == 1:
+                y = y.squeeze(0)
 
-        t = torch.from_numpy(data.values.copy())
-        return t
+            return x, y
 
     def __len__(self):
-        """Total number of samples in the dataset.
+        """Return the total number of samples in the dataset.
 
         Returns:
             int: Number of rows across all files.
