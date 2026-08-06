@@ -330,9 +330,12 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
             overwrite_cache (bool, optional): Whether an existing cache file is
                 written again rather than reused. Defaults to False.
             transform (Callable | str | None, optional): Callable, or import
-                path to one, that prepares a retrieved sample, received as a
-                one-row ``pd.DataFrame``. Applied after ``pre_transform``. It
-                must retain the configured target columns. Defaults to None.
+                path to one, that prepares a retrieved sample. It receives the
+                retrieved row as a ``pd.Series`` after ``pre_filter`` and
+                ``pre_transform`` and must return ``(features, target)`` as
+                tensors. When provided, this callable is responsible for any
+                label selection; the dataset does not split ``label_columns``
+                after ``transform``. Defaults to None.
             pre_transform (Callable | str | None, optional): Callable, or
                 import path to one, applied to every retained row, received as
                 a ``dict`` of column name to value, and returning that
@@ -692,8 +695,8 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
 
         Raises:
             IndexError: If a requested position is outside the dataset.
-            ValueError: If target columns are not configured or are removed by
-                the sample transformation.
+            ValueError: If target columns are not configured or are unavailable
+                when no ``transform`` is configured.
 
         Returns:
             tuple[torch.Tensor, torch.Tensor]: Prepared features and targets.
