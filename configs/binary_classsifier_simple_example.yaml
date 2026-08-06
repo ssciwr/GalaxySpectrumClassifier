@@ -96,13 +96,13 @@ trainer:
     class_map:
 dataset:
   path: ../data/classification_v2
-  engine: python
-  comment: "#"
-  na_values:
-    - nan
-    - NaN
-  sep: ","
   read_kwargs:
+    engine: python
+    comment: "#"
+    na_values:
+      - nan
+      - NaN
+    sep: ","
   suffix: .csv
   # transform/pre_transform/pre_filter accept a dotted path to a module-level
   # callable, e.g. "GalaxySpectrumClassifier.utils.identity". Setting either
