@@ -719,13 +719,10 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
             return X, y
         else:
             local_idx, df = self._map_index(index)
-            row = df.iloc[local_idx].to_list()
+            row = df.iloc[local_idx].to_numpy()
 
-            # get row as dict or structure array or
-            X = torch.tensor(
-                [row[i] for i in range(len(row)) if i not in self.label_indices]
-            )
-            y = torch.tensor([row[i] for i in self.label_indices])
+            X = torch.tensor(np.delete(row, self.label_indices))  # type: ignore[arg-type]
+            y = torch.tensor(row[self.label_indices])
 
             return X, y
 
