@@ -593,12 +593,16 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         # holds on to the files a sampler keeps returning to, rather than the
         # ones it happened to touch last.
         if self._file_cache is None:
-            return self._preprocess(path)
+            res = self._preprocess(path)
+            print("frame: ", type(res), ", ", res)
+            return res
 
         frame = self._file_cache.get(path)
         if frame is None:
             frame = self._preprocess(path)
             self._file_cache[path] = frame
+
+        print("frame: ", type(frame), ", ", frame)
 
         return frame
 
@@ -681,14 +685,15 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         file_idx = int(np.searchsorted(self._offsets, index, side="right")) - 1
         local_idx = index - int(self._offsets[file_idx])
 
-        local_idx, df = self._read_cached(self.data_handler.datafiles[file_idx])
+        frame = self._read_cached(self.data_handler.datafiles[file_idx])
 
+        print("data types: ", type(local_idx), ", ", type(frame))
         if self.label_indices is None:
             self.label_indices = []
-            for i, c in enumerate(df.columns):
+            for i, c in enumerate(frame.columns):
                 if c in self.label_columns:
                     self.label_indices.append(i)
-        return local_idx, df
+        return local_idx, frame
 
     def __getitem__(
         self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple

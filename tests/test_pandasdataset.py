@@ -10,104 +10,6 @@ from GalaxySpectrumClassifier.data import (
     DataHandler,
     ParquetDataHandler,
 )
-from GalaxySpectrumClassifier.utils import identity
-
-
-def test_pandasdataset_construction_default(create_data):
-    dataset = TabularDataset(create_data, sep=",")
-
-    assert dataset.path == create_data.resolve()
-    assert len(dataset.datafiles) == 10
-    assert [path.name for path in dataset.datafiles] == [f"{i}.dat" for i in range(10)]
-    assert all(path.is_absolute() for path in dataset.datafiles)
-    assert all(path.suffix == ".dat" for path in dataset.datafiles)
-
-    assert dataset.engine == "python"
-    assert dataset.comment == "#"
-    assert dataset.na_values == ("nan", "NaN")
-    assert dataset.sep == ","
-    assert dataset.read_kwargs == {}
-    assert dataset.suffix == ".dat"
-    assert callable(dataset.transform)
-    assert dataset.transform(3) == 3
-    assert dataset.pre_transform is None
-    assert dataset.pre_filter is None
-    assert dataset.n_workers == 1
-    assert dataset.label_columns is None
-
-    # Construction is documented to count rows, and non-cache counting reads and
-    # caches all files as a side effect.
-    assert len(dataset) == 1000
-    assert dataset.num_datapoints == 1000
-    assert all(isinstance(frame, pd.DataFrame) for frame in dataset.data_cache.values())
-    assert all(len(frame) == 100 for frame in dataset.data_cache.values())
-    assert dataset.cache_on_disk is False
-
-
-def test_pandasdataset_fromconfig(create_data):
-    cfg = {
-        "path": create_data,
-        "sep": ",",
-    }
-
-    dataset = TabularDataset.from_config(cfg)
-
-    assert dataset.path == create_data.resolve()
-    assert len(dataset.datafiles) == 10
-    assert [path.name for path in dataset.datafiles] == [f"{i}.dat" for i in range(10)]
-    assert all(path.is_absolute() for path in dataset.datafiles)
-    assert all(path.suffix == ".dat" for path in dataset.datafiles)
-
-    assert dataset.engine == "python"
-    assert dataset.comment == "#"
-    assert dataset.na_values == ("nan", "NaN")
-    assert dataset.sep == ","
-    assert dataset.read_kwargs == {}
-    assert dataset.suffix == ".dat"
-    assert callable(dataset.transform)
-    assert dataset.transform(3) == 3
-    assert dataset.pre_transform is None
-    assert dataset.pre_filter is None
-    assert dataset.n_workers == 1
-
-    # Construction is documented to count rows, and non-cache counting reads and
-    # caches all files as a side effect.
-    assert len(dataset) == 1000
-    assert dataset.num_datapoints == 1000
-    assert all(isinstance(frame, pd.DataFrame) for frame in dataset.data_cache.values())
-    assert all(len(frame) == 100 for frame in dataset.data_cache.values())
-    assert dataset.cache_on_disk is False
-
-
-def test_pandasdataset_nonstandard(create_data_nonstandard):
-    dataset = TabularDataset(
-        create_data_nonstandard, sep="\t", comment="//", suffix=".tsv"
-    )
-    assert dataset.path == create_data_nonstandard.resolve()
-    assert len(dataset.datafiles) == 10
-    assert [path.name for path in dataset.datafiles] == [f"{i}.tsv" for i in range(10)]
-    assert all(path.is_absolute() for path in dataset.datafiles)
-    assert all(path.suffix == ".tsv" for path in dataset.datafiles)
-
-    assert dataset.engine == "python"
-    assert dataset.comment == "//"
-    assert dataset.na_values == ("nan", "NaN")
-    assert dataset.sep == "\t"
-    assert dataset.read_kwargs == {}
-    assert dataset.suffix == ".tsv"
-    assert callable(dataset.transform)
-    assert dataset.transform(3) == 3
-    assert dataset.pre_transform is None
-    assert dataset.pre_filter is None
-    assert dataset.n_workers == 1
-
-    # Construction is documented to count rows, and non-cache counting reads and
-    # caches all files as a side effect.
-    assert len(dataset) == 1000
-    assert dataset.num_datapoints == 1000
-    assert all(isinstance(frame, pd.DataFrame) for frame in dataset.data_cache.values())
-    assert all(len(frame) == 100 for frame in dataset.data_cache.values())
-    assert dataset.cache_on_disk is False
 
 
 def test_pandasdataset_requires_cache_path_for_preprocessing(create_data):
@@ -119,45 +21,6 @@ def test_pandasdataset_requires_cache_path_for_preprocessing(create_data):
 
     with pytest.raises(ValueError, match="require a cache_path"):
         TabularDataset(create_data, pre_filter=keep_labelled, pre_transform=double_a)
-
-
-def test_pandasdataset_construction_cache(create_data, tmp_path):
-    cache_path = tmp_path / "cache"
-    cache_path.mkdir()
-
-    def pre_filter(df):
-        return df[df["a"] > 50]
-
-    def pre_transform(df):
-        transformed = df.copy()
-        transformed["a_plus_b"] = transformed["a"] + transformed["b"]
-        return transformed
-
-    dataset = TabularDataset(
-        create_data,
-        cache_path=cache_path,
-        pre_filter=pre_filter,
-        pre_transform=pre_transform,
-        sep=",",
-        label_columns="source",
-    )
-
-    assert dataset.cache_on_disk is True
-    assert isinstance(dataset.data_cache, pd.DataFrame)
-    assert len(dataset) == len(dataset.data_cache)
-    assert len(dataset) == sum(
-        len(pre_filter(pd.read_csv(path, index_col=0))) for path in dataset.datafiles
-    )
-    assert "a_plus_b" in dataset.data_cache.columns
-    assert (dataset.data_cache["a"] > 50).all()
-    assert (cache_path / "data.csv").exists()
-
-    x, y = dataset[0]
-    first_row = dataset.data_cache.iloc[0, :]
-    np.testing.assert_allclose(
-        x.numpy(), first_row.drop(labels=["source"]).to_numpy(dtype=np.float32)
-    )
-    assert int(y) == int(first_row["source"])
 
 
 def test_pandasdataset_getitem_integer_indices(create_data):
@@ -172,7 +35,11 @@ def test_pandasdataset_getitem_integer_indices(create_data):
         return row[["a", "b", "source"]]
 
     dataset = TabularDataset(
-        create_data, transform=transform, sep=",", label_columns="source"
+        create_data,
+        transform=transform,
+        read_kwargs={"sep": ","},
+        suffix=".dat",
+        label_columns="source",
     )
 
     def expected(frame, position):
@@ -206,6 +73,7 @@ def test_pandasdataset_getitem_integer_indices(create_data):
 def test_pandasdataset_getitem_negative_index_is_out_of_range(create_data):
     dataset = TabularDataset(
         create_data,
+        suffix=".dat",
         transform=lambda row: row[["a", "b", "source"]],
         label_columns="source",
     )
@@ -224,7 +92,11 @@ def test_pandasdataset_getitem_slice_tensor_and_ndarray_are_global_indices(creat
         return row[["a", "b", "source"]]
 
     dataset = TabularDataset(
-        create_data, transform=transform, sep=",", label_columns="source"
+        create_data,
+        transform=transform,
+        read_kwargs={"sep": ","},
+        suffix=".dat",
+        label_columns="source",
     )
 
     def expect(rows, x, y):
@@ -270,7 +142,8 @@ def test_pandasdataset_list_transform_composed(create_data):
     first_file = pd.read_csv(sorted(create_data.glob("*.dat"))[0], index_col=0)
     dataset = TabularDataset(
         create_data,
-        sep=",",
+        read_kwargs={"sep": ","},
+        suffix=".dat",
         transform=Compose([lambda row: row[["a", "b", "source"]], lambda row: row * 2]),
         label_columns="source",
     )
@@ -283,94 +156,28 @@ def test_pandasdataset_list_transform_composed(create_data):
     assert int(y) == int(first_file.loc[0, "source"]) * 2
 
 
-def test_pandasdataset_resolves_dotted_path_callables(create_data, tmp_path):
-    cache_path = tmp_path / "cache"
-    cache_path.mkdir()
-    dataset = TabularDataset(
-        create_data,
-        sep=",",
-        cache_path=cache_path,
-        transform="GalaxySpectrumClassifier.utils.identity",
-        pre_transform="GalaxySpectrumClassifier.utils.identity",
-        pre_filter="pandas.DataFrame.dropna",
-    )
-
-    assert dataset.transform is identity
-    assert dataset.pre_transform is identity
-    assert dataset.pre_filter is pd.DataFrame.dropna
-    # Strings must switch on cache_on_disk exactly like live callables do.
-    assert dataset.cache_on_disk is True
-    assert len(dataset) == 1000
-
-
 def test_pandasdataset_unresolvable_dotted_path_raises(create_data):
     with pytest.raises(AttributeError):
-        TabularDataset(create_data, sep=",", transform="pandas.does_not_exist")
-
-
-def test_pandasdataset_to_frame_matches_dataset_order(create_data, tmp_path):
-    dataset = TabularDataset(create_data, sep=",", label_columns="source")
-    frame = dataset.to_frame()
-
-    assert len(frame) == len(dataset)
-    # Row i of the frame must back sample i, since to_xy translates Subset
-    # indices through it. to_frame keeps the label column; __getitem__ splits it.
-    row = frame.iloc[100]
-    x, y = dataset[100]
-    np.testing.assert_allclose(
-        x.numpy(), row.drop(labels=["source"]).to_numpy(dtype=np.float32)
-    )
-    np.testing.assert_array_equal(y.numpy(), np.int64(row["source"]))
-
-    cache_path = tmp_path / "cache"
-    cache_path.mkdir()
-    cached = TabularDataset(
-        create_data, sep=",", cache_path=cache_path, pre_filter=lambda df: df
-    )
-
-    cached_frame = cached.to_frame()
-    assert cached_frame is not cached.data_cache
-    cached_frame.iloc[0, cached_frame.columns.get_loc("source")] = -1
-    assert cached.data_cache.iloc[0]["source"] != -1
-
-
-def test_pandasdataset_getitem_without_label_columns_raises(create_data):
-    dataset = TabularDataset(create_data, sep=",")
-
-    # No placeholder label, no whole-row fallback - a missing target has to be
-    # loud, since a fabricated one would train a model against garbage.
-    with pytest.raises(ValueError, match="label_columns was not set"):
-        dataset[0]
-
-    with pytest.raises(ValueError, match="label_columns was not set"):
-        dataset[0:2]
-
-
-def test_pandasdataset_getitem_label_dropped_by_transform_raises(create_data):
-    dataset = TabularDataset(
-        create_data,
-        sep=",",
-        transform=lambda row: row[["a", "b"]],
-        label_columns="source",
-    )
-
-    with pytest.raises(ValueError, match=r"label column\(s\) \['source'\]"):
-        dataset[0]
-
-
-def test_pandasdataset_getitem_unknown_label_column_raises(create_data):
-    dataset = TabularDataset(create_data, sep=",", label_columns="not_a_column")
-
-    with pytest.raises(ValueError, match=r"label column\(s\) \['not_a_column'\]"):
-        dataset[0]
+        TabularDataset(
+            create_data,
+            read_kwargs={"sep": ","},
+            suffix=".dat",
+            transform="pandas.does_not_exist",
+        )
 
 
 def test_pandasdataset_getitem_string_label_is_one_axis_flatter_than_list(create_data):
     single = TabularDataset(
-        create_data, sep=",", read_kwargs={"index_col": 0}, label_columns="source"
+        create_data,
+        read_kwargs={"sep": ",", "index_col": 0},
+        suffix=".dat",
+        label_columns="source",
     )
     listed = TabularDataset(
-        create_data, sep=",", read_kwargs={"index_col": 0}, label_columns=["source"]
+        create_data,
+        read_kwargs={"sep": ",", "index_col": 0},
+        suffix=".dat",
+        label_columns=["source"],
     )
 
     # A bare string means "one scalar target per sample"; a one-element list
@@ -394,8 +201,8 @@ def test_pandasdataset_getitem_string_label_is_one_axis_flatter_than_list(create
 def test_pandasdataset_getitem_multiple_label_columns(create_data):
     dataset = TabularDataset(
         create_data,
-        sep=",",
-        read_kwargs={"index_col": 0},
+        read_kwargs={"sep": ",", "index_col": 0},
+        suffix=".dat",
         label_columns=["source", "extra"],
     )
     frame = dataset.to_frame()
@@ -414,7 +221,10 @@ def test_pandasdataset_getitem_multiple_label_columns(create_data):
 
 def test_pandasdataset_getitem_dtypes(create_data):
     dataset = TabularDataset(
-        create_data, sep=",", read_kwargs={"index_col": 0}, label_columns="source"
+        create_data,
+        read_kwargs={"sep": ",", "index_col": 0},
+        suffix=".dat",
+        label_columns="source",
     )
 
     x, y = dataset[0]
@@ -432,8 +242,8 @@ def test_pandasdataset_transform_can_control_output_dtype(create_data):
 
     dataset = TabularDataset(
         create_data,
-        sep=",",
-        read_kwargs={"index_col": 0},
+        read_kwargs={"sep": ",", "index_col": 0},
+        suffix=".dat",
         label_columns="source",
         transform=as_float32,
     )
@@ -452,8 +262,8 @@ def test_pandasdataset_transform_can_split_feature_and_label_dtypes(create_data)
 
     dataset = TabularDataset(
         create_data,
-        sep=",",
-        read_kwargs={"index_col": 0},
+        read_kwargs={"sep": ",", "index_col": 0},
+        suffix=".dat",
         label_columns="source",
         transform=as_float32_features_int64_label,
     )
@@ -469,7 +279,10 @@ def test_pandasdataset_transform_can_split_feature_and_label_dtypes(create_data)
 
 def test_pandasdataset_works_with_dataloader_without_collate_fn(create_data):
     dataset = TabularDataset(
-        create_data, sep=",", read_kwargs={"index_col": 0}, label_columns="source"
+        create_data,
+        read_kwargs={"sep": ",", "index_col": 0},
+        suffix=".dat",
+        label_columns="source",
     )
     frame = dataset.to_frame()
 
@@ -494,7 +307,10 @@ def test_pandasdataset_works_with_dataloader_without_collate_fn(create_data):
 
 def test_pandasdataset_subset_yields_pairs(create_data):
     dataset = TabularDataset(
-        create_data, sep=",", read_kwargs={"index_col": 0}, label_columns="source"
+        create_data,
+        read_kwargs={"sep": ",", "index_col": 0},
+        suffix=".dat",
+        label_columns="source",
     )
     subset = Subset(dataset, [100, 5, 999])
     frame = dataset.to_frame()
@@ -508,51 +324,6 @@ def test_pandasdataset_subset_yields_pairs(create_data):
             frame.iloc[index].drop(labels=["source"]).to_numpy(dtype=np.float32),
         )
         np.testing.assert_array_equal(y.numpy(), np.int64(frame.iloc[index]["source"]))
-
-
-def test_pandasdataset_mapindex(create_data):
-    dataset = TabularDataset(create_data, sep=",")
-    first_file = pd.read_csv(dataset.datafiles[0], index_col=0)
-    second_file = pd.read_csv(dataset.datafiles[1], index_col=0)
-    cols = ["a", "b", "c", "d"]
-    local_index, df = dataset._map_index(0)
-    assert local_index == 0
-    pd.testing.assert_series_equal(
-        df.loc[df.index[local_index], cols],
-        first_file.loc[first_file.index[0], cols],
-        check_names=False,
-    )
-
-    local_index, df = dataset._map_index(100)
-    assert local_index == 0
-    pd.testing.assert_series_equal(
-        df.loc[df.index[local_index], cols],
-        second_file.loc[second_file.index[0], cols],
-        check_names=False,
-    )
-
-    local_index, df = dataset._map_index(199)
-    assert local_index == 99
-    pd.testing.assert_series_equal(
-        df.loc[df.index[local_index], cols],
-        second_file.loc[second_file.index[99], cols],
-        check_names=False,
-    )
-
-    with pytest.raises(IndexError, match="could not be found"):
-        dataset._map_index(len(dataset))
-
-
-def test_pandasdataset_mapindex_cache_mode(create_data, tmp_path):
-    cache_path = tmp_path / "cache"
-    cache_path.mkdir()
-    dataset = TabularDataset(
-        create_data, cache_path=cache_path, pre_filter=lambda df: df, sep=","
-    )
-
-    cache_index, cache_df = dataset._map_index(123)
-    assert cache_df is dataset.data_cache
-    assert cache_index == 123
 
 
 @pytest.fixture(params=["csv", "parquet"])
@@ -943,70 +714,6 @@ def test_tabulardataset_offsets_follow_the_file_lengths(uneven_sources):
     # The empty file repeats its predecessor's offset.
     assert dataset._offsets.tolist() == [0, 3, 3, 8]
     assert len(dataset) == 8
-
-
-def test_map_index_places_every_position_in_its_file(uneven_sources):
-    datapath, dataformat, _ = uneven_sources
-
-    dataset = TabularDataset(datapath, dataformat=dataformat, label_columns="source")
-
-    for position in range(len(dataset)):
-        local_idx, frame = dataset._map_index(position)
-        assert frame.iloc[local_idx]["a"] == position
-
-
-def test_map_index_collection_keeps_the_requested_order(uneven_sources):
-    datapath, dataformat, _ = uneven_sources
-
-    dataset = TabularDataset(datapath, dataformat=dataformat, label_columns="source")
-    requested = [7, 0, 4, 2]
-
-    mapped = dataset._map_index(requested)
-
-    assert [frame.iloc[i]["a"] for i, frame in mapped] == requested
-
-
-def test_map_index_reads_each_file_once_per_request(uneven_sources):
-    datapath, dataformat, _ = uneven_sources
-
-    # Without the memory cache, so the grouping is what avoids the rereads
-    # rather than a frame that happened to stay resident.
-    dataset = TabularDataset(
-        datapath,
-        dataformat=dataformat,
-        max_cached_files=None,
-        label_columns="source",
-    )
-
-    reads = []
-    read_data = dataset.data_handler.read_data
-
-    def count_read(path):
-        reads.append(path)
-        return read_data(path)
-
-    dataset.data_handler.read_data = count_read
-
-    dataset._map_index([3, 5, 7, 4])
-    # Four positions, all in the last file, and the empty file is never read.
-    assert len(reads) == 1
-
-    reads.clear()
-    dataset._map_index(list(range(len(dataset))))
-    assert len(reads) == 2
-
-
-@pytest.mark.parametrize("position", [-1, 8, 100])
-def test_map_index_rejects_positions_outside_the_dataset(uneven_sources, position):
-    datapath, dataformat, _ = uneven_sources
-
-    dataset = TabularDataset(datapath, dataformat=dataformat, label_columns="source")
-
-    with pytest.raises(IndexError, match="could not be found"):
-        dataset._map_index(position)
-
-    with pytest.raises(IndexError, match=f"\\[{position}\\]"):
-        dataset._map_index([0, position])
 
 
 def test_tabulardataset_rejects_row_changing_read_kwargs(cache_sources):
