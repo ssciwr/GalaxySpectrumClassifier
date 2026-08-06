@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 import warnings
 import pyarrow.parquet as pq
+from joblib import Parallel, delayed
 
 from .base import DatasetProtocol
 from .utils import identity, load_type
@@ -251,8 +252,9 @@ def register_dataformat(key: str, handler: type[DataHandler]) -> None:
 class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
     """Present the data files of one directory as one indexed dataset.
 
-    Every row of those files is a sample, read from disk on access. An optional
-    transform prepares samples at retrieval time.
+    Every row of those files is a sample, read from disk on access. Rows pass
+    through ``pre_filter``, then ``pre_transform``, on the read path; a
+    retrieved sample additionally passes through ``transform``.
 
     Samples are ordered by file, and by row within each file. The file order is
     the one ``sort_key`` establishes, lexical by path unless told otherwise. It
@@ -272,6 +274,7 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         pre_filter: Callable | str | None = None,
         sort_key: Callable | str | None = None,
         label_columns: str | Sequence[str] | None = None,
+        n_workers: int = 1,
     ):
         """Create a dataset from the data files of one directory.
 
@@ -279,9 +282,9 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
             path (str): Directory holding the data files. Subdirectories are
                 not searched.
             read_kwargs (dict | None, optional): Additional options applied to
-                every read. They must leave the number of rows a file yields
-                unchanged, since the dataset's length is determined without
-                reading. Defaults to None.
+                every read. Without a ``pre_filter`` they must leave the number
+                of rows a file yields unchanged, since the dataset's length is
+                then determined without reading. Defaults to None.
             write_kwargs (dict | None, optional): Additional options applied to
                 every write. Defaults to None.
             dataformat (str, optional): Registered name of the on-disk data
@@ -290,14 +293,21 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
                 members, with or without a leading dot. Defaults to None, which
                 takes the extension from ``dataformat``.
             transform (Callable | str | None, optional): Callable, or import
-                path to one, that prepares a retrieved sample. It must retain
-                the configured target columns. Defaults to None.
+                path to one, that prepares a retrieved sample, received as a
+                one-row ``pd.DataFrame``. Applied after ``pre_transform``. It
+                must retain the configured target columns. Defaults to None.
             pre_transform (Callable | str | None, optional): Callable, or
-                import path to one, that changes data before it becomes
-                samples. Accepted but not yet applied. Defaults to None.
+                import path to one, applied to every retained row, received as
+                a ``dict`` of column name to value, and returning that
+                observation changed. Applied after ``pre_filter`` and before
+                ``transform``. Keys it adds become columns, and column data
+                types are inferred from the returned rows. Defaults to None.
             pre_filter (Callable | str | None, optional): Callable, or import
-                path to one, that selects which rows become samples. Accepted
-                but not yet applied. Defaults to None.
+                path to one, applied to every row read, received as a ``dict``
+                of column name to value, and returning whether that observation
+                is kept. Applied before ``pre_transform``, so it sees only the
+                columns present on disk, and it determines the dataset's
+                length. Defaults to None.
             sort_key (Callable | str | None, optional): Callable, or import
                 path to one, receiving one file path and returning the value
                 that file is ordered by. Defaults to None, which orders the
@@ -308,11 +318,18 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
                 string produces one target value per sample; a collection
                 preserves a target dimension, including for one column.
                 Defaults to None.
+            n_workers (int, optional): Number of processes reading files during
+                a whole-directory pass, as joblib's ``n_jobs``. Retrieving a
+                single sample is always sequential. Requires ``pre_filter`` and
+                ``pre_transform`` to survive being sent to another process.
+                Defaults to 1, which reads in the calling process.
 
         Raises:
             ValueError: If ``dataformat`` is not a registered format.
             OSError: If ``path`` cannot be listed or a data file cannot be read
                 while determining the dataset's length.
+            pd.errors.ParserError: If a data file does not parse while
+                determining the dataset's length.
         """
         self.path = Path(path).resolve()
 
@@ -350,8 +367,18 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         # to_frame() deliberately still returns the label column alongside the
         # features, since to_xy() does its own splitting from the whole frame.
         self.label_columns = label_columns
+        self.n_workers = n_workers
 
-        self.num_datapoints = self.data_handler.count_rows()
+        # count_rows() counts what is on disk; a pre_filter decides what is in
+        # the dataset, and the two only agree when nothing is dropped.
+        if self.pre_filter is None:
+            self.num_datapoints = self.data_handler.count_rows()
+        else:
+            # Temporary, will change when caching is done: this reads every
+            # file once at construction only to learn how many rows survive.
+            self.num_datapoints = sum(
+                len(self._preprocess(f)) for f in self.data_handler.datafiles
+            )
 
     @classmethod
     def from_config(cls, cfg: dict[str, Any]) -> "TabularDataset":
@@ -368,16 +395,60 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         """
         return cls(**cfg)
 
-    def to_frame(self) -> pd.DataFrame:
-        """Return all untransformed samples in dataset order.
+    def _preprocess(self, path: str | Path) -> pd.DataFrame:
+        """Read one data file and apply the configured row-wise preparation.
+
+        Args:
+            path (str | Path): File to read.
 
         Returns:
-            pd.DataFrame: One row per sample, including target columns.
+            pd.DataFrame: The rows of ``path`` that ``pre_filter`` keeps, each
+                as ``pre_transform`` returns it.
+
+        Raises:
+            OSError: If ``path`` cannot be read.
+            pd.errors.ParserError: If ``path`` does not parse.
+        """
+        data = self.data_handler.read_data(path)
+
+        if self.pre_filter is None and self.pre_transform is None:
+            return data
+
+        # A row is handed over as a dict rather than a Series: a Series holds
+        # one dtype, so an integer label column would come back as float. Going
+        # through records keeps every column's own dtype, and is also ~130x
+        # faster than DataFrame.apply(axis=1), which builds a Series per row.
+        rows = data.to_dict("records")
+
+        if self.pre_filter is not None:
+            rows = [row for row in rows if self.pre_filter(row)]
+
+        if self.pre_transform is not None:
+            rows = [self.pre_transform(row) for row in rows]
+
+        # from_records([]) yields a frame with no columns at all, which would
+        # not survive the concatenation in to_frame().
+        if not rows:
+            return data.iloc[:0]
+
+        return pd.DataFrame.from_records(rows)
+
+    def to_frame(self) -> pd.DataFrame:
+        """Return all samples in dataset order, without the retrieval transform.
+
+        Returns:
+            pd.DataFrame: One row per sample, including target columns, after
+                ``pre_filter`` and ``pre_transform`` but before ``transform``.
 
         Raises:
             OSError: If source data cannot be read.
         """
-        frames = [self.data_handler.read_data(f) for f in self.data_handler.datafiles]
+        # Parallelised per file, not per row: a row-wise hook is far too small
+        # to carry the cost of being dispatched to a worker, while a whole file
+        # amortises it over every row it holds and parallelises its read too.
+        frames = Parallel(n_jobs=self.n_workers)(
+            delayed(self._preprocess)(f) for f in self.data_handler.datafiles
+        )
 
         # A directory without data files has length 0, and pd.concat refuses an
         # empty sequence - so answering it here is what keeps to_frame() and
@@ -450,7 +521,7 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
             i = idx
             containing_dataframe = None
             for _df in self.data_handler.datafiles:
-                candidate_dataframe = self.data_handler.read_data(_df)
+                candidate_dataframe = self._preprocess(_df)
                 if i < len(candidate_dataframe):
                     containing_dataframe = candidate_dataframe
                     break
