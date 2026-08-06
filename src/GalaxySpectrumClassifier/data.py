@@ -3,8 +3,6 @@ from typing import Callable, Sequence, Any
 from pathlib import Path
 import pandas as pd
 import numpy as np
-from joblib import Parallel, delayed
-from collections import OrderedDict
 import warnings
 import pyarrow.parquet as pq
 
@@ -242,15 +240,13 @@ def register_dataformat(key: str, handler: type[DataHandler]) -> None:
 class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
     """Present delimited files as one indexed feature-and-target dataset.
 
-    Each matching row is a sample. Optional preprocessing creates a reusable
-    tabular cache, while an optional transform prepares samples at retrieval
-    time.
+    Each matching row is a sample, read from disk on access. An optional
+    transform prepares samples at retrieval time.
     """
 
     def __init__(
         self,
         path: str,
-        cache_path: str | None = None,
         read_kwargs=None,
         write_kwargs=None,
         dataformat: str = "csv",
@@ -265,8 +261,6 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
 
         Args:
             path (str): Root directory to search recursively for data files.
-            cache_path (str | None, optional): Directory for processed data.
-                Required whenever preprocessing is requested. Defaults to None.
             engine (str, optional): Name of the parser mode to use while
                 reading input files. Defaults to "python".
             comment (str, optional): Prefix identifying non-data lines in an
@@ -298,7 +292,6 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
             data_format (str): Data fromat of the on disk data
 
         Raises:
-            ValueError: If preprocessing is requested without ``cache_path``.
             FileNotFoundError: If ``path`` or a discovered input file cannot
                 be read.
         """
@@ -311,10 +304,8 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
 
         self.dataformat = dataformat
 
-        self.data_handler = DATAFORMATS[self.dataformat]["handler"](
-            path=self.path,
-            read_function=DATAFORMATS[self.dataformat]["read_function"],
-            write_function=DATAFORMATS[self.dataformat]["write_function"],
+        self.data_handler = DATAFORMATS[self.dataformat](
+            path=str(self.path),
             extension=suffix,
             read_kwargs=read_kwargs,
             write_kwargs=write_kwargs,
@@ -338,21 +329,6 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         # to_frame() deliberately still returns the label column alongside the
         # features, since to_xy() does its own splitting from the whole frame.
         self.label_columns = label_columns
-        self.cache_on_disk = pre_transform is not None or pre_filter is not None
-
-        if self.cache_on_disk and cache_path is None:
-            raise ValueError(
-                "When pre_transform or pre_filter are given, this implies preprocessing of data and cache_path cannot be None"
-            )
-        if cache_path is not None:
-            self.cache_path = Path(cache_path).resolve()
-            self.cache_path.mkdir(parents=True, exist_ok=True)
-
-        self.data_cache = OrderedDict()  # empty always if cache_read_data is false
-
-        if self.cache_on_disk:
-            df = self._preprocess()
-            self.data_cache = df
 
         self.num_datapoints = self._get_num_datapoints()
 
@@ -368,73 +344,8 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
 
         Raises:
             TypeError: If required configuration values are missing.
-            ValueError: If the configuration requests preprocessing without a
-                cache location.
         """
         return cls(**cfg)
-
-    def _preprocess(self):
-        """Return the persistent, processed representation of all data files.
-
-        Existing processed data is reused when available. Otherwise, the
-        dataset applies its configured preprocessing and makes the result
-        available for later retrieval.
-
-        Returns:
-            pd.DataFrame: All processed rows, with their original columns.
-
-        Raises:
-            OSError: If processed data cannot be read or written.
-            ValueError: If the input files cannot be combined into one table.
-        """
-
-        if (self.cache_path / f"data.{self.dataformat}").exists():
-            df = self.read_function(
-                self.cache_path / f"data.{self.dataformat}",
-            )
-
-            return df
-        else:
-
-            def _preprocess_single(path):
-                """Apply this dataset's preprocessing choices to one file.
-
-                Args:
-                    path (Path): Source data file to process.
-
-                Returns:
-                    pd.DataFrame: Processed rows from ``path``.
-
-                Raises:
-                    OSError: If ``path`` cannot be read.
-                """
-                df = self.read_function(
-                    path,
-                    **self.read_kwargs,
-                )
-
-                # TODO this must be made per row
-                if self.pre_filter:
-                    df = self.pre_filter(df)
-
-                if self.pre_transform:
-                    df = self.pre_transform(df)
-                return df
-
-            # TODO: this is naive, and might be too big for most machines, we need to check
-            # possibly we need to chunk them, but I am not entirely sure how atm
-            df = pd.concat(
-                Parallel(n_jobs=self.n_workers)(
-                    delayed(_preprocess_single)(f) for f in self.datafiles
-                )
-            )
-
-            writefunc = getattr(
-                df,
-            )
-            writefunc(self.cache_path / f"data.{self.dataformat}", self.write_kwargs)
-
-        return df
 
     def _get_num_datapoints(self) -> int:
         """Count all rows available through the dataset.
@@ -445,13 +356,10 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         Raises:
             OSError: If an input file cannot be read while counting rows.
         """
-        if self.cache_on_disk:
-            return len(self.data_cache)
-        else:
-            n = 0
-            for data in self.datafiles:
-                n += len(self.read_function(data, **self.read_kwargs))
-            return n
+        n = 0
+        for data in self.datafiles:
+            n += len(self.read_function(data, **self.read_kwargs))
+        return n
 
     def to_frame(self) -> pd.DataFrame:
         """Return all untransformed samples in dataset order.
@@ -462,8 +370,6 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         Raises:
             OSError: If source data cannot be read.
         """
-        if self.cache_on_disk:
-            return self.data_cache.copy()
         return pd.concat(
             (
                 self.read_function(
@@ -535,33 +441,25 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
             if idx < 0:
                 raise IndexError("Indices cannot be negative")
 
-            if self.cache_on_disk:
-                if idx >= len(self.data_cache):
-                    raise IndexError("Index out of bounds")
-                return idx, self.data_cache
-            else:
-                i = idx
-                containing_dataframe = None
-                for _df in self.datafiles:
-                    if _df not in self.data_cache:
-                        self.data_cache[_df] = self.read_function(
-                            _df,
-                            **self.read_kwargs,
-                        )
+            i = idx
+            containing_dataframe = None
+            for _df in self.datafiles:
+                candidate_dataframe = self.read_function(
+                    _df,
+                    **self.read_kwargs,
+                )
+                if i < len(candidate_dataframe):
+                    containing_dataframe = candidate_dataframe
+                    break
+                else:
+                    i -= len(candidate_dataframe)
 
-                    candidate_dataframe = self.data_cache[_df]
-                    if i < len(candidate_dataframe):
-                        containing_dataframe = candidate_dataframe
-                        break
-                    else:
-                        i -= len(candidate_dataframe)
+            if containing_dataframe is None:
+                raise IndexError(
+                    f"Index {idx} could not be found in dataset of length {self.num_datapoints}"
+                )
 
-                if containing_dataframe is None:
-                    raise IndexError(
-                        f"Index {idx} could not be found in dataset of length {self.num_datapoints}"
-                    )
-
-                return i, containing_dataframe
+            return i, containing_dataframe
 
         index = self._normalize_index(idx)
 
