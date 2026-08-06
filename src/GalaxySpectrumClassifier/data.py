@@ -9,7 +9,7 @@ from cachetools import LFUCache
 from joblib import Parallel, delayed
 
 from .base import DatasetProtocol
-from .utils import identity, load_type
+from .utils import load_type
 
 
 class DataHandler:
@@ -426,10 +426,15 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
             sort_key=sort_key,
         )
 
-        self.transform = transform if transform is not None else identity
+        self.transform = transform
         self.pre_transform = pre_transform
         self.pre_filter = pre_filter
 
+        # A bare string means "one scalar target per sample"; a list (even of
+        # one name) means "a length-1 target vector per sample" - so which one
+        # was given has to survive past the point label_columns gets wrapped
+        # into a list for lookup.
+        self._label_is_scalar = not isinstance(label_columns, (list, tuple))
         self.label_columns = (
             label_columns
             if isinstance(label_columns, (list, tuple))
@@ -715,16 +720,24 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
             # iterate with __getitem__ and return an ND tensor x, y
             data = [self.__getitem__(i) for i in index]
             X, y = (
-                torch.tensor([d[0] for d in data]),
-                torch.tensor([d[1] for d in data]),
+                torch.stack([d[0] for d in data]),
+                torch.stack([d[1] for d in data]),
             )
             return X, y
         else:
             local_idx, df = self._map_index(index)
-            row = self.transform(df.iloc[local_idx])
-
-            X = torch.tensor(np.delete(row, self.label_indices))  # type: ignore[arg-type]
-            y = torch.tensor(row[self.label_indices])
+            if self.transform is not None:
+                X, y = self.transform(df.iloc[local_idx])
+            else:
+                row = df.iloc[local_idx].to_numpy()
+                X = torch.tensor(np.delete(row, self.label_indices))  # type: ignore[arg-type]
+                # Indexing with a list, even of one position, always returns an
+                # array - a bare int position is what gives back a true scalar.
+                y = torch.tensor(
+                    row[self.label_indices[0]]
+                    if self._label_is_scalar
+                    else row[self.label_indices]
+                )
 
             return X, y
 

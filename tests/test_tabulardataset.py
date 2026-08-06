@@ -12,7 +12,7 @@ from GalaxySpectrumClassifier.data import (
 )
 
 
-def test_pandasdataset_requires_cache_path_for_preprocessing(create_data):
+def test_tabulardataset_requires_cache_path_for_preprocessing(create_data):
     with pytest.raises(ValueError, match="require a cache_path"):
         TabularDataset(create_data, pre_filter=keep_labelled)
 
@@ -23,7 +23,7 @@ def test_pandasdataset_requires_cache_path_for_preprocessing(create_data):
         TabularDataset(create_data, pre_filter=keep_labelled, pre_transform=double_a)
 
 
-def test_pandasdataset_getitem_integer_indices(create_data):
+def test_tabulardataset_getitem_integer_indices(create_data):
     raw_files = sorted(create_data.glob("*.dat"))
     first_file = pd.read_csv(raw_files[0], index_col=0)
     second_file = pd.read_csv(raw_files[1], index_col=0)
@@ -32,7 +32,9 @@ def test_pandasdataset_getitem_integer_indices(create_data):
 
     def transform(row):
         transform_calls.append(row)
-        return row[["a", "b", "source"]]
+        return torch.tensor(row[["a", "b"]].to_numpy()), torch.tensor(
+            np.array(row["source"])
+        )
 
     dataset = TabularDataset(
         create_data,
@@ -51,26 +53,29 @@ def test_pandasdataset_getitem_integer_indices(create_data):
             torch.tensor(int(row["source"])),
         )
 
-    assert all(
-        torch.equal(returned, want)
-        for returned, want in zip(dataset[0], expected(first_file, 0))
-    )
-    assert all(
-        torch.equal(returned, want)
-        for returned, want in zip(dataset[99], expected(first_file, 99))
-    )
+    x_expected, y_expected = expected(first_file, 0)
+    x, y = dataset[0]
+    assert torch.equal(x_expected, x)
+    assert torch.equal(y_expected, y)
+
+    x_expected, y_expected = expected(first_file, 99)
+    x, y = dataset[99]
+    assert torch.equal(x_expected, x)
+    assert torch.equal(y_expected, y)
     # Global indices should cross file boundaries.
-    assert all(
-        torch.equal(returned, want)
-        for returned, want in zip(dataset[100], expected(second_file, 0))
-    )
+    x_expected, y_expected = expected(second_file, 0)
+    x, y = dataset[100]
+
+    assert torch.equal(x_expected, x)
+    assert torch.equal(y_expected, y)
+
     assert len(transform_calls) == 3
 
     with pytest.raises(IndexError, match="could not be found"):
         dataset[len(dataset)]
 
 
-def test_pandasdataset_getitem_negative_index_is_out_of_range(create_data):
+def test_tabulardataset_getitem_negative_index_is_out_of_range(create_data):
     dataset = TabularDataset(
         create_data,
         suffix=".dat",
@@ -82,14 +87,18 @@ def test_pandasdataset_getitem_negative_index_is_out_of_range(create_data):
         dataset[-1]
 
 
-def test_pandasdataset_getitem_slice_tensor_and_ndarray_are_global_indices(create_data):
+def test_tabulardataset_getitem_slice_tensor_and_ndarray_are_global_indices(
+    create_data,
+):
     raw_files = sorted(create_data.glob("*.dat"))
     first_file = pd.read_csv(raw_files[0], index_col=0)
     second_file = pd.read_csv(raw_files[1], index_col=0)
     last_file = pd.read_csv(raw_files[-1], index_col=0)
 
     def transform(row):
-        return row[["a", "b", "source"]]
+        return torch.tensor(row[["a", "b"]].to_numpy()), torch.tensor(
+            np.array(row["source"])
+        )
 
     dataset = TabularDataset(
         create_data,
@@ -138,13 +147,22 @@ def test_pandasdataset_getitem_slice_tensor_and_ndarray_are_global_indices(creat
     )
 
 
-def test_pandasdataset_list_transform_composed(create_data):
+def test_tabulardataset_list_transform_composed(create_data):
     first_file = pd.read_csv(sorted(create_data.glob("*.dat"))[0], index_col=0)
     dataset = TabularDataset(
         create_data,
         read_kwargs={"sep": ","},
         suffix=".dat",
-        transform=Compose([lambda row: row[["a", "b", "source"]], lambda row: row * 2]),
+        transform=Compose(
+            [
+                lambda row: row[["a", "b", "source"]],
+                lambda row: row * 2,
+                lambda row: (
+                    torch.tensor(row[["a", "b"]].to_numpy()),
+                    torch.tensor(np.array(row["source"])),
+                ),
+            ]
+        ),
         label_columns="source",
     )
 
@@ -156,7 +174,7 @@ def test_pandasdataset_list_transform_composed(create_data):
     assert int(y) == int(first_file.loc[0, "source"]) * 2
 
 
-def test_pandasdataset_unresolvable_dotted_path_raises(create_data):
+def test_tabulardataset_unresolvable_dotted_path_raises(create_data):
     with pytest.raises(AttributeError):
         TabularDataset(
             create_data,
@@ -166,7 +184,7 @@ def test_pandasdataset_unresolvable_dotted_path_raises(create_data):
         )
 
 
-def test_pandasdataset_getitem_string_label_is_one_axis_flatter_than_list(create_data):
+def test_tabulardataset_getitem_string_label_is_one_axis_flatter_than_list(create_data):
     single = TabularDataset(
         create_data,
         read_kwargs={"sep": ",", "index_col": 0},
@@ -198,7 +216,7 @@ def test_pandasdataset_getitem_string_label_is_one_axis_flatter_than_list(create
     assert y_listed.shape == (4, 1)
 
 
-def test_pandasdataset_getitem_multiple_label_columns(create_data):
+def test_tabulardataset_getitem_multiple_label_columns(create_data):
     dataset = TabularDataset(
         create_data,
         read_kwargs={"sep": ",", "index_col": 0},
@@ -219,7 +237,7 @@ def test_pandasdataset_getitem_multiple_label_columns(create_data):
     )
 
 
-def test_pandasdataset_getitem_dtypes(create_data):
+def test_tabulardataset_getitem_dtypes(create_data):
     dataset = TabularDataset(
         create_data,
         read_kwargs={"sep": ",", "index_col": 0},
@@ -229,16 +247,40 @@ def test_pandasdataset_getitem_dtypes(create_data):
 
     x, y = dataset[0]
     assert x.dtype == torch.float64
-    assert y.dtype == torch.int64
+    assert y.dtype == torch.float64
 
     x, y = dataset[0:4]
     assert x.dtype == torch.float64
+    assert y.dtype == torch.float64
+
+    def transform(row: pd.Series) -> tuple[torch.Tensor, torch.Tensor]:
+        return torch.tensor(
+            row[["a", "b"]].to_numpy(), dtype=torch.float32
+        ), torch.tensor(np.array(row["source"]), dtype=torch.int64)
+
+    dataset = TabularDataset(
+        create_data,
+        read_kwargs={"sep": ",", "index_col": 0},
+        suffix=".dat",
+        label_columns="source",
+        transform=transform,
+    )
+    x, y = dataset[0]
+    assert x.dtype == torch.float32
+    assert y.dtype == torch.int64
+
+    x, y = dataset[0:4]
+    assert x.dtype == torch.float32
     assert y.dtype == torch.int64
 
 
-def test_pandasdataset_transform_can_control_output_dtype(create_data):
+def test_tabulardataset_transform_can_control_output_dtype(create_data):
     def as_float32(sample):
-        return sample.astype(np.float32)
+        converted = sample.astype(np.float32)
+        return (
+            torch.tensor(converted[["a", "b", "c", "d", "extra"]].to_numpy()),
+            torch.tensor(np.array(converted["source"])),
+        )
 
     dataset = TabularDataset(
         create_data,
@@ -254,11 +296,13 @@ def test_pandasdataset_transform_can_control_output_dtype(create_data):
     assert y.dtype == torch.float32
 
 
-def test_pandasdataset_transform_can_split_feature_and_label_dtypes(create_data):
+def test_tabulardataset_transform_can_split_feature_and_label_dtypes(create_data):
     def as_float32_features_int64_label(sample):
-        transformed = sample.astype(np.float32)
-        transformed["source"] = transformed["source"].astype(np.int64)
-        return transformed
+        features = sample[["a", "b", "c", "d", "extra"]].astype(np.float32)
+        return (
+            torch.tensor(features.to_numpy()),
+            torch.tensor(np.array(sample["source"], dtype=np.int64)),
+        )
 
     dataset = TabularDataset(
         create_data,
@@ -277,7 +321,7 @@ def test_pandasdataset_transform_can_split_feature_and_label_dtypes(create_data)
     assert y.dtype == torch.int64
 
 
-def test_pandasdataset_works_with_dataloader_without_collate_fn(create_data):
+def test_tabulardataset_works_with_dataloader_without_collate_fn(create_data):
     dataset = TabularDataset(
         create_data,
         read_kwargs={"sep": ",", "index_col": 0},
@@ -305,7 +349,7 @@ def test_pandasdataset_works_with_dataloader_without_collate_fn(create_data):
     assert sum(len(batch_y) for _, batch_y in loader) == len(dataset)
 
 
-def test_pandasdataset_subset_yields_pairs(create_data):
+def test_tabulardataset_subset_yields_pairs(create_data):
     dataset = TabularDataset(
         create_data,
         read_kwargs={"sep": ",", "index_col": 0},
