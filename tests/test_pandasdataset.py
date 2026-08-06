@@ -785,9 +785,11 @@ def test_tabulardataset_memory_cache_evicts_beyond_the_limit(cache_sources):
         label_columns="source",
     )
 
-    # The last index is reached by walking all three files, so an unbounded
-    # cache would be holding every one of them by now.
-    dataset[len(dataset) - 1]
+    # One row out of each of the three files, so an unbounded cache would be
+    # holding every one of them by now.
+    for i in range(0, len(dataset), 5):
+        dataset[i]
+
     assert len(dataset._file_cache) == 1
 
 
@@ -897,23 +899,114 @@ def test_datahandler_counts_rows_per_file(cache_sources):
     ]
 
 
-@pytest.mark.parametrize("dataformat", ["csv", "parquet"])
-def test_tabulardataset_offsets_follow_the_file_lengths(tmp_path, dataformat):
-    # Unequal lengths, and one file with no rows at all, so an offset repeats.
+@pytest.fixture(params=["csv", "parquet"])
+def uneven_sources(request, tmp_path):
+    """Write three files of unequal length, one of them empty.
+
+    Every row carries its own global dataset position in column ``a``, so a
+    mapped row states which position it answers.
+
+    Args:
+        request: pytest's fixture request, parametrised over the format name.
+        tmp_path: pytest's per-test temporary directory.
+
+    Returns:
+        tuple[Path, str, list[int]]: The source directory, the ``dataformat``
+            naming it, and the number of rows in each file.
+    """
+    dataformat = request.param
+    datapath = tmp_path / "uneven"
+    datapath.mkdir()
+
     lengths = [3, 0, 5]
+    start = 0
     for i, length in enumerate(lengths):
-        frame = pd.DataFrame({"a": range(length), "source": [0] * length})
-        target = tmp_path / f"{i}.{dataformat}"
+        frame = pd.DataFrame(
+            {"a": range(start, start + length), "source": [0] * length}
+        )
+        target = datapath / f"{i}.{dataformat}"
         if dataformat == "csv":
             frame.to_csv(target, index=False)
         else:
             frame.to_parquet(target)
+        start += length
 
-    dataset = TabularDataset(tmp_path, dataformat=dataformat)
+    return datapath, dataformat, lengths
+
+
+def test_tabulardataset_offsets_follow_the_file_lengths(uneven_sources):
+    datapath, dataformat, lengths = uneven_sources
+
+    dataset = TabularDataset(datapath, dataformat=dataformat)
 
     assert dataset._file_lengths.tolist() == lengths
+    # The empty file repeats its predecessor's offset.
     assert dataset._offsets.tolist() == [0, 3, 3, 8]
     assert len(dataset) == 8
+
+
+def test_map_index_places_every_position_in_its_file(uneven_sources):
+    datapath, dataformat, _ = uneven_sources
+
+    dataset = TabularDataset(datapath, dataformat=dataformat, label_columns="source")
+
+    for position in range(len(dataset)):
+        local_idx, frame = dataset._map_index(position)
+        assert frame.iloc[local_idx]["a"] == position
+
+
+def test_map_index_collection_keeps_the_requested_order(uneven_sources):
+    datapath, dataformat, _ = uneven_sources
+
+    dataset = TabularDataset(datapath, dataformat=dataformat, label_columns="source")
+    requested = [7, 0, 4, 2]
+
+    mapped = dataset._map_index(requested)
+
+    assert [frame.iloc[i]["a"] for i, frame in mapped] == requested
+
+
+def test_map_index_reads_each_file_once_per_request(uneven_sources):
+    datapath, dataformat, _ = uneven_sources
+
+    # Without the memory cache, so the grouping is what avoids the rereads
+    # rather than a frame that happened to stay resident.
+    dataset = TabularDataset(
+        datapath,
+        dataformat=dataformat,
+        max_cached_files=None,
+        label_columns="source",
+    )
+
+    reads = []
+    read_data = dataset.data_handler.read_data
+
+    def count_read(path):
+        reads.append(path)
+        return read_data(path)
+
+    dataset.data_handler.read_data = count_read
+
+    dataset._map_index([3, 5, 7, 4])
+    # Four positions, all in the last file, and the empty file is never read.
+    assert len(reads) == 1
+
+    reads.clear()
+    dataset._map_index(list(range(len(dataset))))
+    assert len(reads) == 2
+
+
+@pytest.mark.parametrize("position", [-1, 8, 100])
+def test_map_index_rejects_positions_outside_the_dataset(uneven_sources, position):
+    datapath, dataformat, _ = uneven_sources
+
+    dataset = TabularDataset(datapath, dataformat=dataformat, label_columns="source")
+
+    with pytest.raises(IndexError, match="could not be found"):
+        dataset._map_index(position)
+
+    with pytest.raises(IndexError, match=f"\\[{position}\\]"):
+        dataset._map_index([0, position])
 
 
 def test_tabulardataset_rejects_row_changing_read_kwargs(cache_sources):

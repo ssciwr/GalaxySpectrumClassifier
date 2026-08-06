@@ -567,6 +567,33 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
 
         return pd.DataFrame.from_records(rows)
 
+    def _read_cached(self, path: Path) -> pd.DataFrame:
+        """Prepare one data file, keeping the result if the cache is enabled.
+
+        Args:
+            path (Path): File to read.
+
+        Returns:
+            pd.DataFrame: The same rows ``_preprocess`` returns for ``path``.
+
+        Raises:
+            OSError: If ``path`` cannot be read.
+        """
+        # Only the retrieval path caches. Whole-directory passes read every file
+        # by definition, so they would evict everything they filled, and they
+        # run in worker processes the cache cannot follow. A frequency policy
+        # holds on to the files a sampler keeps returning to, rather than the
+        # ones it happened to touch last.
+        if self._file_cache is None:
+            return self._preprocess(path)
+
+        frame = self._file_cache.get(path)
+        if frame is None:
+            frame = self._preprocess(path)
+            self._file_cache[path] = frame
+
+        return frame
+
     def to_frame(self) -> pd.DataFrame:
         """Return all samples in dataset order, without the retrieval transform.
 
@@ -636,62 +663,48 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
             tuple[int, pd.DataFrame] | list[tuple[int, pd.DataFrame]]: For each
                 requested position, its row position and source table.
         """
-
-        def _map_single_index(idx: int) -> tuple[int, pd.DataFrame]:
-            """Locate one dataset position in its source table.
-
-            Args:
-                idx (int): Global dataset position to locate.
-
-            Returns:
-                tuple[int, pd.DataFrame]: Row position within the source table
-                    and the table containing it.
-
-            Raises:
-                IndexError: If ``idx`` is negative or outside the dataset.
-            """
-            if idx < 0:
-                raise IndexError("Indices cannot be negative")
-
-            i = idx
-            containing_dataframe = None
-            for _df in self.data_handler.datafiles:
-                # Only the retrieval path caches. Whole-directory passes read
-                # every file by definition, so they would evict everything they
-                # filled, and they run in worker processes the cache cannot
-                # follow. A frequency policy suits the walk below, which reads
-                # the first file on every lookup whatever the caller asks for.
-                if self._file_cache is None:
-                    candidate_dataframe = self._preprocess(_df)
-                else:
-                    candidate_dataframe = self._file_cache.get(_df)
-                    if candidate_dataframe is None:
-                        candidate_dataframe = self._preprocess(_df)
-                        self._file_cache[_df] = candidate_dataframe
-
-                if i < len(candidate_dataframe):
-                    containing_dataframe = candidate_dataframe
-                    break
-                else:
-                    i -= len(candidate_dataframe)
-
-            if containing_dataframe is None:
-                raise IndexError(
-                    f"Index {idx} could not be found in dataset of length {self.num_datapoints}"
-                )
-
-            return i, containing_dataframe
-
+        # TODO: this is still very complicated and a lot of logic. Simplify!
         index = self._normalize_index(idx)
 
-        if isinstance(index, Sequence):
-            if len(index) == 0:
-                raise ValueError("Error, empty index list cannot be passed.")
+        if not isinstance(index, Sequence):
+            if index < 0 or index >= self.num_datapoints:
+                raise IndexError(
+                    f"Index {index} could not be found in dataset of length "
+                    f"{self.num_datapoints}"
+                )
 
-            return [_map_single_index(i) for i in index]
+            # side="right" is load-bearing: it steps past zero-length files,
+            # whose repeated offset would otherwise be the one selected.
+            file_idx = int(np.searchsorted(self._offsets, index, side="right")) - 1
+            local_idx = index - int(self._offsets[file_idx])
 
-        else:
-            return _map_single_index(index)
+            return local_idx, self._read_cached(self.data_handler.datafiles[file_idx])
+
+        if len(index) == 0:
+            raise ValueError("Error, empty index list cannot be passed.")
+
+        positions = np.asarray(index, dtype=np.int64)
+        outside = positions[(positions < 0) | (positions >= self.num_datapoints)]
+        if outside.size:
+            raise IndexError(
+                f"Indices {outside.tolist()} could not be found in dataset of "
+                f"length {self.num_datapoints}"
+            )
+
+        file_idx = np.searchsorted(self._offsets, positions, side="right") - 1
+        local = positions - self._offsets[file_idx]
+
+        # Remembered per call, so a file is read once however many of its rows
+        # were asked for - which the file cache alone would only manage while
+        # the file stays resident, and not at all when it is disabled.
+        mapped: list[tuple[int, pd.DataFrame]] = [None] * len(positions)
+        frames: dict[int, pd.DataFrame] = {}
+        for k, (f, i) in enumerate(zip(file_idx, local)):
+            if (frame := frames.get(f)) is None:
+                frame = frames[f] = self._read_cached(self.data_handler.datafiles[f])
+            mapped[k] = (int(i), frame)
+
+        return mapped
 
     def _split_labels(
         self, data: pd.Series | pd.DataFrame
