@@ -731,3 +731,82 @@ def test_tabulardataset_cache_path_may_not_be_the_source(cache_sources):
 
     with pytest.raises(ValueError, match="cache_path must differ from path"):
         TabularDataset(datapath, dataformat=dataformat, cache_path=datapath)
+
+
+def test_tabulardataset_memory_cache_avoids_rereading(cache_sources):
+    datapath, dataformat = cache_sources
+
+    # A closure rather than a module-level counter: retrieval is sequential and
+    # in-process, so the hook never has to survive being pickled to a worker.
+    calls = []
+
+    def count_row(row):
+        calls.append(row["a"])
+        return row
+
+    dataset = TabularDataset(
+        datapath,
+        dataformat=dataformat,
+        pre_transform=count_row,
+        label_columns="source",
+    )
+
+    dataset[12]
+    first_pass = len(calls)
+    assert first_pass > 0
+
+    dataset[12]
+    assert len(calls) == first_pass
+
+
+def test_tabulardataset_memory_cache_evicts_beyond_the_limit(cache_sources):
+    datapath, dataformat = cache_sources
+
+    dataset = TabularDataset(
+        datapath,
+        dataformat=dataformat,
+        max_cached_files=1,
+        label_columns="source",
+    )
+
+    # The last index is reached by walking all three files, so an unbounded
+    # cache would be holding every one of them by now.
+    dataset[len(dataset) - 1]
+    assert len(dataset._file_cache) == 1
+
+
+def test_tabulardataset_to_frame_does_not_populate_the_memory_cache(cache_sources):
+    datapath, dataformat = cache_sources
+
+    dataset = TabularDataset(datapath, dataformat=dataformat, label_columns="source")
+
+    dataset.to_frame()
+    assert len(dataset._file_cache) == 0
+
+
+def test_tabulardataset_memory_cache_matches_uncached(cache_sources):
+    datapath, dataformat = cache_sources
+
+    shared = {
+        "dataformat": dataformat,
+        "pre_transform": double_a,
+        "label_columns": "source",
+    }
+    cached = TabularDataset(datapath, max_cached_files=8, **shared)
+    uncached = TabularDataset(datapath, max_cached_files=None, **shared)
+
+    assert uncached._file_cache is None
+    pd.testing.assert_frame_equal(cached.to_frame(), uncached.to_frame())
+
+    for i in range(len(uncached)):
+        x_cached, y_cached = cached[i]
+        x_uncached, y_uncached = uncached[i]
+        assert torch.equal(x_cached, x_uncached)
+        assert torch.equal(y_cached, y_uncached)
+
+
+def test_tabulardataset_memory_cache_rejects_sizes_below_one(cache_sources):
+    datapath, dataformat = cache_sources
+
+    with pytest.raises(ValueError, match="max_cached_files must be at least 1"):
+        TabularDataset(datapath, dataformat=dataformat, max_cached_files=0)

@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 import warnings
 import pyarrow.parquet as pq
+from cachetools import LFUCache
 from joblib import Parallel, delayed
 
 from .base import DatasetProtocol
@@ -273,6 +274,10 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
     the one ``sort_key`` establishes, lexical by path unless told otherwise. It
     is what a dataset position means, so it decides which rows a seeded split
     puts in which half.
+
+    Retrieving a sample may serve its file from an in-memory cache of at most
+    ``max_cached_files`` files, so a file edited after it was first read can go
+    on being served as it was. Whole-directory passes always read from disk.
     """
 
     def __init__(
@@ -290,6 +295,7 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         sort_key: Callable | str | None = None,
         label_columns: str | Sequence[str] | None = None,
         n_workers: int = 1,
+        max_cached_files: int | None = 8,
     ):
         """Create a dataset from the data files of one directory.
 
@@ -348,10 +354,17 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
                 single sample is always sequential. Requires ``pre_filter`` and
                 ``pre_transform`` to survive being sent to another process.
                 Defaults to 1, which reads in the calling process.
+            max_cached_files (int | None, optional): How many files retrieval
+                may hold in memory at once, counted in files rather than bytes.
+                The least frequently used one is dropped beyond that. Applies
+                per process, so a dataset iterated by worker processes holds
+                this many in each of them. Defaults to 8. Pass None to read
+                from disk on every retrieval.
 
         Raises:
-            ValueError: If ``dataformat`` is not a registered format, or if
-                ``cache_path`` is ``path``.
+            ValueError: If ``dataformat`` is not a registered format, if
+                ``cache_path`` is ``path``, or if ``max_cached_files`` is less
+                than one.
             OSError: If ``path`` cannot be listed, a data file cannot be read
                 while writing the cache or determining the dataset's length, or
                 the cache cannot be written.
@@ -395,6 +408,22 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         # features, since to_xy() does its own splitting from the whole frame.
         self.label_columns = label_columns
         self.n_workers = n_workers
+
+        # Rejected here rather than left to cachetools, which accepts maxsize=0
+        # and then raises "value too large" on the first insert instead, a long
+        # way from the argument that caused it. None is the one way to opt out.
+        if max_cached_files is not None and max_cached_files < 1:
+            raise ValueError(
+                f"max_cached_files must be at least 1, got {max_cached_files}. "
+                "Pass None to disable caching."
+            )
+
+        # Per instance, not per class: the key is a file path, and two datasets
+        # can read the same directory through different hooks, or one the
+        # sources and one the cache written from them.
+        self._file_cache = (
+            None if max_cached_files is None else LFUCache(maxsize=max_cached_files)
+        )
 
         self.cache_on_disk = cache_path is not None
 
@@ -594,7 +623,19 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
             i = idx
             containing_dataframe = None
             for _df in self.data_handler.datafiles:
-                candidate_dataframe = self._preprocess(_df)
+                # Only the retrieval path caches. Whole-directory passes read
+                # every file by definition, so they would evict everything they
+                # filled, and they run in worker processes the cache cannot
+                # follow. A frequency policy suits the walk below, which reads
+                # the first file on every lookup whatever the caller asks for.
+                if self._file_cache is None:
+                    candidate_dataframe = self._preprocess(_df)
+                else:
+                    candidate_dataframe = self._file_cache.get(_df)
+                    if candidate_dataframe is None:
+                        candidate_dataframe = self._preprocess(_df)
+                        self._file_cache[_df] = candidate_dataframe
+
                 if i < len(candidate_dataframe):
                     containing_dataframe = candidate_dataframe
                     break
