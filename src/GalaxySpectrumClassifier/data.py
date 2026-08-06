@@ -100,12 +100,12 @@ class DataHandler:
         """
         raise NotImplementedError
 
-    def count_rows(self) -> int:
-        """Count the rows of all data files without materializing them.
+    def count_rows(self) -> list[int]:
+        """Count the rows of each data file without materializing them.
 
         Returns:
-            int: The same total as summing ``len(read_data(f))`` over
-                ``datafiles``.
+            list[int]: One entry per file in ``datafiles`` order, each the
+                same as ``len(read_data(f))``.
 
         Raises:
             NotImplementedError: If the format does not implement counting.
@@ -156,13 +156,13 @@ class CSVDataHandler(DataHandler):
         write_kwargs: dict[str, Any] = {"index": False} | self.write_kwargs
         data.to_csv(path, **write_kwargs)
 
-    def count_rows(self) -> int:
-        """Count the data rows of all files by scanning their lines.
+    def count_rows(self) -> list[int]:
+        """Count the data rows of each file by scanning its lines.
 
         Comment and blank lines are not data, and a header line is not a row.
 
         Returns:
-            int: Total number of data rows across ``datafiles``.
+            list[int]: Number of data rows per file, in ``datafiles`` order.
 
         Raises:
             OSError: If a data file cannot be read.
@@ -180,7 +180,7 @@ class CSVDataHandler(DataHandler):
             header = None if "names" in self.read_kwargs else 0
         has_header = header is not None
 
-        row_count = 0
+        row_counts = []
         for datafile in self.datafiles:
             with open(datafile, "rb") as f:
                 # A blank line is empty once stripped, so the walrus alone
@@ -197,9 +197,9 @@ class CSVDataHandler(DataHandler):
             if has_header and n > 0:
                 n -= 1
 
-            row_count += n
+            row_counts.append(n)
 
-        return row_count
+        return row_counts
 
 
 class ParquetDataHandler(DataHandler):
@@ -234,19 +234,18 @@ class ParquetDataHandler(DataHandler):
         """
         data.to_parquet(path, **self.write_kwargs)
 
-    def count_rows(self) -> int:
-        """Count the rows of all files from their stored metadata.
+    def count_rows(self) -> list[int]:
+        """Count the rows of each file from its stored metadata.
 
         Returns:
-            int: Total number of rows across ``datafiles``.
+            list[int]: Number of rows per file, in ``datafiles`` order.
 
         Raises:
             OSError: If a data file cannot be read.
         """
-        row_count = 0
-        for datafile in self.datafiles:
-            row_count += pq.ParquetFile(datafile).metadata.num_rows
-        return row_count
+        return [
+            pq.ParquetFile(datafile).metadata.num_rows for datafile in self.datafiles
+        ]
 
 
 DATAFORMATS: dict[str, type[DataHandler]] = {
@@ -288,11 +287,10 @@ def register_dataformat(key: str, handler: type[DataHandler]) -> None:
 class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
     """Present the data files of one directory as one indexed dataset.
 
-    Every row of those files is a sample, read from disk on access. Rows pass
-    through ``pre_filter``, then ``pre_transform``, on the read path; a
-    retrieved sample additionally passes through ``transform``. Given a
-    ``cache_path``, the first two run once at construction and the dataset reads
-    the result from there instead.
+    Every row of those files is a sample, read from disk on access, and a
+    retrieved sample passes through ``transform``. ``pre_filter`` and
+    ``pre_transform`` require a ``cache_path``: they run once at construction
+    and the dataset reads their result from there instead of from ``path``.
 
     Samples are ordered by file, and by row within each file. The file order is
     the one ``sort_key`` establishes, lexical by path unless told otherwise. It
@@ -342,7 +340,8 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
                 once rather than on every read. An existing cache is used as-is
                 and is not checked against the currently configured hooks or
                 ``read_kwargs``; use ``overwrite_cache`` after changing either.
-                Defaults to None, which reads the source files on every access.
+                Required by ``pre_filter`` and ``pre_transform``. Defaults to
+                None, which reads the source files on every access.
             overwrite_cache (bool, optional): Whether an existing cache file is
                 written again rather than reused. Defaults to False.
             transform (Callable | str | None, optional): Callable, or import
@@ -354,13 +353,14 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
                 a ``dict`` of column name to value, and returning that
                 observation changed. Applied after ``pre_filter`` and before
                 ``transform``. Keys it adds become columns, and column data
-                types are inferred from the returned rows. Defaults to None.
+                types are inferred from the returned rows. Requires
+                ``cache_path``. Defaults to None.
             pre_filter (Callable | str | None, optional): Callable, or import
                 path to one, applied to every row read, received as a ``dict``
                 of column name to value, and returning whether that observation
                 is kept. Applied before ``pre_transform``, so it sees only the
                 columns present on disk, and it determines the dataset's
-                length. Defaults to None.
+                length. Requires ``cache_path``. Defaults to None.
             sort_key (Callable | str | None, optional): Callable, or import
                 path to one, receiving one file path and returning the value
                 that file is ordered by. Defaults to None, which orders the
@@ -386,13 +386,14 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         Raises:
             ValueError: If ``dataformat`` is not a registered format, if
                 ``read_kwargs`` holds an option the format forbids, if
-                ``cache_path`` is ``path``, or if ``max_cached_files`` is less
-                than one.
+                ``pre_filter`` or ``pre_transform`` is given without a
+                ``cache_path``, if ``cache_path`` is ``path``, or if
+                ``max_cached_files`` is less than one.
             OSError: If ``path`` cannot be listed, a data file cannot be read
-                while writing the cache or determining the dataset's length, or
-                the cache cannot be written.
+                while writing the cache or counting its rows, or the cache
+                cannot be written.
             pd.errors.ParserError: If a data file does not parse while writing
-                the cache or determining the dataset's length.
+                the cache.
         """
         self.path = Path(path).resolve()
 
@@ -448,6 +449,18 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
             None if max_cached_files is None else LFUCache(maxsize=max_cached_files)
         )
 
+        # No location is invented when none is given: `path` may be read-only,
+        # and writing where the caller did not ask is the wrong surprise. The
+        # lazy hook path is not merely slower - it reads and preprocesses every
+        # file at construction to learn the length, then again on every access,
+        # so it pays the disk cache's cost and keeps none of its benefit.
+        if cache_path is None and (pre_filter is not None or pre_transform is not None):
+            raise ValueError(
+                "pre_filter and pre_transform require a cache_path, so the "
+                "hooks are applied once and written there rather than on "
+                "every read."
+            )
+
         self.cache_on_disk = cache_path is not None
 
         if self.cache_on_disk:
@@ -492,17 +505,14 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
             self.data_handler.read_kwargs = {}
             self.data_handler.datafiles = targets
 
-        # count_rows() counts what is on disk; a pre_filter decides what is in
-        # the dataset, and the two only agree when nothing is dropped. A cache
-        # has both hooks already applied, so it always takes the cheap branch.
-        if self.pre_filter is None:
-            self.num_datapoints = self.data_handler.count_rows()
-        else:
-            # Reads every file once at construction only to learn how many rows
-            # survive. Pass a cache_path to pay this once instead of per run.
-            self.num_datapoints = sum(
-                len(self._preprocess(f)) for f in self.data_handler.datafiles
-            )
+        # What is on disk is what is in the dataset: a pre_filter drops its rows
+        # into the cache the handler now reads, so nothing has to be read here
+        # to learn the lengths. Their running sum, with a leading 0, is the
+        # global position each file starts at, and file k's end is file k+1's
+        # start - so the starts alone place any position by search.
+        self._file_lengths = np.asarray(self.data_handler.count_rows(), dtype=np.int64)
+        self._offsets = np.concatenate(([0], np.cumsum(self._file_lengths)))
+        self.num_datapoints = int(self._file_lengths.sum())
 
     @classmethod
     def from_config(cls, cfg: dict[str, Any]) -> "TabularDataset":

@@ -111,11 +111,14 @@ def test_pandasdataset_nonstandard(create_data_nonstandard):
 
 
 def test_pandasdataset_requires_cache_path_for_preprocessing(create_data):
-    with pytest.raises(ValueError, match="cache_path cannot be None"):
-        TabularDataset(create_data, pre_filter=lambda df: df)
+    with pytest.raises(ValueError, match="require a cache_path"):
+        TabularDataset(create_data, pre_filter=keep_labelled)
 
-    with pytest.raises(ValueError, match="cache_path cannot be None"):
-        TabularDataset(create_data, pre_transform=lambda df: df)
+    with pytest.raises(ValueError, match="require a cache_path"):
+        TabularDataset(create_data, pre_transform=double_a)
+
+    with pytest.raises(ValueError, match="require a cache_path"):
+        TabularDataset(create_data, pre_filter=keep_labelled, pre_transform=double_a)
 
 
 def test_pandasdataset_construction_cache(create_data, tmp_path):
@@ -629,29 +632,34 @@ def test_tabulardataset_cache_writes_one_file_per_source(cache_sources, tmp_path
     ] * 3
 
 
-def test_tabulardataset_cache_matches_uncached(cache_sources, tmp_path):
+def test_tabulardataset_cache_matches_hooks_applied_by_hand(cache_sources, tmp_path):
     datapath, dataformat = cache_sources
-    hooks = dict(
-        pre_filter=keep_labelled, pre_transform=double_a, label_columns="source"
-    )
 
-    uncached = TabularDataset(datapath, dataformat=dataformat, **hooks)
+    # The hooks have no lazy counterpart to compare against, so the comparison
+    # is against the sources with the same two steps applied by pandas.
+    plain = TabularDataset(datapath, dataformat=dataformat, label_columns="source")
+    expected = plain.to_frame()
+    expected = expected[expected["source"] == 1].reset_index(drop=True)
+    expected["doubled"] = expected["a"] * 2
+
     cached = TabularDataset(
-        datapath, dataformat=dataformat, cache_path=tmp_path / "cache", **hooks
+        datapath,
+        dataformat=dataformat,
+        cache_path=tmp_path / "cache",
+        pre_filter=keep_labelled,
+        pre_transform=double_a,
+        label_columns="source",
     )
 
-    assert len(cached) == len(uncached)
-    pd.testing.assert_frame_equal(cached.to_frame(), uncached.to_frame())
+    assert len(cached) == len(expected)
     # Both hooks ran exactly once: doubled is twice a, not four times.
-    frame = cached.to_frame()
-    assert (frame["doubled"] == frame["a"] * 2).all()
-    assert frame["a"].dtype == uncached.to_frame()["a"].dtype
+    pd.testing.assert_frame_equal(cached.to_frame(), expected)
 
     for i in range(len(cached)):
-        cached_x, cached_y = cached[i]
-        uncached_x, uncached_y = uncached[i]
-        assert torch.equal(cached_x, uncached_x)
-        assert torch.equal(cached_y, uncached_y)
+        x, y = cached[i]
+        row = expected.iloc[i]
+        assert torch.equal(x, torch.tensor([row["a"], row["doubled"]], dtype=x.dtype))
+        assert torch.equal(y, torch.tensor(row["source"], dtype=y.dtype))
 
 
 def test_tabulardataset_cache_is_reused_without_rerunning_hooks(
@@ -741,27 +749,30 @@ def test_tabulardataset_cache_path_may_not_be_the_source(cache_sources):
 def test_tabulardataset_memory_cache_avoids_rereading(cache_sources):
     datapath, dataformat = cache_sources
 
-    # A closure rather than a module-level counter: retrieval is sequential and
-    # in-process, so the hook never has to survive being pickled to a worker.
-    calls = []
-
-    def count_row(row):
-        calls.append(row["a"])
-        return row
-
     dataset = TabularDataset(
         datapath,
         dataformat=dataformat,
-        pre_transform=count_row,
         label_columns="source",
     )
 
+    # Counted on the handler instance rather than through a hook, which would
+    # need a cache_path and then run at construction instead of on the reads
+    # this is about.
+    reads = []
+    read_data = dataset.data_handler.read_data
+
+    def count_read(path):
+        reads.append(path)
+        return read_data(path)
+
+    dataset.data_handler.read_data = count_read
+
     dataset[12]
-    first_pass = len(calls)
+    first_pass = len(reads)
     assert first_pass > 0
 
     dataset[12]
-    assert len(calls) == first_pass
+    assert len(reads) == first_pass
 
 
 def test_tabulardataset_memory_cache_evicts_beyond_the_limit(cache_sources):
@@ -789,11 +800,14 @@ def test_tabulardataset_to_frame_does_not_populate_the_memory_cache(cache_source
     assert len(dataset._file_cache) == 0
 
 
-def test_tabulardataset_memory_cache_matches_uncached(cache_sources):
+def test_tabulardataset_memory_cache_matches_uncached(cache_sources, tmp_path):
     datapath, dataformat = cache_sources
 
+    # Both read the same on-disk cache, written once by whichever is built
+    # first, so the memory cache is the only difference between them.
     shared = {
         "dataformat": dataformat,
+        "cache_path": tmp_path / "cache",
         "pre_transform": double_a,
         "label_columns": "source",
     }
@@ -860,7 +874,7 @@ def test_datahandler_accepts_read_kwargs_leaving_the_row_count_alone(create_data
     )
 
     assert handler.read_kwargs == {"index_col": 0}
-    assert handler.count_rows() == 1000
+    assert sum(handler.count_rows()) == 1000
 
 
 def test_datahandler_forbids_nothing_by_default(create_data):
@@ -872,6 +886,34 @@ def test_datahandler_forbids_nothing_by_default(create_data):
     )
 
     assert handler.read_kwargs == {"skiprows": 1}
+
+
+def test_datahandler_counts_rows_per_file(cache_sources):
+    datapath, dataformat = cache_sources
+    handler = TabularDataset(datapath, dataformat=dataformat).data_handler
+
+    assert handler.count_rows() == [
+        len(handler.read_data(f)) for f in handler.datafiles
+    ]
+
+
+@pytest.mark.parametrize("dataformat", ["csv", "parquet"])
+def test_tabulardataset_offsets_follow_the_file_lengths(tmp_path, dataformat):
+    # Unequal lengths, and one file with no rows at all, so an offset repeats.
+    lengths = [3, 0, 5]
+    for i, length in enumerate(lengths):
+        frame = pd.DataFrame({"a": range(length), "source": [0] * length})
+        target = tmp_path / f"{i}.{dataformat}"
+        if dataformat == "csv":
+            frame.to_csv(target, index=False)
+        else:
+            frame.to_parquet(target)
+
+    dataset = TabularDataset(tmp_path, dataformat=dataformat)
+
+    assert dataset._file_lengths.tolist() == lengths
+    assert dataset._offsets.tolist() == [0, 3, 3, 8]
+    assert len(dataset) == 8
 
 
 def test_tabulardataset_rejects_row_changing_read_kwargs(cache_sources):
