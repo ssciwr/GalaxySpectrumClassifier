@@ -144,12 +144,30 @@ def test_tabulardataset_getitem_slice_tensor_and_ndarray_are_global_indices(
         *dataset[995:],
     )
     expect(
+        [last_file.loc[last_file.index[-1]]],
+        *dataset[-1:],
+    )
+    x, y = dataset[: len(dataset) + 1]
+    assert x.shape == (len(dataset), 2)
+    assert y.shape == (len(dataset),)
+    np.testing.assert_allclose(
+        x[-1].numpy(),
+        last_file.loc[last_file.index[-1], ["a", "b"]].to_numpy(dtype=np.float32),
+    )
+    expect(
         [
             first_file.loc[first_file.index[0]],
             second_file.loc[second_file.index[0]],
         ],
         *dataset[np.array([0, 100])],
     )
+
+    sample_x, sample_y = dataset[0]
+    x, y = dataset[0:0]
+    assert x.shape == (0, *sample_x.shape)
+    assert y.shape == (0, *sample_y.shape)
+    assert x.dtype == sample_x.dtype
+    assert y.dtype == sample_y.dtype
 
 
 def test_tabulardataset_list_transform_composed(create_data):
@@ -219,6 +237,13 @@ def test_tabulardataset_getitem_string_label_is_one_axis_flatter_than_list(creat
     assert y_single.shape == (4,)
     assert x_listed.shape == (4, 5)
     assert y_listed.shape == (4, 1)
+
+    x_single, y_single = single[0:0]
+    x_listed, y_listed = listed[0:0]
+    assert x_single.shape == (0, 5)
+    assert y_single.shape == (0,)
+    assert x_listed.shape == (0, 5)
+    assert y_listed.shape == (0, 1)
 
 
 def test_tabulardataset_getitem_multiple_label_columns(create_data):

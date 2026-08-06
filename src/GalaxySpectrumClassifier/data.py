@@ -637,17 +637,22 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         if isinstance(idx, (torch.Tensor, np.ndarray)):
             return idx.tolist()
         elif isinstance(idx, slice):
-            return list(
-                range(
-                    idx.start if idx.start is not None else 0,
-                    idx.stop if idx.stop is not None else self.num_datapoints,
-                    idx.step if idx.step is not None else 1,
-                )
-            )
+            return list(range(*idx.indices(self.num_datapoints)))
         elif isinstance(idx, tuple):
             return [i for i in idx]
         else:
             return idx
+
+    def _empty_selection(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return empty feature and target tensors for an empty multi-index."""
+        if len(self) == 0:
+            return torch.empty((0,)), torch.empty((0,))
+
+        sample_x, sample_y = self[0]
+        return (
+            sample_x.new_empty((0, *sample_x.shape)),
+            sample_y.new_empty((0, *sample_y.shape)),
+        )
 
     def _map_index(self, index: int) -> tuple[int, pd.DataFrame]:
         """Locate requested global positions in their source tables.
@@ -700,10 +705,16 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
 
         Returns:
             tuple[torch.Tensor, torch.Tensor]: Prepared features and targets.
+                Empty multi-index selections return empty tensors with the
+                same trailing shape and dtype as one sample when the dataset is
+                non-empty.
         """
         index = self._normalize_index(idx)
 
         if isinstance(index, Sequence):
+            if len(index) == 0:
+                return self._empty_selection()
+
             # iterate with __getitem__ and return an ND tensor x, y
             data = [self.__getitem__(i) for i in index]
             X, y = (
