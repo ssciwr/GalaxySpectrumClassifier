@@ -74,6 +74,9 @@ class DataHandler:
             self.path.glob(f"*.{self.extension}"), key=self.sort_key
         )
 
+        if not len(self.datafiles):
+            raise ValueError(f"Error, no datafiles with suffix {self.extension} found")
+
     def read_data(self, path: str | Path) -> pd.DataFrame:
         """Read one data file into a table.
 
@@ -101,7 +104,7 @@ class DataHandler:
         raise NotImplementedError
 
     def count_rows(self) -> list[int]:
-        """Count the rows of each data file without materializing them.
+        """Count the rows of each data file.
 
         Returns:
             list[int]: One entry per file in ``datafiles`` order, each the
@@ -158,9 +161,11 @@ class CSVDataHandler(DataHandler):
         data.to_csv(path, **write_kwargs)
 
     def count_rows(self) -> list[int]:
-        """Count the data rows of each file by scanning its lines.
+        """Count the data rows of each file with the configured CSV parser.
 
-        Comment and blank lines are not data, and a header line is not a row.
+        Files are parsed in bounded chunks using the same options as
+        ``read_data``. The PyArrow engine does not support chunked reads, so
+        files using it are materialized one at a time.
 
         Returns:
             list[int]: Number of data rows per file, in ``datafiles`` order.
@@ -168,36 +173,14 @@ class CSVDataHandler(DataHandler):
         Raises:
             OSError: If a data file cannot be read.
         """
-        comment_prefix = self.read_kwargs.get("comment")
-
-        if comment_prefix is not None:
-            comment_prefix = comment_prefix.encode()
-
-        # pandas consumes the first data line as column names unless told
-        # otherwise, and an absent `header` means exactly that - except when
-        # `names` supplies the labels instead, which consumes no line.
-        header = self.read_kwargs.get("header", "infer")
-        if header == "infer":
-            header = None if "names" in self.read_kwargs else 0
-        has_header = header is not None
 
         row_counts = []
         for datafile in self.datafiles:
-            with open(datafile, "rb") as f:
-                # A blank line is empty once stripped, so the walrus alone
-                # filters it out.
-                if comment_prefix:
-                    n = sum(
-                        1
-                        for line in f
-                        if (s := line.lstrip()) and not s.startswith(comment_prefix)
-                    )
-                else:
-                    n = sum(1 for line in f if (s := line.lstrip()))
-
-            if has_header and n > 0:
-                n -= 1
-
+            if self.read_kwargs.get("engine") == "pyarrow":
+                n = len(pd.read_csv(datafile, **self.read_kwargs))
+            else:
+                chunks = pd.read_csv(datafile, chunksize=100_000, **self.read_kwargs)
+                n = sum(len(chunk) for chunk in chunks)
             row_counts.append(n)
 
         return row_counts
@@ -398,6 +381,8 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
                 the cache.
         """
         self.path = Path(path).resolve()
+        if self.path.is_dir() is False:
+            raise ValueError("Error, input path is not a directory")
 
         if dataformat not in DATAFORMATS:
             raise ValueError(
@@ -599,7 +584,6 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         # ones it happened to touch last.
         if self._file_cache is None:
             res = self._preprocess(path)
-            print("frame: ", type(res), ", ", res)
             return res
 
         frame = self._file_cache.get(path)

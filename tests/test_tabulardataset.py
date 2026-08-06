@@ -14,13 +14,18 @@ from GalaxySpectrumClassifier.data import (
 
 def test_tabulardataset_requires_cache_path_for_preprocessing(create_data):
     with pytest.raises(ValueError, match="require a cache_path"):
-        TabularDataset(create_data, pre_filter=keep_labelled)
+        TabularDataset(create_data, suffix=".dat", pre_filter=keep_labelled)
 
     with pytest.raises(ValueError, match="require a cache_path"):
-        TabularDataset(create_data, pre_transform=double_a)
+        TabularDataset(create_data, suffix=".dat", pre_transform=double_a)
 
     with pytest.raises(ValueError, match="require a cache_path"):
-        TabularDataset(create_data, pre_filter=keep_labelled, pre_transform=double_a)
+        TabularDataset(
+            create_data,
+            suffix=".dat",
+            pre_filter=keep_labelled,
+            pre_transform=double_a,
+        )
 
 
 def test_tabulardataset_getitem_integer_indices(create_data):
@@ -561,6 +566,27 @@ def test_tabulardataset_cache_path_may_not_be_the_source(cache_sources):
         TabularDataset(datapath, dataformat=dataformat, cache_path=datapath)
 
 
+@pytest.mark.parametrize("path_kind", ["missing", "file"])
+def test_tabulardataset_rejects_non_directory_path(tmp_path, path_kind):
+    path = tmp_path / "not-a-directory"
+    if path_kind == "file":
+        path.write_text("a,source\n1,0\n")
+
+    with pytest.raises(ValueError, match="input path is not a directory"):
+        TabularDataset(path)
+
+
+@pytest.mark.parametrize("directory_contents", ["empty", "wrong-extension"])
+def test_datahandler_rejects_directory_without_matching_files(
+    tmp_path, directory_contents
+):
+    if directory_contents == "wrong-extension":
+        (tmp_path / "data.dat").write_text("a,source\n1,0\n")
+
+    with pytest.raises(ValueError, match="no datafiles with suffix csv found"):
+        CSVDataHandler(tmp_path, "csv")
+
+
 def test_tabulardataset_memory_cache_avoids_rereading(cache_sources):
     datapath, dataformat = cache_sources
 
@@ -711,6 +737,38 @@ def test_datahandler_counts_rows_per_file(cache_sources):
 
     assert handler.count_rows() == [
         len(handler.read_data(f)) for f in handler.datafiles
+    ]
+
+
+@pytest.mark.parametrize(
+    ("content", "read_kwargs"),
+    [
+        (
+            "ignored,ignored\nalso,ignored\na,source\n1,0\n",
+            {"header": 2},
+        ),
+        (
+            "1,0\n2,1\n",
+            {"names": ["a", "source"]},
+        ),
+        (
+            'a,source\n"line 1\nline 2",0\nplain,1\n',
+            {},
+        ),
+        (
+            "a,source\n1,0\n2,1\n",
+            {"engine": "pyarrow"},
+        ),
+    ],
+)
+def test_csvdatahandler_count_rows_matches_configured_reads(
+    tmp_path, content, read_kwargs
+):
+    (tmp_path / "data.csv").write_text(content)
+    handler = CSVDataHandler(tmp_path, "csv", read_kwargs=read_kwargs)
+
+    assert handler.count_rows() == [
+        len(handler.read_data(datafile)) for datafile in handler.datafiles
     ]
 
 
