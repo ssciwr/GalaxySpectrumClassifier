@@ -719,7 +719,7 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
             return X, y
         else:
             local_idx, df = self._map_index(index)
-            row = df.iloc[local_idx].to_numpy()
+            row = self.transform(df.iloc[local_idx]).to_numpy()
 
             X = torch.tensor(np.delete(row, self.label_indices))  # type: ignore[arg-type]
             y = torch.tensor(row[self.label_indices])
