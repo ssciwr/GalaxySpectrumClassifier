@@ -10,6 +10,13 @@ from .base import DatasetProtocol
 from .utils import identity, load_type
 
 
+DATAFORMATS = {
+    "csv": {"read": "read_csv", "write": "to_csv", "extension": ".csv"},
+    "parquet": {"read": "read_parquet", "write": "to_parquet", "extension": ".parquet"},
+    "hdf": {"read": "read_hdf", "write": "to_hdf", "extension": ".h5"},
+}
+
+
 class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
     """Present delimited files as one indexed feature-and-target dataset.
 
@@ -27,12 +34,14 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         na_values: tuple = ("nan", "NaN"),
         sep: str = ",",
         read_kwargs=None,
+        write_kwargs=None,
         suffix=".dat",
         transform: Callable | str | None = None,
         pre_transform: Callable | str | None = None,
         pre_filter: Callable | str | None = None,
         n_workers: int = 1,
         label_columns: str | Sequence[str] | None = None,
+        dataformat: str = "csv",
     ):
         """Create a dataset from matching delimited files below a directory.
 
@@ -68,6 +77,7 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
                 string produces one target value per sample; a collection
                 preserves a target dimension, including for one column.
                 Defaults to None.
+            data_format (str): Data fromat of the on disk data
 
         Raises:
             ValueError: If preprocessing is requested without ``cache_path``.
@@ -82,6 +92,14 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         self.na_values = na_values
         self.sep = sep
         self.read_kwargs = read_kwargs or {}
+        self.write_kwargs = write_kwargs or {}
+
+        if dataformat not in DATAFORMATS:
+            raise ValueError(
+                f"Error, unknown data format. Allowed formats are {DATAFORMATS}"
+            )
+        self.dataformat = dataformat
+        self.read_function = getattr(pd, DATAFORMATS[dataformat]["read"])
 
         self.suffix = suffix
 
@@ -156,16 +174,10 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
             ValueError: If the input files cannot be combined into one table.
         """
 
-        if (self.cache_path / "data.csv").exists():
-            # don't read
-            kwargs = {"index_col": 0}
-            kwargs.update(self.read_kwargs)
-            df = pd.read_csv(
-                self.cache_path / "data.csv",
-                sep=",",
-                engine=self.engine,
-                na_values=self.na_values,
-                **kwargs,
+        if (self.cache_path / f"data.{self.dataformat}").exists():
+            df = self.read_function(
+                self.cache_path / f"data.{self.dataformat}",
+                **self.read_kwargs,
             )
 
             return df
@@ -183,7 +195,12 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
                 Raises:
                     OSError: If ``path`` cannot be read.
                 """
-                df = self.read_data(path)
+                df = self.read_function(
+                    path,
+                    **self.read_kwargs,
+                )
+
+                # TODO this must be made per row
                 if self.pre_filter:
                     df = self.pre_filter(df)
 
@@ -199,7 +216,11 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
                 )
             )
 
-            df.to_csv(self.cache_path / "data.csv", sep=",", na_rep=self.na_values[0])
+            writefunc = getattr(
+                df,
+            )
+            writefunc(self.cache_path / f"data.{self.dataformat}", self.write_kwargs)
+
         return df
 
     def _filter_datafiles(self, path: Path, data_list: list[Path]):
@@ -236,32 +257,8 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         else:
             n = 0
             for data in self.datafiles:
-                n += len(self.read_data(data))
+                n += len(self.read_function(data, **self.read_kwargs))
             return n
-
-    def read_data(self, input: Path) -> pd.DataFrame:
-        """Read one source file using this dataset's parsing configuration.
-
-        Args:
-            input (Path): Data file that contributes rows to the dataset.
-
-        Returns:
-            pd.DataFrame: Parsed rows and columns from ``input``.
-
-        Raises:
-            FileNotFoundError: If ``input`` does not exist.
-            ValueError: If its contents cannot be parsed with the configured
-                options.
-        """
-        data = pd.read_csv(
-            input,
-            sep=self.sep,
-            engine=self.engine,
-            comment=self.comment,
-            na_values=self.na_values,
-            **self.read_kwargs,
-        )
-        return data
 
     def to_frame(self) -> pd.DataFrame:
         """Return all untransformed samples in dataset order.
@@ -274,7 +271,16 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         """
         if self.cache_on_disk:
             return self.data_cache.copy()
-        return pd.concat((self.read_data(f) for f in self.datafiles), ignore_index=True)
+        return pd.concat(
+            (
+                self.read_function(
+                    f,
+                    **self.read_kwargs,
+                )
+                for f in self.datafiles
+            ),
+            ignore_index=True,
+        )
 
     def _normalize_index(
         self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple
@@ -345,7 +351,10 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
                 containing_dataframe = None
                 for _df in self.datafiles:
                     if _df not in self.data_cache:
-                        self.data_cache[_df] = self.read_data(_df)
+                        self.data_cache[_df] = self.read_function(
+                            _df,
+                            **self.read_kwargs,
+                        )
 
                     candidate_dataframe = self.data_cache[_df]
                     if i < len(candidate_dataframe):
