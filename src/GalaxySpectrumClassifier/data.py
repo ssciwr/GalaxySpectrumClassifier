@@ -432,7 +432,7 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
 
         self.label_columns = (
             label_columns
-            if isinstance(label_columns, Sequence)
+            if isinstance(label_columns, (list, tuple))
             else [
                 label_columns,
             ]
@@ -602,8 +602,6 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
             frame = self._preprocess(path)
             self._file_cache[path] = frame
 
-        print("frame: ", type(frame), ", ", frame)
-
         return frame
 
     def to_frame(self) -> pd.DataFrame:
@@ -687,7 +685,6 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
 
         frame = self._read_cached(self.data_handler.datafiles[file_idx])
 
-        print("data types: ", type(local_idx), ", ", type(frame))
         if self.label_indices is None:
             self.label_indices = []
             for i, c in enumerate(frame.columns):
@@ -724,7 +721,7 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
             return X, y
         else:
             local_idx, df = self._map_index(index)
-            row = self.transform(df.iloc[local_idx]).to_numpy()
+            row = self.transform(df.iloc[local_idx])
 
             X = torch.tensor(np.delete(row, self.label_indices))  # type: ignore[arg-type]
             y = torch.tensor(row[self.label_indices])
