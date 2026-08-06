@@ -137,7 +137,8 @@ class CSVDataHandler(DataHandler):
             pd.errors.ParserError: If ``path`` does not parse under the
                 configured read options.
         """
-        return pd.read_csv(path, **self.read_kwargs)
+        df = pd.read_csv(path, **self.read_kwargs)
+        return df
 
     def write_data(self, data: pd.DataFrame, path: str | Path) -> None:
         """Write a table to one separated-value file.
@@ -220,7 +221,8 @@ class ParquetDataHandler(DataHandler):
         Raises:
             OSError: If ``path`` cannot be read.
         """
-        return pd.read_parquet(path, **self.read_kwargs)
+        df = pd.read_parquet(path, **self.read_kwargs)
+        return df
 
     def write_data(self, data: pd.DataFrame, path: str | Path) -> None:
         """Write a table to one Parquet file.
@@ -427,10 +429,16 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         self.transform = transform if transform is not None else identity
         self.pre_transform = pre_transform
         self.pre_filter = pre_filter
-        # Consulted only by __getitem__/_split_labels, i.e. the batch path.
-        # to_frame() deliberately still returns the label column alongside the
-        # features, since to_xy() does its own splitting from the whole frame.
-        self.label_columns = label_columns
+
+        self.label_columns = (
+            label_columns
+            if isinstance(label_columns, Sequence)
+            else [
+                label_columns,
+            ]
+        )
+        self.label_indices: list[int] | None = None
+
         self.n_workers = n_workers
 
         # Rejected here rather than left to cachetools, which accepts maxsize=0
@@ -632,7 +640,7 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
             int | list: One position or a list of positions.
         """
 
-        if isinstance(idx, torch.Tensor) or isinstance(idx, np.ndarray):
+        if isinstance(idx, (torch.Tensor, np.ndarray)):
             return idx.tolist()
         elif isinstance(idx, slice):
             return list(
@@ -647,9 +655,7 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         else:
             return idx
 
-    def _map_index(
-        self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple
-    ) -> list[tuple[int, pd.DataFrame]] | tuple[int, pd.DataFrame]:
+    def _map_index(self, index: int) -> tuple[int, pd.DataFrame]:
         """Locate requested global positions in their source tables.
 
         Args:
@@ -663,113 +669,26 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
             tuple[int, pd.DataFrame] | list[tuple[int, pd.DataFrame]]: For each
                 requested position, its row position and source table.
         """
-        # TODO: this is still very complicated and a lot of logic. Simplify!
-        index = self._normalize_index(idx)
 
-        if not isinstance(index, Sequence):
-            if index < 0 or index >= self.num_datapoints:
-                raise IndexError(
-                    f"Index {index} could not be found in dataset of length "
-                    f"{self.num_datapoints}"
-                )
-
-            # side="right" is load-bearing: it steps past zero-length files,
-            # whose repeated offset would otherwise be the one selected.
-            file_idx = int(np.searchsorted(self._offsets, index, side="right")) - 1
-            local_idx = index - int(self._offsets[file_idx])
-
-            return local_idx, self._read_cached(self.data_handler.datafiles[file_idx])
-
-        if len(index) == 0:
-            raise ValueError("Error, empty index list cannot be passed.")
-
-        positions = np.asarray(index, dtype=np.int64)
-        outside = positions[(positions < 0) | (positions >= self.num_datapoints)]
-        if outside.size:
+        if index < 0 or index >= self.num_datapoints:
             raise IndexError(
-                f"Indices {outside.tolist()} could not be found in dataset of "
-                f"length {self.num_datapoints}"
+                f"Index {index} could not be found in dataset of length "
+                f"{self.num_datapoints}"
             )
 
-        file_idx = np.searchsorted(self._offsets, positions, side="right") - 1
-        local = positions - self._offsets[file_idx]
+        # side="right" is load-bearing: it steps past zero-length files,
+        # whose repeated offset would otherwise be the one selected.
+        file_idx = int(np.searchsorted(self._offsets, index, side="right")) - 1
+        local_idx = index - int(self._offsets[file_idx])
 
-        # Remembered per call, so a file is read once however many of its rows
-        # were asked for - which the file cache alone would only manage while
-        # the file stays resident, and not at all when it is disabled.
-        mapped: list[tuple[int, pd.DataFrame]] = [None] * len(positions)
-        frames: dict[int, pd.DataFrame] = {}
-        for k, (f, i) in enumerate(zip(file_idx, local)):
-            if (frame := frames.get(f)) is None:
-                frame = frames[f] = self._read_cached(self.data_handler.datafiles[f])
-            mapped[k] = (int(i), frame)
+        local_idx, df = self._read_cached(self.data_handler.datafiles[file_idx])
 
-        return mapped
-
-    def _split_labels(
-        self, data: pd.Series | pd.DataFrame
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Separate feature values and targets from retrieved sample data.
-
-        Args:
-            data (pd.Series | pd.DataFrame): One sample or a table of samples
-                after any retrieval-time transformation.
-
-        Raises:
-            ValueError: If no target columns were configured or a configured
-                target column is absent from ``data``.
-
-        Returns:
-            tuple[torch.Tensor, torch.Tensor]: Float feature tensor and target
-                tensor. Target shape follows whether ``label_columns`` was a
-                string or a sequence.
-        """
-
-        # TODO: this is way too complicated and needs to be simplified. Internally use list or dicst perhaps?
-
-        # Refusing here is the whole point: skorch's own convention for a
-        # missing target is `y = torch.Tensor([0])`, which would let a model
-        # train to convergence against a constant fabricated label without ever
-        # failing. Better to be unusable than quietly wrong.
-        if self.label_columns is None:
-            raise ValueError(
-                "label_columns was not set, so features and labels cannot be "
-                "separated. Pass label_columns to the constructor."
-            )
-
-        # Normalised to a list for the membership tests below, but the original
-        # form is kept around: str vs. sequence decides the label's shape.
-        single_label = isinstance(self.label_columns, str)
-        labels = [self.label_columns] if single_label else list(self.label_columns)
-
-        # Normal retrieval keeps samples as DataFrames so pandas preserves
-        # per-column dtypes. A transform may still deliberately return a Series.
-        columns = data.index if isinstance(data, pd.Series) else data.columns
-
-        missing = [column for column in labels if column not in columns]
-        if missing:
-            raise ValueError(
-                f"label column(s) {missing} not found in the sample; have "
-                f"{list(columns)}. Note that `transform` is applied before the "
-                "split, so it has to keep the label columns."
-            )
-
-        # Built by walking `columns` rather than subtracting a set, so the
-        # frame's own column order is preserved - a model's input layer is
-        # positional, so a reordering here would silently scramble features.
-        features = [column for column in columns if column not in labels]
-
-        # .copy() throughout: pandas hands back read-only views when no cast is
-        # needed, and those would alias the dataset's cached frame.
-        x = torch.from_numpy(data[features].to_numpy().copy())
-        # A bare string selects a single column, which keeps the label one axis
-        # flatter than the list form all the way through - scalar per sample
-        # rather than a length-1 vector. Do not impose a dtype here: losses
-        # such as CrossEntropyLoss and BCEWithLogitsLoss require different
-        # target dtypes, so callers can choose one through ``transform``.
-        selector = self.label_columns if single_label else labels
-        y = torch.from_numpy(np.asarray(data[selector]).copy())
-        return x, y
+        if self.label_indices is None:
+            self.label_indices = []
+            for i, c in enumerate(df.columns):
+                if c in self.label_columns:
+                    self.label_indices.append(i)
+        return local_idx, df
 
     def __getitem__(
         self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple
@@ -788,30 +707,27 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         Returns:
             tuple[torch.Tensor, torch.Tensor]: Prepared features and targets.
         """
-        indices_frames = self._map_index(idx)
+        index = self._normalize_index(idx)
 
-        def _transform_one(i: int, df: pd.DataFrame):
-            return self.transform(df.iloc[[i], :])
-
-        if isinstance(indices_frames, Sequence) and isinstance(
-            indices_frames[0], Sequence
-        ):
-            transformed = [_transform_one(i, df) for i, df in indices_frames]
-            if all(isinstance(sample, pd.DataFrame) for sample in transformed):
-                data = pd.concat(transformed, ignore_index=True)
-            else:
-                data = pd.DataFrame(transformed)
-            return self._split_labels(data)
+        if isinstance(index, Sequence):
+            # iterate with __getitem__ and return an ND tensor x, y
+            data = [self.__getitem__(i) for i in index]
+            X, y = (
+                torch.tensor([d[0] for d in data]),
+                torch.tensor([d[1] for d in data]),
+            )
+            return X, y
         else:
-            i, df = indices_frames
-            data = _transform_one(i, df)
-            x, y = self._split_labels(data)
-            if x.ndim > 1 and x.shape[0] == 1:
-                x = x.squeeze(0)
-            if y.ndim > 0 and y.shape[0] == 1:
-                y = y.squeeze(0)
+            local_idx, df = self._map_index(index)
+            row = df.iloc[local_idx].to_list()
 
-            return x, y
+            # get row as dict or structure array or
+            X = torch.tensor(
+                [row[i] for i in range(len(row)) if i not in self.label_indices]
+            )
+            y = torch.tensor([row[i] for i in self.label_indices])
+
+            return X, y
 
     def __len__(self):
         """Return the total number of samples in the dataset.
