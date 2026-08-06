@@ -2,7 +2,9 @@
 
 ## Project Structure & Module Organization
 
-This repository is a Python package using a `src/` layout. Core package code lives in `src/GalaxySpectrumClassifier/`, with dataset, trainer, protocol, and utility modules split across `data.py`, `trainer.py`, `base.py`, and `utils.py`. Tests are in `tests/` and currently focus on `PandasDataset` behavior. Documentation sources are in `doc/` and are built with Sphinx. Research notes and generated literature outputs live under `literature/`, while `template/classification_v2/` contains a standalone prototype and its own local guidance.
+This repository is a Python package using a `src/` layout. Core package code lives in `src/GalaxySpectrumClassifier/`, with dataset, trainer, protocol, and utility modules split across `data.py`, `simple_trainer.py`, `epoch_trainer.py`, `base.py`, and `utils.py`. Tests are in `tests/` and cover `TabularDataset`, `SimpleTrainer`, `EpochTrainer`, and the `utils` helpers. Documentation sources are in `doc/` and are built with Sphinx. Research notes and generated literature outputs live under `literature/`, while `template/classification_v2/` contains a standalone prototype and its own local guidance.
+
+**Status note**: `TabularDataset` is mid-refactor and does not currently construct, so `uv run pytest` is red (78 failed, 43 passed as of this note); every failure traces back to constructing a dataset. See `docs/tabulardataset_disentanglement.md` for the plan that finishes it.
 
 ## Build, Test, and Development Commands
 
@@ -17,7 +19,7 @@ The package version is managed by `setuptools_scm`; do not edit `src/GalaxySpect
 
 ## Coding Style & Naming Conventions
 
-Use Python 3.12+ syntax and keep imports, formatting, and lint fixes compatible with Ruff. Follow the existing style: 4-space indentation, typed public protocols and APIs where practical, `snake_case` for functions and variables, and `PascalCase` for classes such as `PandasDataset` and trainer/model abstractions. Keep module responsibilities narrow and prefer extending existing helpers or protocols before adding new patterns.
+Use Python 3.12+ syntax and keep imports, formatting, and lint fixes compatible with Ruff. Follow the existing style: 4-space indentation, typed public protocols and APIs where practical, `snake_case` for functions and variables, and `PascalCase` for classes such as `TabularDataset` and trainer/model abstractions. Keep module responsibilities narrow and prefer extending existing helpers or protocols before adding new patterns.
 
 Favor simplicity over generality: don't introduce abstractions, helper functions/modules, or configuration options beyond what the task at hand actually requires. A one- or two-line pattern repeated in only one or two call sites doesn't need its own helper - that repetition is acceptable. If a real difficulty or design conflict surfaces mid-implementation (not just an opportunity to generalize), stop and ask rather than adding complexity to route around it.
 
@@ -59,7 +61,7 @@ Domain documentation uses a single-context layout: root `CONTEXT.md` plus ADRs u
 - `uv sync --extra docs`: install documentation dependencies into the same managed environment.
 - `uv run pytest`: run the configured test suite in `tests/`.
 - `uv run pytest tests/test_simpletrainer.py`: run a single test file (same pattern for `tests/test_pandasdataset.py`).
-- `uv run pytest -k <expr>`: run tests matching a name expression, e.g. `-k impute`.
+- `uv run pytest -k <expr>`: run tests matching a name expression, e.g. `-k getitem`.
 - `uv run pytest --cov=GalaxySpectrumClassifier`: run tests with coverage.
 - `make -C doc html`: build HTML documentation into `doc/build/html/`.
 - `uv run pre-commit run --all-files`: run Ruff formatting/linting and repository hygiene hooks (also runs `nbstripout`, file-size checks, YAML/TOML validation, and GitHub Actions linting).
@@ -68,7 +70,7 @@ The package version is managed by `setuptools_scm`; do not edit `src/GalaxySpect
 
 ## Coding Style & Naming Conventions
 
-Use Python 3.12+ syntax and keep imports, formatting, and lint fixes compatible with Ruff. Follow the existing style: 4-space indentation, typed public protocols and APIs where practical, `snake_case` for functions and variables, and `PascalCase` for classes such as `PandasDataset` and trainer/model abstractions. Keep module responsibilities narrow and prefer extending existing helpers or protocols before adding new patterns.
+Use Python 3.12+ syntax and keep imports, formatting, and lint fixes compatible with Ruff. Follow the existing style: 4-space indentation, typed public protocols and APIs where practical, `snake_case` for functions and variables, and `PascalCase` for classes such as `TabularDataset` and trainer/model abstractions. Keep module responsibilities narrow and prefer extending existing helpers or protocols before adding new patterns.
 
 Favor simplicity over generality: don't introduce abstractions, helper functions/modules, or configuration options beyond what the task at hand actually requires. A one- or two-line pattern repeated in only one or two call sites doesn't need its own helper - that repetition is acceptable. If a real difficulty or design conflict surfaces mid-implementation (not just an opportunity to generalize), stop and ask rather than adding complexity to route around it.
 
