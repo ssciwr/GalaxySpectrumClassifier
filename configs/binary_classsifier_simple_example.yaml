@@ -90,7 +90,6 @@ trainer:
     task: binary-classification
     label_column: source
     feature_columns:
-    drop_duplicates: true
     # The `source` column is already encoded as 0/1, so no mapping is needed.
     # Set it to e.g. {AGN: 0, POPSTAR: 1} when the labels are not indices.
     class_map:
