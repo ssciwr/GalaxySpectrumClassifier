@@ -136,8 +136,8 @@ def to_xy(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Convert a dataset or subset into feature and target arrays.
 
-    The returned rows preserve the supplied dataset's order. Duplicate feature
-    rows may be removed before conversion when requested.
+    The returned rows preserve the supplied dataset's or subset's order. No
+    rows are dropped during conversion.
 
     Args:
         dataset (DatasetProtocol | torch.utils.data.Subset): Dataset providing
@@ -162,7 +162,7 @@ def to_xy(
 
     Returns:
         tuple[np.ndarray, np.ndarray]: Feature matrix and one target value per
-            retained sample.
+            selected sample.
     """
     # Subsets only carry indices into their parent, so unwrap down to the
     # dataset itself while composing the indices into that one frame.
