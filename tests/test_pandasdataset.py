@@ -5,6 +5,11 @@ import torch
 from torch.utils.data import DataLoader, Subset
 from torchvision.transforms import Compose
 from GalaxySpectrumClassifier import TabularDataset
+from GalaxySpectrumClassifier.data import (
+    CSVDataHandler,
+    DataHandler,
+    ParquetDataHandler,
+)
 from GalaxySpectrumClassifier.utils import identity
 
 
@@ -810,3 +815,70 @@ def test_tabulardataset_memory_cache_rejects_sizes_below_one(cache_sources):
 
     with pytest.raises(ValueError, match="max_cached_files must be at least 1"):
         TabularDataset(datapath, dataformat=dataformat, max_cached_files=0)
+
+
+@pytest.mark.parametrize(
+    "option, value",
+    [
+        ("skiprows", 1),
+        ("skipfooter", 1),
+        ("nrows", 1),
+        ("skip_blank_lines", False),
+        ("chunksize", 2),
+        ("iterator", True),
+    ],
+)
+def test_csvdatahandler_rejects_row_changing_read_kwargs(create_data, option, value):
+    with pytest.raises(ValueError, match=f"read_kwargs \\['{option}'\\]"):
+        CSVDataHandler(
+            path=str(create_data), extension="dat", read_kwargs={option: value}
+        )
+
+
+def test_parquetdatahandler_rejects_row_changing_read_kwargs(tmp_path):
+    with pytest.raises(ValueError, match=r"read_kwargs \['filters'\]"):
+        ParquetDataHandler(
+            path=str(tmp_path),
+            extension="parquet",
+            read_kwargs={"filters": [("source", "==", 1)]},
+        )
+
+
+def test_datahandler_rejects_every_forbidden_option_at_once(create_data):
+    forbidden = dict.fromkeys(CSVDataHandler._FORBIDDEN_READ_KWARGS, 1)
+
+    with pytest.raises(ValueError) as excinfo:
+        CSVDataHandler(path=str(create_data), extension="dat", read_kwargs=forbidden)
+
+    # Every offending option is named, not just the first one found.
+    assert str(sorted(forbidden)) in str(excinfo.value)
+
+
+def test_datahandler_accepts_read_kwargs_leaving_the_row_count_alone(create_data):
+    handler = CSVDataHandler(
+        path=str(create_data), extension="dat", read_kwargs={"index_col": 0}
+    )
+
+    assert handler.read_kwargs == {"index_col": 0}
+    assert handler.count_rows() == 1000
+
+
+def test_datahandler_forbids_nothing_by_default(create_data):
+    class PlainHandler(DataHandler):
+        """A registered format that opts out of the restriction."""
+
+    handler = PlainHandler(
+        path=str(create_data), extension="dat", read_kwargs={"skiprows": 1}
+    )
+
+    assert handler.read_kwargs == {"skiprows": 1}
+
+
+def test_tabulardataset_rejects_row_changing_read_kwargs(cache_sources):
+    datapath, dataformat = cache_sources
+    forbidden = {"csv": {"nrows": 2}, "parquet": {"filters": [("source", "==", 1)]}}
+
+    with pytest.raises(ValueError, match="read_kwargs"):
+        TabularDataset(
+            datapath, dataformat=dataformat, read_kwargs=forbidden[dataformat]
+        )

@@ -17,7 +17,15 @@ class DataHandler:
 
     Members of the dataset are the files directly inside ``path`` whose
     extension matches; subdirectories are not searched.
+
+    Attributes:
+        _FORBIDDEN_READ_KWARGS (frozenset[str]): Read options the format
+            rejects because they change how many rows a file yields, which
+            would desync ``count_rows`` from a read. Empty by default, so a
+            format opts in to its own.
     """
+
+    _FORBIDDEN_READ_KWARGS: frozenset[str] = frozenset()
 
     def __init__(
         self,
@@ -42,11 +50,20 @@ class DataHandler:
                 None, which orders the files lexically by path.
 
         Raises:
+            ValueError: If ``read_kwargs`` holds an option the format forbids.
             OSError: If ``path`` cannot be listed.
         """
         self.path = Path(path)
         self.extension = extension.lstrip(".")
         self.read_kwargs = read_kwargs or {}
+
+        forbidden = self._FORBIDDEN_READ_KWARGS & self.read_kwargs.keys()
+        if forbidden:
+            raise ValueError(
+                f"read_kwargs {sorted(forbidden)} change how many rows a file "
+                "yields, which would desync count_rows() from a read."
+            )
+
         self.write_kwargs = write_kwargs or {}
         self.sort_key = sort_key
         # Sorted rather than left in glob order, which follows the filesystem's
@@ -99,6 +116,13 @@ class DataHandler:
 class CSVDataHandler(DataHandler):
     """Handle character-separated data files through pandas."""
 
+    # `chunksize` and `iterator` are here for a second reason: they make
+    # pd.read_csv return a TextFileReader rather than a frame, breaking
+    # read_data's declared return type whatever the counting does.
+    _FORBIDDEN_READ_KWARGS: frozenset[str] = frozenset(
+        {"skiprows", "skipfooter", "nrows", "skip_blank_lines", "chunksize", "iterator"}
+    )
+
     def read_data(self, path: str | Path) -> pd.DataFrame:
         """Read one separated-value file into a table.
 
@@ -136,9 +160,6 @@ class CSVDataHandler(DataHandler):
         """Count the data rows of all files by scanning their lines.
 
         Comment and blank lines are not data, and a header line is not a row.
-        The count only holds while ``read_kwargs`` leaves the number of
-        returned rows alone: options such as ``skiprows`` or ``nrows`` make it
-        disagree with an actual read.
 
         Returns:
             int: Total number of data rows across ``datafiles``.
@@ -183,6 +204,9 @@ class CSVDataHandler(DataHandler):
 
 class ParquetDataHandler(DataHandler):
     """Handle Parquet data files through pandas."""
+
+    # Predicate pushdown drops rows the footer's num_rows still counts.
+    _FORBIDDEN_READ_KWARGS: frozenset[str] = frozenset({"filters"})
 
     def read_data(self, path: str | Path) -> pd.DataFrame:
         """Read one Parquet file into a table.
@@ -303,9 +327,7 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
             path (str): Directory holding the data files. Subdirectories are
                 not searched.
             read_kwargs (dict | None, optional): Additional options applied to
-                every read. Without a ``pre_filter`` they must leave the number
-                of rows a file yields unchanged, since the dataset's length is
-                then determined without reading. Defaults to None.
+                every read. Defaults to None.
             write_kwargs (dict | None, optional): Additional options applied to
                 every write. Defaults to None.
             dataformat (str, optional): Registered name of the on-disk data
@@ -363,6 +385,7 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
 
         Raises:
             ValueError: If ``dataformat`` is not a registered format, if
+                ``read_kwargs`` holds an option the format forbids, if
                 ``cache_path`` is ``path``, or if ``max_cached_files`` is less
                 than one.
             OSError: If ``path`` cannot be listed, a data file cannot be read
