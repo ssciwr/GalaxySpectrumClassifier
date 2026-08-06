@@ -545,3 +545,189 @@ def test_pandasdataset_mapindex_cache_mode(create_data, tmp_path):
     cache_index, cache_df = dataset._map_index(123)
     assert cache_df is dataset.data_cache
     assert cache_index == 123
+
+
+@pytest.fixture(params=["csv", "parquet"])
+def cache_sources(request, tmp_path):
+    """Write three five-row frames in one registered format.
+
+    Args:
+        request: pytest's fixture request, parametrised over the format name.
+        tmp_path: pytest's per-test temporary directory.
+
+    Returns:
+        tuple[Path, str]: The source directory and the ``dataformat`` naming it.
+    """
+    dataformat = request.param
+    datapath = tmp_path / "source"
+    datapath.mkdir()
+
+    for i in range(3):
+        # Integer columns throughout, so a dtype surviving the cache round trip
+        # is visible rather than hidden behind float everywhere.
+        frame = pd.DataFrame(
+            {"a": [10 * i + j for j in range(5)], "source": [j % 2 for j in range(5)]}
+        )
+        target = datapath / f"{i}.{dataformat}"
+        if dataformat == "csv":
+            frame.to_csv(target, index=False)
+        else:
+            frame.to_parquet(target)
+
+    return datapath, dataformat
+
+
+def keep_labelled(row):
+    """Keep the rows whose target is 1.
+
+    Args:
+        row (dict): One observation.
+
+    Returns:
+        bool: Whether the row is kept.
+    """
+    return row["source"] == 1
+
+
+def double_a(row):
+    """Add a column holding twice the value of ``a``.
+
+    Args:
+        row (dict): One observation.
+
+    Returns:
+        dict: The observation with ``doubled`` added.
+    """
+    return {**row, "doubled": row["a"] * 2}
+
+
+def test_tabulardataset_cache_writes_one_file_per_source(cache_sources, tmp_path):
+    datapath, dataformat = cache_sources
+    cache_path = tmp_path / "cache"
+
+    dataset = TabularDataset(
+        datapath,
+        dataformat=dataformat,
+        cache_path=cache_path,
+        pre_filter=keep_labelled,
+        pre_transform=double_a,
+    )
+
+    assert sorted(p.name for p in cache_path.iterdir()) == [
+        f"{i}.{dataformat}" for i in range(3)
+    ]
+    # Two of every five rows carry source == 1.
+    assert len(dataset) == 6
+    assert dataset.data_handler.path == cache_path.resolve()
+    assert [p.parent for p in dataset.data_handler.datafiles] == [
+        cache_path.resolve()
+    ] * 3
+
+
+def test_tabulardataset_cache_matches_uncached(cache_sources, tmp_path):
+    datapath, dataformat = cache_sources
+    hooks = dict(
+        pre_filter=keep_labelled, pre_transform=double_a, label_columns="source"
+    )
+
+    uncached = TabularDataset(datapath, dataformat=dataformat, **hooks)
+    cached = TabularDataset(
+        datapath, dataformat=dataformat, cache_path=tmp_path / "cache", **hooks
+    )
+
+    assert len(cached) == len(uncached)
+    pd.testing.assert_frame_equal(cached.to_frame(), uncached.to_frame())
+    # Both hooks ran exactly once: doubled is twice a, not four times.
+    frame = cached.to_frame()
+    assert (frame["doubled"] == frame["a"] * 2).all()
+    assert frame["a"].dtype == uncached.to_frame()["a"].dtype
+
+    for i in range(len(cached)):
+        cached_x, cached_y = cached[i]
+        uncached_x, uncached_y = uncached[i]
+        assert torch.equal(cached_x, uncached_x)
+        assert torch.equal(cached_y, uncached_y)
+
+
+def test_tabulardataset_cache_is_reused_without_rerunning_hooks(
+    cache_sources, tmp_path
+):
+    datapath, dataformat = cache_sources
+    cache_path = tmp_path / "cache"
+    calls = []
+
+    def counting_filter(row):
+        calls.append(row)
+        return keep_labelled(row)
+
+    TabularDataset(
+        datapath,
+        dataformat=dataformat,
+        cache_path=cache_path,
+        pre_filter=keep_labelled,
+        pre_transform=double_a,
+    )
+
+    reused = TabularDataset(
+        datapath,
+        dataformat=dataformat,
+        cache_path=cache_path,
+        pre_filter=counting_filter,
+        pre_transform=double_a,
+    )
+
+    assert calls == []
+    assert len(reused) == 6
+    # The hooks are gone from the instance: the cache already has them applied.
+    assert reused.pre_filter is None
+    assert reused.pre_transform is None
+
+
+def test_tabulardataset_overwrite_cache_rewrites(cache_sources, tmp_path):
+    datapath, dataformat = cache_sources
+    cache_path = tmp_path / "cache"
+
+    def triple_a(row):
+        return {**row, "doubled": row["a"] * 3}
+
+    TabularDataset(
+        datapath, dataformat=dataformat, cache_path=cache_path, pre_transform=double_a
+    )
+
+    stale = TabularDataset(
+        datapath, dataformat=dataformat, cache_path=cache_path, pre_transform=triple_a
+    )
+    assert (stale.to_frame()["doubled"] == stale.to_frame()["a"] * 2).all()
+
+    rewritten = TabularDataset(
+        datapath,
+        dataformat=dataformat,
+        cache_path=cache_path,
+        pre_transform=triple_a,
+        overwrite_cache=True,
+    )
+    assert (rewritten.to_frame()["doubled"] == rewritten.to_frame()["a"] * 3).all()
+
+
+def test_tabulardataset_cache_length_covers_dropped_rows(cache_sources, tmp_path):
+    datapath, dataformat = cache_sources
+
+    dataset = TabularDataset(
+        datapath,
+        dataformat=dataformat,
+        cache_path=tmp_path / "cache",
+        pre_filter=keep_labelled,
+        label_columns="source",
+    )
+
+    assert len(dataset) == len(dataset.to_frame())
+    dataset[len(dataset) - 1]
+    with pytest.raises(IndexError):
+        dataset[len(dataset)]
+
+
+def test_tabulardataset_cache_path_may_not_be_the_source(cache_sources):
+    datapath, dataformat = cache_sources
+
+    with pytest.raises(ValueError, match="cache_path must differ from path"):
+        TabularDataset(datapath, dataformat=dataformat, cache_path=datapath)

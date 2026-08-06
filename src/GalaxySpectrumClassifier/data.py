@@ -117,6 +117,10 @@ class CSVDataHandler(DataHandler):
     def write_data(self, data: pd.DataFrame, path: str | Path) -> None:
         """Write a table to one separated-value file.
 
+        The row index is not written unless ``write_kwargs`` asks for it, so a
+        file written with the format's defaults reads back unchanged under
+        ``read_data``'s defaults.
+
         Args:
             data (pd.DataFrame): Rows to store.
             path (str | Path): Destination file.
@@ -124,7 +128,8 @@ class CSVDataHandler(DataHandler):
         Raises:
             OSError: If ``path`` cannot be written.
         """
-        data.to_csv(path, **self.write_kwargs)
+        write_kwargs: dict[str, Any] = {"index": False} | self.write_kwargs
+        data.to_csv(path, **write_kwargs)
 
     def count_rows(self) -> int:
         """Count the data rows of all files by scanning their lines.
@@ -140,7 +145,10 @@ class CSVDataHandler(DataHandler):
         Raises:
             OSError: If a data file cannot be read.
         """
-        comment_prefix = self.read_kwargs.get("comment", "#").encode()
+        comment_prefix = self.read_kwargs.get("comment")
+
+        if comment_prefix is not None:
+            comment_prefix = comment_prefix.encode()
 
         # pandas consumes the first data line as column names unless told
         # otherwise, and an absent `header` means exactly that - except when
@@ -155,11 +163,14 @@ class CSVDataHandler(DataHandler):
             with open(datafile, "rb") as f:
                 # A blank line is empty once stripped, so the walrus alone
                 # filters it out.
-                n = sum(
-                    1
-                    for line in f
-                    if (s := line.lstrip()) and not s.startswith(comment_prefix)
-                )
+                if comment_prefix:
+                    n = sum(
+                        1
+                        for line in f
+                        if (s := line.lstrip()) and not s.startswith(comment_prefix)
+                    )
+                else:
+                    n = sum(1 for line in f if (s := line.lstrip()))
 
             if has_header and n > 0:
                 n -= 1
@@ -254,7 +265,9 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
 
     Every row of those files is a sample, read from disk on access. Rows pass
     through ``pre_filter``, then ``pre_transform``, on the read path; a
-    retrieved sample additionally passes through ``transform``.
+    retrieved sample additionally passes through ``transform``. Given a
+    ``cache_path``, the first two run once at construction and the dataset reads
+    the result from there instead.
 
     Samples are ordered by file, and by row within each file. The file order is
     the one ``sort_key`` establishes, lexical by path unless told otherwise. It
@@ -269,6 +282,8 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         write_kwargs=None,
         dataformat: str = "csv",
         suffix: str | None = None,
+        cache_path: str | None = None,
+        overwrite_cache: bool = False,
         transform: Callable | str | None = None,
         pre_transform: Callable | str | None = None,
         pre_filter: Callable | str | None = None,
@@ -292,6 +307,16 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
             suffix (str | None, optional): File extension identifying dataset
                 members, with or without a leading dot. Defaults to None, which
                 takes the extension from ``dataformat``.
+            cache_path (str | None, optional): Directory holding the
+                preprocessed data, one file per source file under the same
+                stem. Written at construction if absent and read instead of
+                ``path`` afterwards, so ``pre_filter`` and ``pre_transform`` run
+                once rather than on every read. An existing cache is used as-is
+                and is not checked against the currently configured hooks or
+                ``read_kwargs``; use ``overwrite_cache`` after changing either.
+                Defaults to None, which reads the source files on every access.
+            overwrite_cache (bool, optional): Whether an existing cache file is
+                written again rather than reused. Defaults to False.
             transform (Callable | str | None, optional): Callable, or import
                 path to one, that prepares a retrieved sample, received as a
                 one-row ``pd.DataFrame``. Applied after ``pre_transform``. It
@@ -325,11 +350,13 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
                 Defaults to 1, which reads in the calling process.
 
         Raises:
-            ValueError: If ``dataformat`` is not a registered format.
-            OSError: If ``path`` cannot be listed or a data file cannot be read
-                while determining the dataset's length.
-            pd.errors.ParserError: If a data file does not parse while
-                determining the dataset's length.
+            ValueError: If ``dataformat`` is not a registered format, or if
+                ``cache_path`` is ``path``.
+            OSError: If ``path`` cannot be listed, a data file cannot be read
+                while writing the cache or determining the dataset's length, or
+                the cache cannot be written.
+            pd.errors.ParserError: If a data file does not parse while writing
+                the cache or determining the dataset's length.
         """
         self.path = Path(path).resolve()
 
@@ -369,13 +396,58 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         self.label_columns = label_columns
         self.n_workers = n_workers
 
+        self.cache_on_disk = cache_path is not None
+
+        if self.cache_on_disk:
+            cache_path = Path(cache_path).resolve()
+            if cache_path == self.path:
+                raise ValueError(
+                    "cache_path must differ from path, otherwise the cache "
+                    "could overwrite the source files it is written from."
+                )
+            cache_path.mkdir(parents=True, exist_ok=True)
+
+            targets = [
+                cache_path / f"{f.stem}.{self.data_handler.extension}"
+                for f in self.data_handler.datafiles
+            ]
+
+            def _write_cache_file(source: Path, target: Path) -> None:
+                """Write one preprocessed source file to its cache file.
+
+                Args:
+                    source (Path): Data file to read and prepare.
+                    target (Path): Destination file.
+                """
+                self.data_handler.write_data(self._preprocess(source), target)
+
+            # Per file, like to_frame(): reading and the row-wise hooks are what
+            # is worth sending to a worker, and each call writes its own file,
+            # so nothing has to come back. Preprocessing has to happen inside
+            # the dispatched call - `delayed` defers only the call it wraps, so
+            # passing _preprocess(source) as an argument would run it here.
+            Parallel(n_jobs=self.n_workers)(
+                delayed(_write_cache_file)(source, target)
+                for source, target in zip(self.data_handler.datafiles, targets)
+                if overwrite_cache or not target.exists()
+            )
+
+            # Both hooks are baked into what was just written, and the handler
+            # now reads files this package wrote rather than the sources, so
+            # the source read options no longer describe them.
+            self.pre_filter = self.pre_transform = None
+            self.data_handler.path = Path(cache_path)
+            self.data_handler.read_kwargs = {}
+            self.data_handler.datafiles = targets
+
         # count_rows() counts what is on disk; a pre_filter decides what is in
-        # the dataset, and the two only agree when nothing is dropped.
+        # the dataset, and the two only agree when nothing is dropped. A cache
+        # has both hooks already applied, so it always takes the cheap branch.
         if self.pre_filter is None:
             self.num_datapoints = self.data_handler.count_rows()
         else:
-            # Temporary, will change when caching is done: this reads every
-            # file once at construction only to learn how many rows survive.
+            # Reads every file once at construction only to learn how many rows
+            # survive. Pass a cache_path to pay this once instead of per run.
             self.num_datapoints = sum(
                 len(self._preprocess(f)) for f in self.data_handler.datafiles
             )
@@ -470,6 +542,7 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         Returns:
             int | list: One position or a list of positions.
         """
+
         if isinstance(idx, torch.Tensor) or isinstance(idx, np.ndarray):
             return idx.tolist()
         elif isinstance(idx, slice):
@@ -564,6 +637,9 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
                 tensor. Target shape follows whether ``label_columns`` was a
                 string or a sequence.
         """
+
+        # TODO: this is way too complicated and needs to be simplified. Internally use list or dicst perhaps?
+
         # Refusing here is the whole point: skorch's own convention for a
         # missing target is `y = torch.Tensor([0])`, which would let a model
         # train to convergence against a constant fabricated label without ever
