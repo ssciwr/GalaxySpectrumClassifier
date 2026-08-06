@@ -131,7 +131,6 @@ def to_xy(
     task: str = "binary-classification",
     label_column: str = "source",
     feature_columns: list[str] | None = None,
-    drop_duplicates: bool = True,
     class_map: dict[Any, int] | None = None,
     dtype=np.float32,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -150,8 +149,6 @@ def to_xy(
             Defaults to "source".
         feature_columns (list[str] | None, optional): Ordered feature-column
             names. Defaults to all columns except ``label_column``.
-        drop_duplicates (bool, optional): Whether repeated feature rows should
-            be represented only once. Defaults to True.
         class_map (dict[Any, int] | None, optional): Mapping from label value
             to class index, applied to every label of a classification task.
             Used to make classification targets consistent across datasets.
@@ -191,9 +188,6 @@ def to_xy(
 
     if feature_columns is None:
         feature_columns = [c for c in df.columns if c != label_column]
-
-    if drop_duplicates:
-        df = df.drop_duplicates(subset=feature_columns, keep="first")
 
     # copy=True because pandas hands back a read-only view into the frame's own
     # block whenever no conversion is needed. torch.as_tensor would then share
