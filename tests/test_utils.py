@@ -4,7 +4,7 @@ import pytest
 import torch
 from sklearn.ensemble import RandomForestClassifier
 
-from GalaxySpectrumClassifier import PandasDataset
+from GalaxySpectrumClassifier import TabularDataset
 from GalaxySpectrumClassifier.utils import load_type, resolve_type_kwargs, to_xy
 
 
@@ -83,7 +83,7 @@ def test_resolve_type_kwargs_empty():
 
 
 def test_to_xy_builds_arrays_from_a_dataset(create_data):
-    dataset = PandasDataset(create_data, sep=",")
+    dataset = TabularDataset(create_data, sep=",")
 
     # An absent label column must be reported before any attempt to build X/y.
     with pytest.raises(ValueError, match="label column 'not_a_column' not found"):
@@ -125,7 +125,7 @@ def test_to_xy_builds_arrays_from_a_dataset(create_data):
 
 
 def test_to_xy_on_subset_selects_only_its_rows(create_data):
-    dataset = PandasDataset(create_data, sep=",")
+    dataset = TabularDataset(create_data, sep=",")
     indices = [7, 3, 250, 999]
     subset = torch.utils.data.Subset(dataset, indices)
 
@@ -142,7 +142,7 @@ def test_to_xy_on_subset_selects_only_its_rows(create_data):
 
 
 def test_to_xy_on_random_split_covers_the_dataset(create_data):
-    dataset = PandasDataset(create_data, sep=",")
+    dataset = TabularDataset(create_data, sep=",")
     train, test = torch.utils.data.random_split(
         dataset, [800, 200], generator=torch.Generator().manual_seed(42)
     )
@@ -164,7 +164,7 @@ def test_to_xy_on_random_split_covers_the_dataset(create_data):
 
 
 def test_to_xy_unwraps_nested_subsets(create_data):
-    dataset = PandasDataset(create_data, sep=",")
+    dataset = TabularDataset(create_data, sep=",")
     # A split of a split - indices of the inner subset are positions in the
     # outer one, not in the dataset.
     outer = torch.utils.data.Subset(dataset, [10, 11, 12, 13])
@@ -179,7 +179,7 @@ def test_to_xy_unwraps_nested_subsets(create_data):
 def test_to_xy_on_subset_of_cached_dataset(create_data, tmp_path):
     cache_path = tmp_path / "cache"
     cache_path.mkdir()
-    dataset = PandasDataset(
+    dataset = TabularDataset(
         create_data,
         sep=",",
         cache_path=cache_path,
@@ -198,7 +198,7 @@ def test_to_xy_on_subset_of_cached_dataset(create_data, tmp_path):
 
 
 def test_to_xy_dedups_within_the_subset(create_data):
-    dataset = PandasDataset(create_data, sep=",")
+    dataset = TabularDataset(create_data, sep=",")
     # The same row twice: dedup runs after subsetting, so one must be dropped.
     subset = torch.utils.data.Subset(dataset, [5, 5, 6])
     len_prior = len(subset)
@@ -210,7 +210,7 @@ def test_to_xy_dedups_within_the_subset(create_data):
 
 
 def test_to_xy_feature_columns_default_to_every_column_but_the_label(create_data):
-    dataset = PandasDataset(create_data, sep=",")
+    dataset = TabularDataset(create_data, sep=",")
 
     X, y = to_xy(dataset, label_column="d", drop_duplicates=False)
 
@@ -228,7 +228,7 @@ def test_to_xy_applies_class_map_to_non_encoded_labels(tmp_path):
     pd.DataFrame(
         {"a": [1.0, 2.0, 3.0], "source": ["agn", "starforming", "agn"]}
     ).to_csv(datapath / "0.dat", index=False)
-    dataset = PandasDataset(datapath, sep=",")
+    dataset = TabularDataset(datapath, sep=",")
 
     X, y = to_xy(dataset, class_map={"agn": 0, "starforming": 1}, drop_duplicates=False)
 
@@ -242,7 +242,7 @@ def test_to_xy_class_map_missing_label_raises(tmp_path):
     pd.DataFrame({"a": [1.0, 2.0], "source": ["agn", "unknown"]}).to_csv(
         datapath / "0.dat", index=False
     )
-    dataset = PandasDataset(datapath, sep=",")
+    dataset = TabularDataset(datapath, sep=",")
 
     with pytest.raises(KeyError):
         to_xy(dataset, class_map={"agn": 0})
@@ -254,7 +254,7 @@ def test_to_xy_regression_returns_the_label_column_unencoded(tmp_path):
     pd.DataFrame({"a": [1.0, 2.0, 3.0], "source": [0.5, -2.25, 7.0]}).to_csv(
         datapath / "0.dat", index=False
     )
-    dataset = PandasDataset(datapath, sep=",")
+    dataset = TabularDataset(datapath, sep=",")
 
     X, y = to_xy(dataset, task="regression", drop_duplicates=False)
 
@@ -266,7 +266,7 @@ def test_to_xy_regression_returns_the_label_column_unencoded(tmp_path):
 
 
 def test_to_xy_unknown_task_raises(create_data):
-    dataset = PandasDataset(create_data, sep=",")
+    dataset = TabularDataset(create_data, sep=",")
 
     with pytest.raises(ValueError, match="unknown task"):
         to_xy(dataset, task="clustering", label_column="d")

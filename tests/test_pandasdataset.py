@@ -4,12 +4,12 @@ import pytest
 import torch
 from torch.utils.data import DataLoader, Subset
 from torchvision.transforms import Compose
-from GalaxySpectrumClassifier import PandasDataset
+from GalaxySpectrumClassifier import TabularDataset
 from GalaxySpectrumClassifier.utils import identity
 
 
 def test_pandasdataset_construction_default(create_data):
-    dataset = PandasDataset(create_data, sep=",")
+    dataset = TabularDataset(create_data, sep=",")
 
     assert dataset.path == create_data.resolve()
     assert len(dataset.datafiles) == 10
@@ -45,7 +45,7 @@ def test_pandasdataset_fromconfig(create_data):
         "sep": ",",
     }
 
-    dataset = PandasDataset.from_config(cfg)
+    dataset = TabularDataset.from_config(cfg)
 
     assert dataset.path == create_data.resolve()
     assert len(dataset.datafiles) == 10
@@ -75,7 +75,7 @@ def test_pandasdataset_fromconfig(create_data):
 
 
 def test_pandasdataset_nonstandard(create_data_nonstandard):
-    dataset = PandasDataset(
+    dataset = TabularDataset(
         create_data_nonstandard, sep="\t", comment="//", suffix=".tsv"
     )
     assert dataset.path == create_data_nonstandard.resolve()
@@ -107,10 +107,10 @@ def test_pandasdataset_nonstandard(create_data_nonstandard):
 
 def test_pandasdataset_requires_cache_path_for_preprocessing(create_data):
     with pytest.raises(ValueError, match="cache_path cannot be None"):
-        PandasDataset(create_data, pre_filter=lambda df: df)
+        TabularDataset(create_data, pre_filter=lambda df: df)
 
     with pytest.raises(ValueError, match="cache_path cannot be None"):
-        PandasDataset(create_data, pre_transform=lambda df: df)
+        TabularDataset(create_data, pre_transform=lambda df: df)
 
 
 def test_pandasdataset_construction_cache(create_data, tmp_path):
@@ -125,7 +125,7 @@ def test_pandasdataset_construction_cache(create_data, tmp_path):
         transformed["a_plus_b"] = transformed["a"] + transformed["b"]
         return transformed
 
-    dataset = PandasDataset(
+    dataset = TabularDataset(
         create_data,
         cache_path=cache_path,
         pre_filter=pre_filter,
@@ -163,7 +163,7 @@ def test_pandasdataset_getitem_integer_indices(create_data):
         transform_calls.append(row)
         return row[["a", "b", "source"]]
 
-    dataset = PandasDataset(
+    dataset = TabularDataset(
         create_data, transform=transform, sep=",", label_columns="source"
     )
 
@@ -196,7 +196,7 @@ def test_pandasdataset_getitem_integer_indices(create_data):
 
 
 def test_pandasdataset_getitem_negative_index_is_out_of_range(create_data):
-    dataset = PandasDataset(
+    dataset = TabularDataset(
         create_data,
         transform=lambda row: row[["a", "b", "source"]],
         label_columns="source",
@@ -215,7 +215,7 @@ def test_pandasdataset_getitem_slice_tensor_and_ndarray_are_global_indices(creat
     def transform(row):
         return row[["a", "b", "source"]]
 
-    dataset = PandasDataset(
+    dataset = TabularDataset(
         create_data, transform=transform, sep=",", label_columns="source"
     )
 
@@ -260,7 +260,7 @@ def test_pandasdataset_getitem_slice_tensor_and_ndarray_are_global_indices(creat
 
 def test_pandasdataset_list_transform_composed(create_data):
     first_file = pd.read_csv(sorted(create_data.glob("*.dat"))[0], index_col=0)
-    dataset = PandasDataset(
+    dataset = TabularDataset(
         create_data,
         sep=",",
         transform=Compose([lambda row: row[["a", "b", "source"]], lambda row: row * 2]),
@@ -278,7 +278,7 @@ def test_pandasdataset_list_transform_composed(create_data):
 def test_pandasdataset_resolves_dotted_path_callables(create_data, tmp_path):
     cache_path = tmp_path / "cache"
     cache_path.mkdir()
-    dataset = PandasDataset(
+    dataset = TabularDataset(
         create_data,
         sep=",",
         cache_path=cache_path,
@@ -297,11 +297,11 @@ def test_pandasdataset_resolves_dotted_path_callables(create_data, tmp_path):
 
 def test_pandasdataset_unresolvable_dotted_path_raises(create_data):
     with pytest.raises(AttributeError):
-        PandasDataset(create_data, sep=",", transform="pandas.does_not_exist")
+        TabularDataset(create_data, sep=",", transform="pandas.does_not_exist")
 
 
 def test_pandasdataset_to_frame_matches_dataset_order(create_data, tmp_path):
-    dataset = PandasDataset(create_data, sep=",", label_columns="source")
+    dataset = TabularDataset(create_data, sep=",", label_columns="source")
     frame = dataset.to_frame()
 
     assert len(frame) == len(dataset)
@@ -316,7 +316,7 @@ def test_pandasdataset_to_frame_matches_dataset_order(create_data, tmp_path):
 
     cache_path = tmp_path / "cache"
     cache_path.mkdir()
-    cached = PandasDataset(
+    cached = TabularDataset(
         create_data, sep=",", cache_path=cache_path, pre_filter=lambda df: df
     )
 
@@ -327,7 +327,7 @@ def test_pandasdataset_to_frame_matches_dataset_order(create_data, tmp_path):
 
 
 def test_pandasdataset_getitem_without_label_columns_raises(create_data):
-    dataset = PandasDataset(create_data, sep=",")
+    dataset = TabularDataset(create_data, sep=",")
 
     # No placeholder label, no whole-row fallback - a missing target has to be
     # loud, since a fabricated one would train a model against garbage.
@@ -339,7 +339,7 @@ def test_pandasdataset_getitem_without_label_columns_raises(create_data):
 
 
 def test_pandasdataset_getitem_label_dropped_by_transform_raises(create_data):
-    dataset = PandasDataset(
+    dataset = TabularDataset(
         create_data,
         sep=",",
         transform=lambda row: row[["a", "b"]],
@@ -351,17 +351,17 @@ def test_pandasdataset_getitem_label_dropped_by_transform_raises(create_data):
 
 
 def test_pandasdataset_getitem_unknown_label_column_raises(create_data):
-    dataset = PandasDataset(create_data, sep=",", label_columns="not_a_column")
+    dataset = TabularDataset(create_data, sep=",", label_columns="not_a_column")
 
     with pytest.raises(ValueError, match=r"label column\(s\) \['not_a_column'\]"):
         dataset[0]
 
 
 def test_pandasdataset_getitem_string_label_is_one_axis_flatter_than_list(create_data):
-    single = PandasDataset(
+    single = TabularDataset(
         create_data, sep=",", read_kwargs={"index_col": 0}, label_columns="source"
     )
-    listed = PandasDataset(
+    listed = TabularDataset(
         create_data, sep=",", read_kwargs={"index_col": 0}, label_columns=["source"]
     )
 
@@ -384,7 +384,7 @@ def test_pandasdataset_getitem_string_label_is_one_axis_flatter_than_list(create
 
 
 def test_pandasdataset_getitem_multiple_label_columns(create_data):
-    dataset = PandasDataset(
+    dataset = TabularDataset(
         create_data,
         sep=",",
         read_kwargs={"index_col": 0},
@@ -405,7 +405,7 @@ def test_pandasdataset_getitem_multiple_label_columns(create_data):
 
 
 def test_pandasdataset_getitem_dtypes(create_data):
-    dataset = PandasDataset(
+    dataset = TabularDataset(
         create_data, sep=",", read_kwargs={"index_col": 0}, label_columns="source"
     )
 
@@ -422,7 +422,7 @@ def test_pandasdataset_transform_can_control_output_dtype(create_data):
     def as_float32(sample):
         return sample.astype(np.float32)
 
-    dataset = PandasDataset(
+    dataset = TabularDataset(
         create_data,
         sep=",",
         read_kwargs={"index_col": 0},
@@ -442,7 +442,7 @@ def test_pandasdataset_transform_can_split_feature_and_label_dtypes(create_data)
         transformed["source"] = transformed["source"].astype(np.int64)
         return transformed
 
-    dataset = PandasDataset(
+    dataset = TabularDataset(
         create_data,
         sep=",",
         read_kwargs={"index_col": 0},
@@ -460,7 +460,7 @@ def test_pandasdataset_transform_can_split_feature_and_label_dtypes(create_data)
 
 
 def test_pandasdataset_works_with_dataloader_without_collate_fn(create_data):
-    dataset = PandasDataset(
+    dataset = TabularDataset(
         create_data, sep=",", read_kwargs={"index_col": 0}, label_columns="source"
     )
     frame = dataset.to_frame()
@@ -485,7 +485,7 @@ def test_pandasdataset_works_with_dataloader_without_collate_fn(create_data):
 
 
 def test_pandasdataset_subset_yields_pairs(create_data):
-    dataset = PandasDataset(
+    dataset = TabularDataset(
         create_data, sep=",", read_kwargs={"index_col": 0}, label_columns="source"
     )
     subset = Subset(dataset, [100, 5, 999])
@@ -503,7 +503,7 @@ def test_pandasdataset_subset_yields_pairs(create_data):
 
 
 def test_pandasdataset_mapindex(create_data):
-    dataset = PandasDataset(create_data, sep=",")
+    dataset = TabularDataset(create_data, sep=",")
     first_file = pd.read_csv(dataset.datafiles[0], index_col=0)
     second_file = pd.read_csv(dataset.datafiles[1], index_col=0)
     cols = ["a", "b", "c", "d"]
@@ -538,7 +538,7 @@ def test_pandasdataset_mapindex(create_data):
 def test_pandasdataset_mapindex_cache_mode(create_data, tmp_path):
     cache_path = tmp_path / "cache"
     cache_path.mkdir()
-    dataset = PandasDataset(
+    dataset = TabularDataset(
         create_data, cache_path=cache_path, pre_filter=lambda df: df, sep=","
     )
 

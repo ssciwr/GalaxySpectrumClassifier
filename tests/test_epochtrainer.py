@@ -21,7 +21,7 @@ from skorch.callbacks import (
     TrainEndCheckpoint,
 )
 
-from GalaxySpectrumClassifier.data import PandasDataset
+from GalaxySpectrumClassifier.data import TabularDataset
 from GalaxySpectrumClassifier.epoch_trainer import EpochTrainer
 from GalaxySpectrumClassifier.utils import load_type
 
@@ -77,9 +77,9 @@ def _trainer_kwargs(tmp_path, data_path, **overrides):
         "model_args": [6, 1],
         "loss_type": "torch.nn.BCEWithLogitsLoss",
         "optimizer_type": "torch.optim.SGD",
-        "train_dataset_type": "GalaxySpectrumClassifier.data.PandasDataset",
-        "val_dataset_type": "GalaxySpectrumClassifier.data.PandasDataset",
-        "test_dataset_type": "GalaxySpectrumClassifier.data.PandasDataset",
+        "train_dataset_type": "GalaxySpectrumClassifier.data.TabularDataset",
+        "val_dataset_type": "GalaxySpectrumClassifier.data.TabularDataset",
+        "test_dataset_type": "GalaxySpectrumClassifier.data.TabularDataset",
         "task": "binary-classification",
         "train_dataset_args": [str(data_path)],
         "val_dataset_args": [str(data_path)],
@@ -169,9 +169,9 @@ def test_epochtrainer_constructs_all_datasets_and_preserves_rebuild_config(
         )
     )
 
-    assert isinstance(trainer.train_ds, PandasDataset)
-    assert isinstance(trainer.val_ds, PandasDataset)
-    assert isinstance(trainer.eval_ds, PandasDataset)
+    assert isinstance(trainer.train_ds, TabularDataset)
+    assert isinstance(trainer.val_ds, TabularDataset)
+    assert isinstance(trainer.eval_ds, TabularDataset)
     assert trainer.train_ds.path == create_data.resolve()
     assert trainer.val_ds.path == create_data.resolve()
     assert trainer.eval_ds.path == create_data.resolve()

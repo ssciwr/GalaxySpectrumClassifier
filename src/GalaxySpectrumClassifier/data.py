@@ -5,19 +5,241 @@ import pandas as pd
 import numpy as np
 from joblib import Parallel, delayed
 from collections import OrderedDict
+import warnings
+import pyarrow.parquet as pq
 
 from .base import DatasetProtocol
 from .utils import identity, load_type
 
 
-DATAFORMATS = {
-    "csv": {"read": "read_csv", "write": "to_csv", "extension": ".csv"},
-    "parquet": {"read": "read_parquet", "write": "to_parquet", "extension": ".parquet"},
-    "hdf": {"read": "read_hdf", "write": "to_hdf", "extension": ".h5"},
+class DataHandler:
+    """Read, write, and count the rows of one on-disk tabular format.
+
+    Members of the dataset are the files directly inside ``path`` whose
+    extension matches; subdirectories are not searched.
+    """
+
+    def __init__(
+        self,
+        path: str,
+        extension: str,
+        read_kwargs: dict | None = None,
+        write_kwargs: dict | None = None,
+    ):
+        """Collect the data files of one directory.
+
+        Args:
+            path (str): Directory holding the data files.
+            extension (str): File extension identifying data files, with or
+                without a leading dot.
+            read_kwargs (dict | None, optional): Additional options applied to
+                every read. Defaults to None.
+            write_kwargs (dict | None, optional): Additional options applied to
+                every write. Defaults to None.
+
+        Raises:
+            OSError: If ``path`` cannot be listed.
+        """
+        self.path = Path(path)
+        self.extension = extension.lstrip(".")
+        self.read_kwargs = read_kwargs or {}
+        self.write_kwargs = write_kwargs or {}
+        self.datafiles: list[Path] = sorted(self.path.glob(f"*.{self.extension}"))
+
+    def read_data(self, path: str | Path) -> pd.DataFrame:
+        """Read one data file into a table.
+
+        Args:
+            path (str | Path): File to read.
+
+        Returns:
+            pd.DataFrame: The rows held by ``path``.
+
+        Raises:
+            NotImplementedError: If the format does not implement reading.
+        """
+        raise NotImplementedError
+
+    def write_data(self, data: pd.DataFrame, path: str | Path) -> None:
+        """Write a table to one data file.
+
+        Args:
+            data (pd.DataFrame): Rows to store.
+            path (str | Path): Destination file.
+
+        Raises:
+            NotImplementedError: If the format does not implement writing.
+        """
+        raise NotImplementedError
+
+    def count_rows(self) -> int:
+        """Count the rows of all data files without materializing them.
+
+        Returns:
+            int: The same total as summing ``len(read_data(f))`` over
+                ``datafiles``.
+
+        Raises:
+            NotImplementedError: If the format does not implement counting.
+        """
+        raise NotImplementedError
+
+
+class CSVDataHandler(DataHandler):
+    """Handle character-separated data files through pandas."""
+
+    def read_data(self, path: str | Path) -> pd.DataFrame:
+        """Read one separated-value file into a table.
+
+        Args:
+            path (str | Path): File to read.
+
+        Returns:
+            pd.DataFrame: The rows held by ``path``.
+
+        Raises:
+            OSError: If ``path`` cannot be read.
+            pd.errors.ParserError: If ``path`` does not parse under the
+                configured read options.
+        """
+        return pd.read_csv(path, **self.read_kwargs)
+
+    def write_data(self, data: pd.DataFrame, path: str | Path) -> None:
+        """Write a table to one separated-value file.
+
+        Args:
+            data (pd.DataFrame): Rows to store.
+            path (str | Path): Destination file.
+
+        Raises:
+            OSError: If ``path`` cannot be written.
+        """
+        data.to_csv(path, **self.write_kwargs)
+
+    def count_rows(self) -> int:
+        """Count the data rows of all files by scanning their lines.
+
+        Comment and blank lines are not data, and a header line is not a row.
+        The count only holds while ``read_kwargs`` leaves the number of
+        returned rows alone: options such as ``skiprows`` or ``nrows`` make it
+        disagree with an actual read.
+
+        Returns:
+            int: Total number of data rows across ``datafiles``.
+
+        Raises:
+            OSError: If a data file cannot be read.
+        """
+        comment_prefix = self.read_kwargs.get("comment", "#").encode()
+
+        # pandas consumes the first data line as column names unless told
+        # otherwise, and an absent `header` means exactly that - except when
+        # `names` supplies the labels instead, which consumes no line.
+        header = self.read_kwargs.get("header", "infer")
+        if header == "infer":
+            header = None if "names" in self.read_kwargs else 0
+        has_header = header is not None
+
+        row_count = 0
+        for datafile in self.datafiles:
+            with open(datafile, "rb") as f:
+                # A blank line is empty once stripped, so the walrus alone
+                # filters it out.
+                n = sum(
+                    1
+                    for line in f
+                    if (s := line.lstrip()) and not s.startswith(comment_prefix)
+                )
+
+            if has_header and n > 0:
+                n -= 1
+
+            row_count += n
+
+        return row_count
+
+
+class ParquetDataHandler(DataHandler):
+    """Handle Parquet data files through pandas."""
+
+    def read_data(self, path: str | Path) -> pd.DataFrame:
+        """Read one Parquet file into a table.
+
+        Args:
+            path (str | Path): File to read.
+
+        Returns:
+            pd.DataFrame: The rows held by ``path``.
+
+        Raises:
+            OSError: If ``path`` cannot be read.
+        """
+        return pd.read_parquet(path, **self.read_kwargs)
+
+    def write_data(self, data: pd.DataFrame, path: str | Path) -> None:
+        """Write a table to one Parquet file.
+
+        Args:
+            data (pd.DataFrame): Rows to store.
+            path (str | Path): Destination file.
+
+        Raises:
+            OSError: If ``path`` cannot be written.
+        """
+        data.to_parquet(path, **self.write_kwargs)
+
+    def count_rows(self) -> int:
+        """Count the rows of all files from their stored metadata.
+
+        Returns:
+            int: Total number of rows across ``datafiles``.
+
+        Raises:
+            OSError: If a data file cannot be read.
+        """
+        row_count = 0
+        for datafile in self.datafiles:
+            row_count += pq.ParquetFile(datafile).metadata.num_rows
+        return row_count
+
+
+DATAFORMATS: dict[str, type[DataHandler]] = {
+    "csv": CSVDataHandler,
+    "parquet": ParquetDataHandler,
 }
 
 
-class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
+def register_dataformat(key: str, handler: type[DataHandler]) -> None:
+    """Make a handler available to datasets under a format name.
+
+    Args:
+        key (str): Format name accepted as a dataset's ``dataformat``.
+        handler (type[DataHandler]): Handler class serving that format.
+
+    Raises:
+        TypeError: If ``handler`` is not a ``DataHandler`` subclass.
+
+    Warns:
+        UserWarning: If ``key`` is already registered, in which case the
+            previously registered handler is replaced.
+    """
+    if not (isinstance(handler, type) and issubclass(handler, DataHandler)):
+        raise TypeError(
+            f"handler must be a DataHandler subclass, got {handler!r} instead"
+        )
+
+    if key in DATAFORMATS:
+        # A warning, not an error: replacing a format is the point for anyone
+        # wanting a custom, faster writer depending on size, preference,
+        # existing code, or conventions.
+        warnings.warn(
+            f"Key {key} is already a registered DataFormat, its handler will be overwritten"
+        )
+
+    DATAFORMATS[key] = handler
+
+
+class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
     """Present delimited files as one indexed feature-and-target dataset.
 
     Each matching row is a sample. Optional preprocessing creates a reusable
@@ -29,19 +251,15 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         self,
         path: str,
         cache_path: str | None = None,
-        engine: str = "python",
-        comment: str = "#",
-        na_values: tuple = ("nan", "NaN"),
-        sep: str = ",",
         read_kwargs=None,
         write_kwargs=None,
-        suffix=".dat",
+        dataformat: str = "csv",
+        suffix: str = ".csv",
         transform: Callable | str | None = None,
         pre_transform: Callable | str | None = None,
         pre_filter: Callable | str | None = None,
         n_workers: int = 1,
         label_columns: str | Sequence[str] | None = None,
-        dataformat: str = "csv",
     ):
         """Create a dataset from matching delimited files below a directory.
 
@@ -85,26 +303,22 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
                 be read.
         """
         self.path = Path(path).resolve()
-        self.datafiles: list[Path] = []
-
-        self.engine = engine
-        self.comment = comment
-        self.na_values = na_values
-        self.sep = sep
-        self.read_kwargs = read_kwargs or {}
-        self.write_kwargs = write_kwargs or {}
 
         if dataformat not in DATAFORMATS:
             raise ValueError(
                 f"Error, unknown data format. Allowed formats are {DATAFORMATS}"
             )
+
         self.dataformat = dataformat
-        self.read_function = getattr(pd, DATAFORMATS[dataformat]["read"])
 
-        self.suffix = suffix
-
-        self._filter_datafiles(self.path, self.datafiles)
-        self.datafiles.sort()
+        self.data_handler = DATAFORMATS[self.dataformat]["handler"](
+            path=self.path,
+            read_function=DATAFORMATS[self.dataformat]["read_function"],
+            write_function=DATAFORMATS[self.dataformat]["write_function"],
+            extension=suffix,
+            read_kwargs=read_kwargs,
+            write_kwargs=write_kwargs,
+        )
 
         # Each of the three may be given as a dotted path string, resolved the
         # same way as SimpleTrainer's model/calibrator/metric types, so they can
@@ -143,14 +357,14 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         self.num_datapoints = self._get_num_datapoints()
 
     @classmethod
-    def from_config(cls, cfg: dict[str, Any]) -> "PandasDataset":
+    def from_config(cls, cfg: dict[str, Any]) -> "TabularDataset":
         """Create a dataset from constructor configuration.
 
         Args:
             cfg (dict[str, Any]): Values accepted by ``__init__``.
 
         Returns:
-            PandasDataset: A dataset configured from ``cfg``.
+            TabularDataset: A dataset configured from ``cfg``.
 
         Raises:
             TypeError: If required configuration values are missing.
@@ -177,7 +391,6 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         if (self.cache_path / f"data.{self.dataformat}").exists():
             df = self.read_function(
                 self.cache_path / f"data.{self.dataformat}",
-                **self.read_kwargs,
             )
 
             return df
@@ -222,26 +435,6 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
             writefunc(self.cache_path / f"data.{self.dataformat}", self.write_kwargs)
 
         return df
-
-    def _filter_datafiles(self, path: Path, data_list: list[Path]):
-        """Collect matching data files below a directory.
-
-        Args:
-            path (Path): Directory whose descendants should be considered.
-            data_list (list[Path]): Mutable destination for resolved matching
-                file paths.
-
-        Raises:
-            FileNotFoundError: If ``path`` does not exist.
-            NotADirectoryError: If ``path`` is not a directory.
-        """
-        for obj in path.iterdir():
-            if obj.is_dir():
-                self._filter_datafiles(obj, data_list)
-            elif obj.suffix == self.suffix:
-                data_list.append(obj.resolve())
-            else:
-                continue
 
     def _get_num_datapoints(self) -> int:
         """Count all rows available through the dataset.

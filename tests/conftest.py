@@ -35,13 +35,13 @@ def create_data(tmp_path):
     """Write the synthetic frames as ten comma-separated ``.dat`` files.
 
     Real files on disk rather than an in-memory stand-in, so tests exercise
-    ``PandasDataset``'s own reading and per-file indexing.
+    ``TabularDataset``'s own reading and per-file indexing.
 
     Args:
         tmp_path: pytest's per-test temporary directory.
 
     Returns:
-        Path: The directory to hand to ``PandasDataset(path=...)``. Note the
+        Path: The directory to hand to ``TabularDataset(path=...)``. Note the
             files carry the frame index as an unnamed first column, so a
             dataset reading them without ``read_kwargs={"index_col": 0}`` sees
             one extra feature.
@@ -66,7 +66,7 @@ def create_data_nonstandard(tmp_path):
         tmp_path: pytest's per-test temporary directory.
 
     Returns:
-        Path: The directory to hand to ``PandasDataset(path=...)``.
+        Path: The directory to hand to ``TabularDataset(path=...)``.
     """
     datapath = tmp_path / "data"
     datapath.mkdir()
