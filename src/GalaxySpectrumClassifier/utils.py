@@ -1,5 +1,6 @@
 import importlib
 import re
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -35,6 +36,29 @@ def identity(x: Any) -> Any:
         Any: The same value supplied as ``x``.
     """
     return x
+
+
+def natural_key(path: Path) -> tuple[str | int, ...]:
+    """Order a file name by the numbers in it rather than digit by digit.
+
+    Suitable as a dataset's ``sort_key``, where it puts ``2.csv`` before
+    ``10.csv``. Only the file name is considered, not the directory holding it.
+
+    Args:
+        path (Path): File to derive an ordering from.
+
+    Returns:
+        tuple[str | int, ...]: Sort key placing equal-length runs of digits in
+            numeric order and everything else in lexical order.
+    """
+    # The capture group keeps the separators, so the parts always alternate
+    # non-digit, digit, non-digit, ... beginning with a possibly empty string.
+    # That fixed parity is what makes the tuples comparable: position i holds
+    # the same type in every key, so int never meets str.
+    return tuple(
+        int(part) if i % 2 else part
+        for i, part in enumerate(re.split(r"(\d+)", path.name))
+    )
 
 
 def load_type(path: str) -> type:

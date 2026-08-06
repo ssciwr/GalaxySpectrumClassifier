@@ -23,6 +23,7 @@ class DataHandler:
         extension: str,
         read_kwargs: dict | None = None,
         write_kwargs: dict | None = None,
+        sort_key: Callable | None = None,
     ):
         """Collect the data files of one directory.
 
@@ -34,6 +35,9 @@ class DataHandler:
                 every read. Defaults to None.
             write_kwargs (dict | None, optional): Additional options applied to
                 every write. Defaults to None.
+            sort_key (Callable | None, optional): Callable receiving one file
+                path and returning the value it is ordered by. Defaults to
+                None, which orders the files lexically by path.
 
         Raises:
             OSError: If ``path`` cannot be listed.
@@ -42,7 +46,14 @@ class DataHandler:
         self.extension = extension.lstrip(".")
         self.read_kwargs = read_kwargs or {}
         self.write_kwargs = write_kwargs or {}
-        self.datafiles: list[Path] = sorted(self.path.glob(f"*.{self.extension}"))
+        self.sort_key = sort_key
+        # Sorted rather than left in glob order, which follows the filesystem's
+        # own listing order and so differs between machines and between copies
+        # of one directory. Dataset positions would then address different rows
+        # from run to run, silently invalidating a seeded split.
+        self.datafiles: list[Path] = sorted(
+            self.path.glob(f"*.{self.extension}"), key=self.sort_key
+        )
 
     def read_data(self, path: str | Path) -> pd.DataFrame:
         """Read one data file into a table.
@@ -238,10 +249,15 @@ def register_dataformat(key: str, handler: type[DataHandler]) -> None:
 
 
 class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
-    """Present delimited files as one indexed feature-and-target dataset.
+    """Present the data files of one directory as one indexed dataset.
 
-    Each matching row is a sample, read from disk on access. An optional
+    Every row of those files is a sample, read from disk on access. An optional
     transform prepares samples at retrieval time.
+
+    Samples are ordered by file, and by row within each file. The file order is
+    the one ``sort_key`` establishes, lexical by path unless told otherwise. It
+    is what a dataset position means, so it decides which rows a seeded split
+    puts in which half.
     """
 
     def __init__(
@@ -250,50 +266,53 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         read_kwargs=None,
         write_kwargs=None,
         dataformat: str = "csv",
-        suffix: str = ".csv",
+        suffix: str | None = None,
         transform: Callable | str | None = None,
         pre_transform: Callable | str | None = None,
         pre_filter: Callable | str | None = None,
-        n_workers: int = 1,
+        sort_key: Callable | str | None = None,
         label_columns: str | Sequence[str] | None = None,
     ):
-        """Create a dataset from matching delimited files below a directory.
+        """Create a dataset from the data files of one directory.
 
         Args:
-            path (str): Root directory to search recursively for data files.
-            engine (str, optional): Name of the parser mode to use while
-                reading input files. Defaults to "python".
-            comment (str, optional): Prefix identifying non-data lines in an
-                input file. Defaults to "#".
-            na_values (tuple, optional): Text values that represent missing
-                data. Defaults to ("nan", "NaN").
-            sep (str, optional): Delimiter that separates fields in each input
-                row. Defaults to ",".
-            read_kwargs (dict | None, optional): Additional parsing options
-                used for every input file. Defaults to None.
-            suffix (str, optional): File suffix identifying dataset members.
-                Defaults to ".dat".
+            path (str): Directory holding the data files. Subdirectories are
+                not searched.
+            read_kwargs (dict | None, optional): Additional options applied to
+                every read. They must leave the number of rows a file yields
+                unchanged, since the dataset's length is determined without
+                reading. Defaults to None.
+            write_kwargs (dict | None, optional): Additional options applied to
+                every write. Defaults to None.
+            dataformat (str, optional): Registered name of the on-disk data
+                format. Defaults to "csv".
+            suffix (str | None, optional): File extension identifying dataset
+                members, with or without a leading dot. Defaults to None, which
+                takes the extension from ``dataformat``.
             transform (Callable | str | None, optional): Callable, or import
                 path to one, that prepares a retrieved sample. It must retain
                 the configured target columns. Defaults to None.
             pre_transform (Callable | str | None, optional): Callable, or
-                import path to one, that changes each file before it is cached.
-                Defaults to None.
+                import path to one, that changes data before it becomes
+                samples. Accepted but not yet applied. Defaults to None.
             pre_filter (Callable | str | None, optional): Callable, or import
-                path to one, that selects or removes rows before preprocessing.
-                Defaults to None.
-            n_workers (int, optional): Number of workers available while
-                preparing cached data. Defaults to 1.
+                path to one, that selects which rows become samples. Accepted
+                but not yet applied. Defaults to None.
+            sort_key (Callable | str | None, optional): Callable, or import
+                path to one, receiving one file path and returning the value
+                that file is ordered by. Defaults to None, which orders the
+                files lexically by path, placing ``10.csv`` before ``2.csv``.
+                ``utils.natural_key`` orders them numerically instead.
             label_columns (str | Sequence[str] | None, optional): Name of one
                 target column or an ordered collection of target columns. A
                 string produces one target value per sample; a collection
                 preserves a target dimension, including for one column.
                 Defaults to None.
-            data_format (str): Data fromat of the on disk data
 
         Raises:
-            FileNotFoundError: If ``path`` or a discovered input file cannot
-                be read.
+            ValueError: If ``dataformat`` is not a registered format.
+            OSError: If ``path`` cannot be listed or a data file cannot be read
+                while determining the dataset's length.
         """
         self.path = Path(path).resolve()
 
@@ -304,14 +323,7 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
 
         self.dataformat = dataformat
 
-        self.data_handler = DATAFORMATS[self.dataformat](
-            path=str(self.path),
-            extension=suffix,
-            read_kwargs=read_kwargs,
-            write_kwargs=write_kwargs,
-        )
-
-        # Each of the three may be given as a dotted path string, resolved the
+        # Each of the four may be given as a dotted path string, resolved the
         # same way as SimpleTrainer's model/calibrator/metric types, so they can
         # come straight from a YAML config.
         if isinstance(transform, str):
@@ -320,17 +332,26 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
             pre_transform = load_type(pre_transform)
         if isinstance(pre_filter, str):
             pre_filter = load_type(pre_filter)
+        if isinstance(sort_key, str):
+            sort_key = load_type(sort_key)
+
+        self.data_handler = DATAFORMATS[self.dataformat](
+            path=str(self.path),
+            extension=suffix if suffix is not None else self.dataformat,
+            read_kwargs=read_kwargs,
+            write_kwargs=write_kwargs,
+            sort_key=sort_key,
+        )
 
         self.transform = transform if transform is not None else identity
         self.pre_transform = pre_transform
         self.pre_filter = pre_filter
-        self.n_workers = n_workers
         # Consulted only by __getitem__/_split_labels, i.e. the batch path.
         # to_frame() deliberately still returns the label column alongside the
         # features, since to_xy() does its own splitting from the whole frame.
         self.label_columns = label_columns
 
-        self.num_datapoints = self._get_num_datapoints()
+        self.num_datapoints = self.data_handler.count_rows()
 
     @classmethod
     def from_config(cls, cfg: dict[str, Any]) -> "TabularDataset":
@@ -347,20 +368,6 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         """
         return cls(**cfg)
 
-    def _get_num_datapoints(self) -> int:
-        """Count all rows available through the dataset.
-
-        Returns:
-            int: Total number of samples.
-
-        Raises:
-            OSError: If an input file cannot be read while counting rows.
-        """
-        n = 0
-        for data in self.datafiles:
-            n += len(self.read_function(data, **self.read_kwargs))
-        return n
-
     def to_frame(self) -> pd.DataFrame:
         """Return all untransformed samples in dataset order.
 
@@ -370,16 +377,15 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         Raises:
             OSError: If source data cannot be read.
         """
-        return pd.concat(
-            (
-                self.read_function(
-                    f,
-                    **self.read_kwargs,
-                )
-                for f in self.datafiles
-            ),
-            ignore_index=True,
-        )
+        frames = [self.data_handler.read_data(f) for f in self.data_handler.datafiles]
+
+        # A directory without data files has length 0, and pd.concat refuses an
+        # empty sequence - so answering it here is what keeps to_frame() and
+        # __len__ agreeing on such a directory.
+        if not frames:
+            return pd.DataFrame()
+
+        return pd.concat(frames, ignore_index=True)
 
     def _normalize_index(
         self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple
@@ -443,11 +449,8 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
 
             i = idx
             containing_dataframe = None
-            for _df in self.datafiles:
-                candidate_dataframe = self.read_function(
-                    _df,
-                    **self.read_kwargs,
-                )
+            for _df in self.data_handler.datafiles:
+                candidate_dataframe = self.data_handler.read_data(_df)
                 if i < len(candidate_dataframe):
                     containing_dataframe = candidate_dataframe
                     break
