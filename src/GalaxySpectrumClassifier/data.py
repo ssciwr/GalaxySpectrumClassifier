@@ -354,11 +354,13 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
                 that file is ordered by. Defaults to None, which orders the
                 files lexically by path, placing ``10.csv`` before ``2.csv``.
                 ``utils.natural_key`` orders them numerically instead.
-            label_columns (str | Sequence[str] | None, optional): Name of one
+            label_columns (str | Sequence[str], optional): Name of one
                 target column or an ordered collection of target columns. A
                 string produces one target value per sample; a collection
-                preserves a target dimension, including for one column.
-                Defaults to None.
+                preserves a target dimension, including for one column. Pass an
+                empty collection for no target columns, which returns all
+                columns as features and an empty target tensor. Defaults to
+                None, which is rejected so the target contract is explicit.
             n_workers (int, optional): Number of processes reading files during
                 a whole-directory pass, as joblib's ``n_jobs``. Retrieving a
                 single sample is always sequential. Requires ``pre_filter`` and
@@ -376,7 +378,8 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
                 ``read_kwargs`` holds an option the format forbids, if
                 ``pre_filter`` or ``pre_transform`` is given without a
                 ``cache_path``, if ``cache_path`` is ``path``, or if
-                ``max_cached_files`` is less than one.
+                ``label_columns`` is None, or if ``max_cached_files`` is less
+                than one.
             OSError: If ``path`` cannot be listed, a data file cannot be read
                 while writing the cache or counting its rows, or the cache
                 cannot be written.
@@ -418,19 +421,16 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         self.pre_transform = pre_transform
         self.pre_filter = pre_filter
 
-        # A bare string means "one scalar target per sample"; a list (even of
-        # one name) means "a length-1 target vector per sample" - so which one
-        # was given has to survive past the point label_columns gets wrapped
-        # into a list for lookup.
-        self._label_is_scalar = not isinstance(label_columns, (list, tuple))
+        if label_columns is None:
+            raise ValueError("label_columns must be set; pass [] for no targets.")
+
+        # A bare string means "one scalar target per sample"; a sequence (even
+        # of one name) means "a target vector per sample". Keep both the shape
+        # intent and the declared order for name-based row splitting.
+        self._label_is_scalar = isinstance(label_columns, str)
         self.label_columns = (
-            label_columns
-            if isinstance(label_columns, (list, tuple))
-            else [
-                label_columns,
-            ]
+            [label_columns] if self._label_is_scalar else list(label_columns)
         )
-        self.label_indices: list[int] | None = None
 
         self.n_workers = n_workers
 
@@ -682,12 +682,22 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
 
         frame = self._read_cached(self.data_handler.datafiles[file_idx])
 
-        if self.label_indices is None:
-            self.label_indices = []
-            for i, c in enumerate(frame.columns):
-                if c in self.label_columns:
-                    self.label_indices.append(i)
         return local_idx, frame
+
+    def _split_row(self, row: pd.Series) -> tuple[torch.Tensor, torch.Tensor]:
+        """Split one row into features and targets by configured column names."""
+        missing = [label for label in self.label_columns if label not in row.index]
+        if missing:
+            raise ValueError(
+                f"label columns {missing!r} not found; have {list(row.index)!r}"
+            )
+
+        X = torch.tensor(row.drop(labels=self.label_columns).to_numpy())
+        if self._label_is_scalar:
+            y = torch.tensor(row[self.label_columns[0]])
+        else:
+            y = torch.tensor(row[self.label_columns].to_numpy())
+        return X, y
 
     def __getitem__(
         self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple
@@ -727,15 +737,7 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
             if self.transform is not None:
                 X, y = self.transform(df.iloc[local_idx])
             else:
-                row = df.iloc[local_idx].to_numpy()
-                X = torch.tensor(np.delete(row, self.label_indices))  # type: ignore[arg-type]
-                # Indexing with a list, even of one position, always returns an
-                # array - a bare int position is what gives back a true scalar.
-                y = torch.tensor(
-                    row[self.label_indices[0]]
-                    if self._label_is_scalar
-                    else row[self.label_indices]
-                )
+                X, y = self._split_row(df.iloc[local_idx])
 
             return X, y
 

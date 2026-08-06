@@ -14,10 +14,14 @@ from GalaxySpectrumClassifier.data import (
 
 def test_tabulardataset_requires_cache_path_for_preprocessing(create_data):
     with pytest.raises(ValueError, match="require a cache_path"):
-        TabularDataset(create_data, suffix=".dat", pre_filter=keep_labelled)
+        TabularDataset(
+            create_data, suffix=".dat", pre_filter=keep_labelled, label_columns=[]
+        )
 
     with pytest.raises(ValueError, match="require a cache_path"):
-        TabularDataset(create_data, suffix=".dat", pre_transform=double_a)
+        TabularDataset(
+            create_data, suffix=".dat", pre_transform=double_a, label_columns=[]
+        )
 
     with pytest.raises(ValueError, match="require a cache_path"):
         TabularDataset(
@@ -25,6 +29,7 @@ def test_tabulardataset_requires_cache_path_for_preprocessing(create_data):
             suffix=".dat",
             pre_filter=keep_labelled,
             pre_transform=double_a,
+            label_columns=[],
         )
 
 
@@ -267,6 +272,73 @@ def test_tabulardataset_getitem_multiple_label_columns(create_data):
     )
 
 
+def test_tabulardataset_rejects_missing_label_configuration(create_data):
+    with pytest.raises(ValueError, match=r"label_columns must be set"):
+        TabularDataset(create_data, read_kwargs={"sep": ","}, suffix=".dat")
+
+    with pytest.raises(ValueError, match=r"label_columns must be set"):
+        TabularDataset(
+            create_data,
+            read_kwargs={"sep": ","},
+            suffix=".dat",
+            label_columns=None,
+        )
+
+
+def test_tabulardataset_rejects_unknown_label_columns(create_data):
+    dataset = TabularDataset(
+        create_data,
+        read_kwargs={"sep": ",", "index_col": 0},
+        suffix=".dat",
+        label_columns=["source", "missing"],
+    )
+
+    with pytest.raises(ValueError, match=r"label columns \['missing'\] not found"):
+        dataset[0]
+
+
+def test_tabulardataset_uses_label_names_and_configured_order(tmp_path):
+    datapath = tmp_path / "data"
+    datapath.mkdir()
+    pd.DataFrame({"a": [1.0], "source": [0], "extra": [10]}).to_csv(
+        datapath / "0.dat", index=False
+    )
+    pd.DataFrame({"a": [2.0], "extra": [20], "source": [1]}).to_csv(
+        datapath / "1.dat", index=False
+    )
+
+    dataset = TabularDataset(
+        datapath,
+        read_kwargs={"sep": ","},
+        suffix=".dat",
+        label_columns=["extra", "source"],
+    )
+
+    x, y = dataset[0:2]
+
+    np.testing.assert_allclose(x.numpy(), np.array([[1.0], [2.0]]))
+    np.testing.assert_array_equal(y.numpy(), np.array([[10, 0], [20, 1]]))
+
+
+def test_tabulardataset_empty_label_columns_returns_empty_targets(create_data):
+    dataset = TabularDataset(
+        create_data,
+        read_kwargs={"sep": ",", "index_col": 0},
+        suffix=".dat",
+        label_columns=[],
+    )
+    frame = dataset.to_frame()
+
+    x, y = dataset[0]
+    np.testing.assert_allclose(x.numpy(), frame.iloc[0].to_numpy(dtype=np.float32))
+    assert y.shape == (0,)
+
+    x, y = dataset[0:4]
+    assert x.shape == (4, len(frame.columns))
+    assert y.shape == (4, 0)
+    np.testing.assert_allclose(x.numpy(), frame.iloc[0:4].to_numpy(dtype=np.float32))
+
+
 def test_tabulardataset_getitem_dtypes(create_data):
     dataset = TabularDataset(
         create_data,
@@ -464,6 +536,7 @@ def test_tabulardataset_cache_writes_one_file_per_source(cache_sources, tmp_path
         cache_path=cache_path,
         pre_filter=keep_labelled,
         pre_transform=double_a,
+        label_columns=[],
     )
 
     assert sorted(p.name for p in cache_path.iterdir()) == [
@@ -524,6 +597,7 @@ def test_tabulardataset_cache_is_reused_without_rerunning_hooks(
         cache_path=cache_path,
         pre_filter=keep_labelled,
         pre_transform=double_a,
+        label_columns=[],
     )
 
     reused = TabularDataset(
@@ -532,6 +606,7 @@ def test_tabulardataset_cache_is_reused_without_rerunning_hooks(
         cache_path=cache_path,
         pre_filter=counting_filter,
         pre_transform=double_a,
+        label_columns=[],
     )
 
     assert calls == []
@@ -549,11 +624,19 @@ def test_tabulardataset_overwrite_cache_rewrites(cache_sources, tmp_path):
         return {**row, "doubled": row["a"] * 3}
 
     TabularDataset(
-        datapath, dataformat=dataformat, cache_path=cache_path, pre_transform=double_a
+        datapath,
+        dataformat=dataformat,
+        cache_path=cache_path,
+        pre_transform=double_a,
+        label_columns=[],
     )
 
     stale = TabularDataset(
-        datapath, dataformat=dataformat, cache_path=cache_path, pre_transform=triple_a
+        datapath,
+        dataformat=dataformat,
+        cache_path=cache_path,
+        pre_transform=triple_a,
+        label_columns=[],
     )
     assert (stale.to_frame()["doubled"] == stale.to_frame()["a"] * 2).all()
 
@@ -563,6 +646,7 @@ def test_tabulardataset_overwrite_cache_rewrites(cache_sources, tmp_path):
         cache_path=cache_path,
         pre_transform=triple_a,
         overwrite_cache=True,
+        label_columns=[],
     )
     assert (rewritten.to_frame()["doubled"] == rewritten.to_frame()["a"] * 3).all()
 
@@ -588,7 +672,9 @@ def test_tabulardataset_cache_path_may_not_be_the_source(cache_sources):
     datapath, dataformat = cache_sources
 
     with pytest.raises(ValueError, match="cache_path must differ from path"):
-        TabularDataset(datapath, dataformat=dataformat, cache_path=datapath)
+        TabularDataset(
+            datapath, dataformat=dataformat, cache_path=datapath, label_columns=[]
+        )
 
 
 @pytest.mark.parametrize("path_kind", ["missing", "file"])
@@ -696,7 +782,9 @@ def test_tabulardataset_memory_cache_rejects_sizes_below_one(cache_sources):
     datapath, dataformat = cache_sources
 
     with pytest.raises(ValueError, match="max_cached_files must be at least 1"):
-        TabularDataset(datapath, dataformat=dataformat, max_cached_files=0)
+        TabularDataset(
+            datapath, dataformat=dataformat, max_cached_files=0, label_columns=[]
+        )
 
 
 @pytest.mark.parametrize(
@@ -758,7 +846,9 @@ def test_datahandler_forbids_nothing_by_default(create_data):
 
 def test_datahandler_counts_rows_per_file(cache_sources):
     datapath, dataformat = cache_sources
-    handler = TabularDataset(datapath, dataformat=dataformat).data_handler
+    handler = TabularDataset(
+        datapath, dataformat=dataformat, label_columns=[]
+    ).data_handler
 
     assert handler.count_rows() == [
         len(handler.read_data(f)) for f in handler.datafiles
@@ -835,7 +925,7 @@ def uneven_sources(request, tmp_path):
 def test_tabulardataset_offsets_follow_the_file_lengths(uneven_sources):
     datapath, dataformat, lengths = uneven_sources
 
-    dataset = TabularDataset(datapath, dataformat=dataformat)
+    dataset = TabularDataset(datapath, dataformat=dataformat, label_columns=[])
 
     assert dataset._file_lengths.tolist() == lengths
     # The empty file repeats its predecessor's offset.
