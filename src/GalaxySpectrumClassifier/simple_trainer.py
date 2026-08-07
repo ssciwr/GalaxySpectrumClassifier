@@ -35,7 +35,6 @@ class SimpleTrainer(TrainerProtocol):
         task: str = "binary-classification",
         metrics: list[dict[str, Any]] | None = None,
         seed: int = 42,
-        data_xy_kwargs: dict[str, Any] | None = None,
     ):
         """Configure a model, optional calibration, and evaluation metrics.
 
@@ -80,9 +79,6 @@ class SimpleTrainer(TrainerProtocol):
                 for ``task``.
             seed (int, optional): Seed used for trainer-managed random state.
                 Defaults to 42.
-            data_xy_kwargs (dict[str, Any] | None, optional): Extra keyword
-                options used whenever a dataset is converted to arrays.
-                Defaults to None.
 
         Raises:
             ValueError: If ``task`` is unsupported, or calibration is requested
@@ -107,7 +103,6 @@ class SimpleTrainer(TrainerProtocol):
             "task": task,
             "metrics": metrics,
             "seed": seed,
-            "data_xy_kwargs": data_xy_kwargs,
         }
 
         self.output_path = Path(output_path).resolve()
@@ -135,8 +130,6 @@ class SimpleTrainer(TrainerProtocol):
         self.metrics: list[MetricSpec] = self._build_metrics(
             metrics if metrics is not None else DEFAULT_METRICS[task]
         )
-
-        self.data_xy_kwargs = data_xy_kwargs if data_xy_kwargs is not None else {}
 
     def build_model(
         self,
@@ -274,7 +267,9 @@ class SimpleTrainer(TrainerProtocol):
             ValueError: If the dataset cannot be converted for the configured
                 task or is incompatible with the model.
         """
-        X, y = to_xy(dataset, **self.data_xy_kwargs)
+        X, y = to_xy(
+            dataset,
+        )
         self.model.fit(X, y)
         return self.model
 
@@ -312,7 +307,9 @@ class SimpleTrainer(TrainerProtocol):
             dict[str, float]: Mapping from each configured metric name to its
                 score.
         """
-        X, y = to_xy(data, **self.data_xy_kwargs)
+        X, y = to_xy(
+            data,
+        )
 
         # predict() is cheap and always needed by at least the default
         # metric; predict_proba() is only computed if some configured metric
