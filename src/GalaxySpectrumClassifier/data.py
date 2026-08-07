@@ -613,6 +613,8 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
             delayed(self._preprocess)(f) for f in self.data_handler.datafiles
         )
 
+        # TODO: apply transform function to each row here if it exists.
+
         # A directory without data files has length 0, and pd.concat refuses an
         # empty sequence - so answering it here is what keeps to_frame() and
         # __len__ agreeing on such a directory.
@@ -686,6 +688,8 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
 
     def _split_row(self, row: pd.Series) -> tuple[torch.Tensor, torch.Tensor]:
         """Split one row into features and targets by configured column names."""
+
+        # simplify, might be unnecessary to make label_cols into a list first
         missing = [label for label in self.label_columns if label not in row.index]
         if missing:
             raise ValueError(
