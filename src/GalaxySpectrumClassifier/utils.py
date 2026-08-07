@@ -1,5 +1,6 @@
 import importlib
 import re
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -35,6 +36,29 @@ def identity(x: Any) -> Any:
         Any: The same value supplied as ``x``.
     """
     return x
+
+
+def natural_key(path: Path) -> tuple[str | int, ...]:
+    """Order a file name by the numbers in it rather than digit by digit.
+
+    Suitable as a dataset's ``sort_key``, where it puts ``2.csv`` before
+    ``10.csv``. Only the file name is considered, not the directory holding it.
+
+    Args:
+        path (Path): File to derive an ordering from.
+
+    Returns:
+        tuple[str | int, ...]: Sort key placing equal-length runs of digits in
+            numeric order and everything else in lexical order.
+    """
+    # The capture group keeps the separators, so the parts always alternate
+    # non-digit, digit, non-digit, ... beginning with a possibly empty string.
+    # That fixed parity is what makes the tuples comparable: position i holds
+    # the same type in every key, so int never meets str.
+    return tuple(
+        int(part) if i % 2 else part
+        for i, part in enumerate(re.split(r"(\d+)", path.name))
+    )
 
 
 def load_type(path: str) -> type:
@@ -107,14 +131,13 @@ def to_xy(
     task: str = "binary-classification",
     label_column: str = "source",
     feature_columns: list[str] | None = None,
-    drop_duplicates: bool = True,
     class_map: dict[Any, int] | None = None,
     dtype=np.float32,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Convert a dataset or subset into feature and target arrays.
 
-    The returned rows preserve the supplied dataset's order. Duplicate feature
-    rows may be removed before conversion when requested.
+    The returned rows preserve the supplied dataset's or subset's order. No
+    rows are dropped during conversion.
 
     Args:
         dataset (DatasetProtocol | torch.utils.data.Subset): Dataset providing
@@ -126,8 +149,6 @@ def to_xy(
             Defaults to "source".
         feature_columns (list[str] | None, optional): Ordered feature-column
             names. Defaults to all columns except ``label_column``.
-        drop_duplicates (bool, optional): Whether repeated feature rows should
-            be represented only once. Defaults to True.
         class_map (dict[Any, int] | None, optional): Mapping from label value
             to class index, applied to every label of a classification task.
             Used to make classification targets consistent across datasets.
@@ -141,7 +162,7 @@ def to_xy(
 
     Returns:
         tuple[np.ndarray, np.ndarray]: Feature matrix and one target value per
-            retained sample.
+            selected sample.
     """
     # Subsets only carry indices into their parent, so unwrap down to the
     # dataset itself while composing the indices into that one frame.
@@ -167,9 +188,6 @@ def to_xy(
 
     if feature_columns is None:
         feature_columns = [c for c in df.columns if c != label_column]
-
-    if drop_duplicates:
-        df = df.drop_duplicates(subset=feature_columns, keep="first")
 
     # copy=True because pandas hands back a read-only view into the frame's own
     # block whenever no conversion is needed. torch.as_tensor would then share

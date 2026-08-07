@@ -90,19 +90,18 @@ trainer:
     task: binary-classification
     label_column: source
     feature_columns:
-    drop_duplicates: true
     # The `source` column is already encoded as 0/1, so no mapping is needed.
     # Set it to e.g. {AGN: 0, POPSTAR: 1} when the labels are not indices.
     class_map:
 dataset:
   path: ../data/classification_v2
-  engine: python
-  comment: "#"
-  na_values:
-    - nan
-    - NaN
-  sep: ","
   read_kwargs:
+    engine: python
+    comment: "#"
+    na_values:
+      - nan
+      - NaN
+    sep: ","
   suffix: .csv
   # transform/pre_transform/pre_filter accept a dotted path to a module-level
   # callable, e.g. "GalaxySpectrumClassifier.utils.identity". Setting either

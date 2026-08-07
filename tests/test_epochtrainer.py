@@ -21,21 +21,40 @@ from skorch.callbacks import (
     TrainEndCheckpoint,
 )
 
-from GalaxySpectrumClassifier.data import PandasDataset
+from GalaxySpectrumClassifier.data import TabularDataset
 from GalaxySpectrumClassifier.epoch_trainer import EpochTrainer
 from GalaxySpectrumClassifier.utils import load_type
 
 
 def _as_float32(sample):
-    """Provide BCEWithLogitsLoss-compatible features and targets."""
-    return sample.astype(np.float32)
+    """Provide BCEWithLogitsLoss-compatible features and a scalar target.
+
+    NeuralNetBinaryClassifier squeezes its output to one value per sample, so
+    the target has to match that shape rather than carry a trailing axis.
+    """
+    converted = sample.astype(np.float32)
+    return (
+        torch.tensor(converted.drop(labels=["source"]).to_numpy()),
+        torch.tensor(np.array(converted["source"])),
+    )
+
+
+def _as_float32_vector_label(sample):
+    """Provide MSELoss-compatible features and a length-1 vector target."""
+    converted = sample.astype(np.float32)
+    return (
+        torch.tensor(converted.drop(labels=["source"]).to_numpy()),
+        torch.tensor(converted[["source"]].to_numpy()),
+    )
 
 
 def _as_float32_features_int64_labels(sample):
     """Provide CrossEntropyLoss-compatible features and targets."""
-    transformed = sample.astype(np.float32)
-    transformed["source"] = transformed["source"].astype(np.int64)
-    return transformed
+    features = sample.drop(labels=["source"]).astype(np.float32)
+    return (
+        torch.tensor(features.to_numpy()),
+        torch.tensor(np.array(sample["source"], dtype=np.int64)),
+    )
 
 
 class _FixedPredictionModel:
@@ -77,25 +96,28 @@ def _trainer_kwargs(tmp_path, data_path, **overrides):
         "model_args": [6, 1],
         "loss_type": "torch.nn.BCEWithLogitsLoss",
         "optimizer_type": "torch.optim.SGD",
-        "train_dataset_type": "GalaxySpectrumClassifier.data.PandasDataset",
-        "val_dataset_type": "GalaxySpectrumClassifier.data.PandasDataset",
-        "test_dataset_type": "GalaxySpectrumClassifier.data.PandasDataset",
+        "train_dataset_type": "GalaxySpectrumClassifier.data.TabularDataset",
+        "val_dataset_type": "GalaxySpectrumClassifier.data.TabularDataset",
+        "test_dataset_type": "GalaxySpectrumClassifier.data.TabularDataset",
         "task": "binary-classification",
         "train_dataset_args": [str(data_path)],
         "val_dataset_args": [str(data_path)],
         "test_dataset_args": [str(data_path)],
         "train_dataset_kwargs": {
-            "sep": ",",
+            "suffix": ".dat",
+            "read_kwargs": {"sep": ","},
             "label_columns": "source",
             "transform": "test_epochtrainer._as_float32",
         },
         "val_dataset_kwargs": {
-            "sep": ",",
+            "suffix": ".dat",
+            "read_kwargs": {"sep": ","},
             "label_columns": "source",
             "transform": "test_epochtrainer._as_float32",
         },
         "test_dataset_kwargs": {
-            "sep": ",",
+            "suffix": ".dat",
+            "read_kwargs": {"sep": ","},
             "label_columns": "source",
             "transform": "test_epochtrainer._as_float32",
         },
@@ -156,7 +178,8 @@ def test_epochtrainer_constructs_all_datasets_and_preserves_rebuild_config(
             tmp_path,
             create_data,
             train_dataset_kwargs={
-                "sep": ",",
+                "suffix": ".dat",
+                "read_kwargs": {"sep": ","},
                 "label_columns": "source",
                 # Constructor kwargs may name types in YAML-safe form.
                 "transform": {"type": "GalaxySpectrumClassifier.utils.identity"},
@@ -169,9 +192,9 @@ def test_epochtrainer_constructs_all_datasets_and_preserves_rebuild_config(
         )
     )
 
-    assert isinstance(trainer.train_ds, PandasDataset)
-    assert isinstance(trainer.val_ds, PandasDataset)
-    assert isinstance(trainer.eval_ds, PandasDataset)
+    assert isinstance(trainer.train_ds, TabularDataset)
+    assert isinstance(trainer.val_ds, TabularDataset)
+    assert isinstance(trainer.eval_ds, TabularDataset)
     assert trainer.train_ds.path == create_data.resolve()
     assert trainer.val_ds.path == create_data.resolve()
     assert trainer.eval_ds.path == create_data.resolve()
@@ -581,7 +604,8 @@ def test_epochtrainer_trains_multiclass_with_transform_controlled_dtypes(
     tmp_path, create_data
 ):
     dataset_kwargs = {
-        "sep": ",",
+        "suffix": ".dat",
+        "read_kwargs": {"sep": ","},
         "label_columns": "source",
         "transform": "test_epochtrainer._as_float32_features_int64_labels",
     }
@@ -611,9 +635,10 @@ def test_epochtrainer_trains_multiclass_with_transform_controlled_dtypes(
 
 def test_epochtrainer_trains_regression_with_vector_targets(tmp_path, create_data):
     dataset_kwargs = {
-        "sep": ",",
+        "suffix": ".dat",
+        "read_kwargs": {"sep": ","},
         "label_columns": ["source"],
-        "transform": "test_epochtrainer._as_float32",
+        "transform": "test_epochtrainer._as_float32_vector_label",
     }
     trainer = EpochTrainer(
         **_trainer_kwargs(

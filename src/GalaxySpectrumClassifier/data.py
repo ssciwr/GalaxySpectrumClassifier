@@ -3,92 +3,401 @@ from typing import Callable, Sequence, Any
 from pathlib import Path
 import pandas as pd
 import numpy as np
+import warnings
+import pyarrow.parquet as pq
+from cachetools import LFUCache
 from joblib import Parallel, delayed
-from collections import OrderedDict
 
 from .base import DatasetProtocol
-from .utils import identity, load_type
+from .utils import load_type
 
 
-class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
-    """Present delimited files as one indexed feature-and-target dataset.
+class DataHandler:
+    """Read, write, and count the rows of one on-disk tabular format.
 
-    Each matching row is a sample. Optional preprocessing creates a reusable
-    tabular cache, while an optional transform prepares samples at retrieval
-    time.
+    Members of the dataset are the files directly inside ``path`` whose
+    extension matches; subdirectories are not searched.
+
+    Attributes:
+        _FORBIDDEN_READ_KWARGS (frozenset[str]): Read options the format
+            rejects because they change how many rows a file yields, which
+            would desync ``count_rows`` from a read. Empty by default, so a
+            format opts in to its own.
+    """
+
+    _FORBIDDEN_READ_KWARGS: frozenset[str] = frozenset()
+
+    def __init__(
+        self,
+        path: str,
+        extension: str,
+        read_kwargs: dict | None = None,
+        write_kwargs: dict | None = None,
+        sort_key: Callable | None = None,
+    ):
+        """Collect the data files of one directory.
+
+        Args:
+            path (str): Directory holding the data files.
+            extension (str): File extension identifying data files, with or
+                without a leading dot.
+            read_kwargs (dict | None, optional): Additional options applied to
+                every read. Defaults to None.
+            write_kwargs (dict | None, optional): Additional options applied to
+                every write. Defaults to None.
+            sort_key (Callable | None, optional): Callable receiving one file
+                path and returning the value it is ordered by. Defaults to
+                None, which orders the files lexically by path.
+
+        Raises:
+            ValueError: If ``read_kwargs`` holds an option the format forbids.
+            OSError: If ``path`` cannot be listed.
+        """
+        self.path = Path(path)
+        self.extension = extension.lstrip(".")
+        self.read_kwargs = read_kwargs or {}
+
+        forbidden = self._FORBIDDEN_READ_KWARGS & self.read_kwargs.keys()
+        if forbidden:
+            raise ValueError(
+                f"read_kwargs {sorted(forbidden)} change how many rows a file "
+                "yields, which would desync count_rows() from a read."
+            )
+
+        self.write_kwargs = write_kwargs or {}
+        self.sort_key = sort_key
+        # Sorted rather than left in glob order, which follows the filesystem's
+        # own listing order and so differs between machines and between copies
+        # of one directory. Dataset positions would then address different rows
+        # from run to run, silently invalidating a seeded split.
+        self.datafiles: list[Path] = sorted(
+            self.path.glob(f"*.{self.extension}"), key=self.sort_key
+        )
+
+        if not len(self.datafiles):
+            raise ValueError(f"Error, no datafiles with suffix {self.extension} found")
+
+    def read_data(self, path: str | Path) -> pd.DataFrame:
+        """Read one data file into a table.
+
+        Args:
+            path (str | Path): File to read.
+
+        Returns:
+            pd.DataFrame: The rows held by ``path``.
+
+        Raises:
+            NotImplementedError: If the format does not implement reading.
+        """
+        raise NotImplementedError
+
+    def write_data(self, data: pd.DataFrame, path: str | Path) -> None:
+        """Write a table to one data file.
+
+        Args:
+            data (pd.DataFrame): Rows to store.
+            path (str | Path): Destination file.
+
+        Raises:
+            NotImplementedError: If the format does not implement writing.
+        """
+        raise NotImplementedError
+
+    def count_rows(self) -> list[int]:
+        """Count the rows of each data file.
+
+        Returns:
+            list[int]: One entry per file in ``datafiles`` order, each the
+                same as ``len(read_data(f))``.
+
+        Raises:
+            NotImplementedError: If the format does not implement counting.
+        """
+        raise NotImplementedError
+
+
+class CSVDataHandler(DataHandler):
+    """Handle character-separated data files through pandas."""
+
+    # `chunksize` and `iterator` are here for a second reason: they make
+    # pd.read_csv return a TextFileReader rather than a frame, breaking
+    # read_data's declared return type whatever the counting does.
+    _FORBIDDEN_READ_KWARGS: frozenset[str] = frozenset(
+        {"skiprows", "skipfooter", "nrows", "skip_blank_lines", "chunksize", "iterator"}
+    )
+
+    def read_data(self, path: str | Path) -> pd.DataFrame:
+        """Read one separated-value file into a table.
+
+        Args:
+            path (str | Path): File to read.
+
+        Returns:
+            pd.DataFrame: The rows held by ``path``.
+
+        Raises:
+            OSError: If ``path`` cannot be read.
+            pd.errors.ParserError: If ``path`` does not parse under the
+                configured read options.
+        """
+        df = pd.read_csv(path, **self.read_kwargs)
+        return df
+
+    def write_data(self, data: pd.DataFrame, path: str | Path) -> None:
+        """Write a table to one separated-value file.
+
+        The row index is not written unless ``write_kwargs`` asks for it, so a
+        file written with the format's defaults reads back unchanged under
+        ``read_data``'s defaults.
+
+        Args:
+            data (pd.DataFrame): Rows to store.
+            path (str | Path): Destination file.
+
+        Raises:
+            OSError: If ``path`` cannot be written.
+        """
+        write_kwargs: dict[str, Any] = {"index": False} | self.write_kwargs
+        data.to_csv(path, **write_kwargs)
+
+    def count_rows(self) -> list[int]:
+        """Count the data rows of each file with the configured CSV parser.
+
+        Files are parsed in bounded chunks using the same options as
+        ``read_data``. The PyArrow engine does not support chunked reads, so
+        files using it are materialized one at a time.
+
+        Returns:
+            list[int]: Number of data rows per file, in ``datafiles`` order.
+
+        Raises:
+            OSError: If a data file cannot be read.
+        """
+
+        row_counts = []
+        for datafile in self.datafiles:
+            if self.read_kwargs.get("engine") == "pyarrow":
+                n = len(pd.read_csv(datafile, **self.read_kwargs))
+            else:
+                chunks = pd.read_csv(datafile, chunksize=100_000, **self.read_kwargs)
+                n = sum(len(chunk) for chunk in chunks)
+            row_counts.append(n)
+
+        return row_counts
+
+
+class ParquetDataHandler(DataHandler):
+    """Handle Parquet data files through pandas."""
+
+    # Predicate pushdown drops rows the footer's num_rows still counts.
+    _FORBIDDEN_READ_KWARGS: frozenset[str] = frozenset({"filters"})
+
+    def read_data(self, path: str | Path) -> pd.DataFrame:
+        """Read one Parquet file into a table.
+
+        Args:
+            path (str | Path): File to read.
+
+        Returns:
+            pd.DataFrame: The rows held by ``path``.
+
+        Raises:
+            OSError: If ``path`` cannot be read.
+        """
+        df = pd.read_parquet(path, **self.read_kwargs)
+        return df
+
+    def write_data(self, data: pd.DataFrame, path: str | Path) -> None:
+        """Write a table to one Parquet file.
+
+        Args:
+            data (pd.DataFrame): Rows to store.
+            path (str | Path): Destination file.
+
+        Raises:
+            OSError: If ``path`` cannot be written.
+        """
+        data.to_parquet(path, **self.write_kwargs)
+
+    def count_rows(self) -> list[int]:
+        """Count the rows of each file from its stored metadata.
+
+        Returns:
+            list[int]: Number of rows per file, in ``datafiles`` order.
+
+        Raises:
+            OSError: If a data file cannot be read.
+        """
+        return [
+            pq.ParquetFile(datafile).metadata.num_rows for datafile in self.datafiles
+        ]
+
+
+DATAFORMATS: dict[str, type[DataHandler]] = {
+    "csv": CSVDataHandler,
+    "parquet": ParquetDataHandler,
+}
+
+
+def register_dataformat(key: str, handler: type[DataHandler]) -> None:
+    """Make a handler available to datasets under a format name.
+
+    Args:
+        key (str): Format name accepted as a dataset's ``dataformat``.
+        handler (type[DataHandler]): Handler class serving that format.
+
+    Raises:
+        TypeError: If ``handler`` is not a ``DataHandler`` subclass.
+
+    Warns:
+        UserWarning: If ``key`` is already registered, in which case the
+            previously registered handler is replaced.
+    """
+    if not (isinstance(handler, type) and issubclass(handler, DataHandler)):
+        raise TypeError(
+            f"handler must be a DataHandler subclass, got {handler!r} instead"
+        )
+
+    if key in DATAFORMATS:
+        # A warning, not an error: replacing a format is the point for anyone
+        # wanting a custom, faster writer depending on size, preference,
+        # existing code, or conventions.
+        warnings.warn(
+            f"Key {key} is already a registered DataFormat, its handler will be overwritten"
+        )
+
+    DATAFORMATS[key] = handler
+
+
+class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
+    """Present the data files of one directory as one indexed dataset.
+
+    Every row of those files is a sample, read from disk on access, and a
+    retrieved sample passes through ``transform``. ``pre_filter`` and
+    ``pre_transform`` require a ``cache_path``: they run once at construction
+    and the dataset reads their result from there instead of from ``path``.
+
+    Samples are ordered by file, and by row within each file. The file order is
+    the one ``sort_key`` establishes, lexical by path unless told otherwise. It
+    is what a dataset position means, so it decides which rows a seeded split
+    puts in which half.
+
+    Retrieving a sample may serve its file from an in-memory cache of at most
+    ``max_cached_files`` files, so a file edited after it was first read can go
+    on being served as it was. Whole-directory passes always read from disk.
     """
 
     def __init__(
         self,
         path: str,
-        cache_path: str | None = None,
-        engine: str = "python",
-        comment: str = "#",
-        na_values: tuple = ("nan", "NaN"),
-        sep: str = ",",
         read_kwargs=None,
-        suffix=".dat",
+        write_kwargs=None,
+        dataformat: str = "csv",
+        suffix: str | None = None,
+        cache_path: str | None = None,
+        overwrite_cache: bool = False,
         transform: Callable | str | None = None,
         pre_transform: Callable | str | None = None,
         pre_filter: Callable | str | None = None,
-        n_workers: int = 1,
+        sort_key: Callable | str | None = None,
         label_columns: str | Sequence[str] | None = None,
+        n_workers: int = 1,
+        max_cached_files: int | None = 8,
     ):
-        """Create a dataset from matching delimited files below a directory.
+        """Create a dataset from the data files of one directory.
 
         Args:
-            path (str): Root directory to search recursively for data files.
-            cache_path (str | None, optional): Directory for processed data.
-                Required whenever preprocessing is requested. Defaults to None.
-            engine (str, optional): Name of the parser mode to use while
-                reading input files. Defaults to "python".
-            comment (str, optional): Prefix identifying non-data lines in an
-                input file. Defaults to "#".
-            na_values (tuple, optional): Text values that represent missing
-                data. Defaults to ("nan", "NaN").
-            sep (str, optional): Delimiter that separates fields in each input
-                row. Defaults to ",".
-            read_kwargs (dict | None, optional): Additional parsing options
-                used for every input file. Defaults to None.
-            suffix (str, optional): File suffix identifying dataset members.
-                Defaults to ".dat".
+            path (str): Directory holding the data files. Subdirectories are
+                not searched.
+            read_kwargs (dict | None, optional): Additional options applied to
+                every read. Defaults to None.
+            write_kwargs (dict | None, optional): Additional options applied to
+                every write. Defaults to None.
+            dataformat (str, optional): Registered name of the on-disk data
+                format. Defaults to "csv".
+            suffix (str | None, optional): File extension identifying dataset
+                members, with or without a leading dot. Defaults to None, which
+                takes the extension from ``dataformat``.
+            cache_path (str | None, optional): Directory holding the
+                preprocessed data, one file per source file under the same
+                stem. Written at construction if absent and read instead of
+                ``path`` afterwards, so ``pre_filter`` and ``pre_transform`` run
+                once rather than on every read. An existing cache is used as-is
+                and is not checked against the currently configured hooks or
+                ``read_kwargs``; use ``overwrite_cache`` after changing either.
+                Required by ``pre_filter`` and ``pre_transform``. Defaults to
+                None, which reads the source files on every access.
+            overwrite_cache (bool, optional): Whether an existing cache file is
+                written again rather than reused. Defaults to False.
             transform (Callable | str | None, optional): Callable, or import
-                path to one, that prepares a retrieved sample. It must retain
-                the configured target columns. Defaults to None.
+                path to one, that prepares a retrieved sample. It receives the
+                retrieved row as a ``pd.Series`` after ``pre_filter`` and
+                ``pre_transform`` and must return ``(features, target)`` as
+                tensors. When provided, this callable is responsible for any
+                label selection; the dataset does not split ``label_columns``
+                after ``transform``. Defaults to None.
             pre_transform (Callable | str | None, optional): Callable, or
-                import path to one, that changes each file before it is cached.
-                Defaults to None.
+                import path to one, applied to every retained row, received as
+                a ``dict`` of column name to value, and returning that
+                observation changed. Applied after ``pre_filter`` and before
+                ``transform``. Keys it adds become columns, and column data
+                types are inferred from the returned rows. Requires
+                ``cache_path``. Defaults to None.
             pre_filter (Callable | str | None, optional): Callable, or import
-                path to one, that selects or removes rows before preprocessing.
-                Defaults to None.
-            n_workers (int, optional): Number of workers available while
-                preparing cached data. Defaults to 1.
-            label_columns (str | Sequence[str] | None, optional): Name of one
+                path to one, applied to every row read, received as a ``dict``
+                of column name to value, and returning whether that observation
+                is kept. Applied before ``pre_transform``, so it sees only the
+                columns present on disk, and it determines the dataset's
+                length. Requires ``cache_path``. Defaults to None.
+            sort_key (Callable | str | None, optional): Callable, or import
+                path to one, receiving one file path and returning the value
+                that file is ordered by. Defaults to None, which orders the
+                files lexically by path, placing ``10.csv`` before ``2.csv``.
+                ``utils.natural_key`` orders them numerically instead.
+            label_columns (str | Sequence[str], optional): Name of one
                 target column or an ordered collection of target columns. A
                 string produces one target value per sample; a collection
-                preserves a target dimension, including for one column.
-                Defaults to None.
+                preserves a target dimension, including for one column. Pass an
+                empty collection for no target columns, which returns all
+                columns as features and an empty target tensor. Defaults to
+                None, which is rejected so the target contract is explicit.
+            n_workers (int, optional): Number of processes reading files during
+                a whole-directory pass, as joblib's ``n_jobs``. Retrieving a
+                single sample is always sequential. Requires ``pre_filter`` and
+                ``pre_transform`` to survive being sent to another process.
+                Defaults to 1, which reads in the calling process.
+            max_cached_files (int | None, optional): How many files retrieval
+                may hold in memory at once, counted in files rather than bytes.
+                The least frequently used one is dropped beyond that. Applies
+                per process, so a dataset iterated by worker processes holds
+                this many in each of them. Defaults to 8. Pass None to read
+                from disk on every retrieval.
 
         Raises:
-            ValueError: If preprocessing is requested without ``cache_path``.
-            FileNotFoundError: If ``path`` or a discovered input file cannot
-                be read.
+            ValueError: If ``dataformat`` is not a registered format, if
+                ``read_kwargs`` holds an option the format forbids, if
+                ``pre_filter`` or ``pre_transform`` is given without a
+                ``cache_path``, if ``cache_path`` is ``path``, or if
+                ``label_columns`` is None, or if ``max_cached_files`` is less
+                than one.
+            OSError: If ``path`` cannot be listed, a data file cannot be read
+                while writing the cache or counting its rows, or the cache
+                cannot be written.
+            pd.errors.ParserError: If a data file does not parse while writing
+                the cache.
         """
         self.path = Path(path).resolve()
-        self.datafiles: list[Path] = []
+        if self.path.is_dir() is False:
+            raise ValueError("Error, input path is not a directory")
 
-        self.engine = engine
-        self.comment = comment
-        self.na_values = na_values
-        self.sep = sep
-        self.read_kwargs = read_kwargs or {}
+        if dataformat not in DATAFORMATS:
+            raise ValueError(
+                f"Error, unknown data format. Allowed formats are {DATAFORMATS}"
+            )
 
-        self.suffix = suffix
+        self.dataformat = dataformat
 
-        self._filter_datafiles(self.path, self.datafiles)
-        self.datafiles.sort()
-
-        # Each of the three may be given as a dotted path string, resolved the
+        # Each of the four may be given as a dotted path string, resolved the
         # same way as SimpleTrainer's model/calibrator/metric types, so they can
         # come straight from a YAML config.
         if isinstance(transform, str):
@@ -97,184 +406,220 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
             pre_transform = load_type(pre_transform)
         if isinstance(pre_filter, str):
             pre_filter = load_type(pre_filter)
+        if isinstance(sort_key, str):
+            sort_key = load_type(sort_key)
 
-        self.transform = transform if transform is not None else identity
+        self.data_handler = DATAFORMATS[self.dataformat](
+            path=str(self.path),
+            extension=suffix if suffix is not None else self.dataformat,
+            read_kwargs=read_kwargs,
+            write_kwargs=write_kwargs,
+            sort_key=sort_key,
+        )
+
+        self.transform = transform
         self.pre_transform = pre_transform
         self.pre_filter = pre_filter
+
+        if label_columns is None:
+            raise ValueError("label_columns must be set; pass [] for no targets.")
+
+        # A bare string means "one scalar target per sample"; a sequence (even
+        # of one name) means "a target vector per sample". Keep both the shape
+        # intent and the declared order for name-based row splitting.
+        self._label_is_scalar = isinstance(label_columns, str)
+        self.label_columns = (
+            [label_columns] if self._label_is_scalar else list(label_columns)
+        )
+
         self.n_workers = n_workers
-        # Consulted only by __getitem__/_split_labels, i.e. the batch path.
-        # to_frame() deliberately still returns the label column alongside the
-        # features, since to_xy() does its own splitting from the whole frame.
-        self.label_columns = label_columns
-        self.cache_on_disk = pre_transform is not None or pre_filter is not None
 
-        if self.cache_on_disk and cache_path is None:
+        # Rejected here rather than left to cachetools, which accepts maxsize=0
+        # and then raises "value too large" on the first insert instead, a long
+        # way from the argument that caused it. None is the one way to opt out.
+        if max_cached_files is not None and max_cached_files < 1:
             raise ValueError(
-                "When pre_transform or pre_filter are given, this implies preprocessing of data and cache_path cannot be None"
+                f"max_cached_files must be at least 1, got {max_cached_files}. "
+                "Pass None to disable caching."
             )
-        if cache_path is not None:
-            self.cache_path = Path(cache_path).resolve()
-            self.cache_path.mkdir(parents=True, exist_ok=True)
 
-        self.data_cache = OrderedDict()  # empty always if cache_read_data is false
+        # Per instance, not per class: the key is a file path, and two datasets
+        # can read the same directory through different hooks, or one the
+        # sources and one the cache written from them.
+        self._file_cache = (
+            None if max_cached_files is None else LFUCache(maxsize=max_cached_files)
+        )
+
+        # No location is invented when none is given: `path` may be read-only,
+        # and writing where the caller did not ask is the wrong surprise. The
+        # lazy hook path is not merely slower - it reads and preprocesses every
+        # file at construction to learn the length, then again on every access,
+        # so it pays the disk cache's cost and keeps none of its benefit.
+        if cache_path is None and (pre_filter is not None or pre_transform is not None):
+            raise ValueError(
+                "pre_filter and pre_transform require a cache_path, so the "
+                "hooks are applied once and written there rather than on "
+                "every read."
+            )
+
+        self.cache_on_disk = cache_path is not None
 
         if self.cache_on_disk:
-            df = self._preprocess()
-            self.data_cache = df
+            cache_path = Path(cache_path).resolve()
+            if cache_path == self.path:
+                raise ValueError(
+                    "cache_path must differ from path, otherwise the cache "
+                    "could overwrite the source files it is written from."
+                )
+            cache_path.mkdir(parents=True, exist_ok=True)
 
-        self.num_datapoints = self._get_num_datapoints()
+            targets = [
+                cache_path / f"{f.stem}.{self.data_handler.extension}"
+                for f in self.data_handler.datafiles
+            ]
+
+            def _write_cache_file(source: Path, target: Path) -> None:
+                """Write one preprocessed source file to its cache file.
+
+                Args:
+                    source (Path): Data file to read and prepare.
+                    target (Path): Destination file.
+                """
+                self.data_handler.write_data(self._preprocess(source), target)
+
+            # Per file, like to_frame(): reading and the row-wise hooks are what
+            # is worth sending to a worker, and each call writes its own file,
+            # so nothing has to come back. Preprocessing has to happen inside
+            # the dispatched call - `delayed` defers only the call it wraps, so
+            # passing _preprocess(source) as an argument would run it here.
+            Parallel(n_jobs=self.n_workers)(
+                delayed(_write_cache_file)(source, target)
+                for source, target in zip(self.data_handler.datafiles, targets)
+                if overwrite_cache or not target.exists()
+            )
+
+            # Both hooks are baked into what was just written, and the handler
+            # now reads files this package wrote rather than the sources, so
+            # the source read options no longer describe them.
+            self.pre_filter = self.pre_transform = None
+            self.data_handler.path = Path(cache_path)
+            self.data_handler.read_kwargs = {}
+            self.data_handler.datafiles = targets
+
+        # What is on disk is what is in the dataset: a pre_filter drops its rows
+        # into the cache the handler now reads, so nothing has to be read here
+        # to learn the lengths. Their running sum, with a leading 0, is the
+        # global position each file starts at, and file k's end is file k+1's
+        # start - so the starts alone place any position by search.
+        self._file_lengths = np.asarray(self.data_handler.count_rows(), dtype=np.int64)
+        self._offsets = np.concatenate(([0], np.cumsum(self._file_lengths)))
+        self.num_datapoints = int(self._file_lengths.sum())
 
     @classmethod
-    def from_config(cls, cfg: dict[str, Any]) -> "PandasDataset":
+    def from_config(cls, cfg: dict[str, Any]) -> "TabularDataset":
         """Create a dataset from constructor configuration.
 
         Args:
             cfg (dict[str, Any]): Values accepted by ``__init__``.
 
         Returns:
-            PandasDataset: A dataset configured from ``cfg``.
+            TabularDataset: A dataset configured from ``cfg``.
 
         Raises:
             TypeError: If required configuration values are missing.
-            ValueError: If the configuration requests preprocessing without a
-                cache location.
         """
         return cls(**cfg)
 
-    def _preprocess(self):
-        """Return the persistent, processed representation of all data files.
-
-        Existing processed data is reused when available. Otherwise, the
-        dataset applies its configured preprocessing and makes the result
-        available for later retrieval.
-
-        Returns:
-            pd.DataFrame: All processed rows, with their original columns.
-
-        Raises:
-            OSError: If processed data cannot be read or written.
-            ValueError: If the input files cannot be combined into one table.
-        """
-
-        if (self.cache_path / "data.csv").exists():
-            # don't read
-            kwargs = {"index_col": 0}
-            kwargs.update(self.read_kwargs)
-            df = pd.read_csv(
-                self.cache_path / "data.csv",
-                sep=",",
-                engine=self.engine,
-                na_values=self.na_values,
-                **kwargs,
-            )
-
-            return df
-        else:
-
-            def _preprocess_single(path):
-                """Apply this dataset's preprocessing choices to one file.
-
-                Args:
-                    path (Path): Source data file to process.
-
-                Returns:
-                    pd.DataFrame: Processed rows from ``path``.
-
-                Raises:
-                    OSError: If ``path`` cannot be read.
-                """
-                df = self.read_data(path)
-                if self.pre_filter:
-                    df = self.pre_filter(df)
-
-                if self.pre_transform:
-                    df = self.pre_transform(df)
-                return df
-
-            # TODO: this is naive, and might be too big for most machines, we need to check
-            # possibly we need to chunk them, but I am not entirely sure how atm
-            df = pd.concat(
-                Parallel(n_jobs=self.n_workers)(
-                    delayed(_preprocess_single)(f) for f in self.datafiles
-                )
-            )
-
-            df.to_csv(self.cache_path / "data.csv", sep=",", na_rep=self.na_values[0])
-        return df
-
-    def _filter_datafiles(self, path: Path, data_list: list[Path]):
-        """Collect matching data files below a directory.
+    def _preprocess(self, path: str | Path) -> pd.DataFrame:
+        """Read one data file and apply the configured row-wise preparation.
 
         Args:
-            path (Path): Directory whose descendants should be considered.
-            data_list (list[Path]): Mutable destination for resolved matching
-                file paths.
-
-        Raises:
-            FileNotFoundError: If ``path`` does not exist.
-            NotADirectoryError: If ``path`` is not a directory.
-        """
-        for obj in path.iterdir():
-            if obj.is_dir():
-                self._filter_datafiles(obj, data_list)
-            elif obj.suffix == self.suffix:
-                data_list.append(obj.resolve())
-            else:
-                continue
-
-    def _get_num_datapoints(self) -> int:
-        """Count all rows available through the dataset.
+            path (str | Path): File to read.
 
         Returns:
-            int: Total number of samples.
+            pd.DataFrame: The rows of ``path`` that ``pre_filter`` keeps, each
+                as ``pre_transform`` returns it.
 
         Raises:
-            OSError: If an input file cannot be read while counting rows.
+            OSError: If ``path`` cannot be read.
+            pd.errors.ParserError: If ``path`` does not parse.
         """
-        if self.cache_on_disk:
-            return len(self.data_cache)
-        else:
-            n = 0
-            for data in self.datafiles:
-                n += len(self.read_data(data))
-            return n
+        data = self.data_handler.read_data(path)
 
-    def read_data(self, input: Path) -> pd.DataFrame:
-        """Read one source file using this dataset's parsing configuration.
+        if self.pre_filter is None and self.pre_transform is None:
+            return data
+
+        # A row is handed over as a dict rather than a Series: a Series holds
+        # one dtype, so an integer label column would come back as float. Going
+        # through records keeps every column's own dtype, and is also ~130x
+        # faster than DataFrame.apply(axis=1), which builds a Series per row.
+        rows = data.to_dict("records")
+
+        if self.pre_filter is not None:
+            rows = [row for row in rows if self.pre_filter(row)]
+
+        if self.pre_transform is not None:
+            rows = [self.pre_transform(row) for row in rows]
+
+        # from_records([]) yields a frame with no columns at all, which would
+        # not survive the concatenation in to_frame().
+        if not rows:
+            return data.iloc[:0]
+
+        return pd.DataFrame.from_records(rows)
+
+    def _read_cached(self, path: Path) -> pd.DataFrame:
+        """Prepare one data file, keeping the result if the cache is enabled.
 
         Args:
-            input (Path): Data file that contributes rows to the dataset.
+            path (Path): File to read.
 
         Returns:
-            pd.DataFrame: Parsed rows and columns from ``input``.
+            pd.DataFrame: The same rows ``_preprocess`` returns for ``path``.
 
         Raises:
-            FileNotFoundError: If ``input`` does not exist.
-            ValueError: If its contents cannot be parsed with the configured
-                options.
+            OSError: If ``path`` cannot be read.
         """
-        data = pd.read_csv(
-            input,
-            sep=self.sep,
-            engine=self.engine,
-            comment=self.comment,
-            na_values=self.na_values,
-            **self.read_kwargs,
-        )
-        return data
+        # Only the retrieval path caches. Whole-directory passes read every file
+        # by definition, so they would evict everything they filled, and they
+        # run in worker processes the cache cannot follow. A frequency policy
+        # holds on to the files a sampler keeps returning to, rather than the
+        # ones it happened to touch last.
+        if self._file_cache is None:
+            res = self._preprocess(path)
+            return res
+
+        frame = self._file_cache.get(path)
+        if frame is None:
+            frame = self._preprocess(path)
+            self._file_cache[path] = frame
+
+        return frame
 
     def to_frame(self) -> pd.DataFrame:
-        """Return all untransformed samples in dataset order.
+        """Return all samples in dataset order, without the retrieval transform.
 
         Returns:
-            pd.DataFrame: One row per sample, including target columns.
+            pd.DataFrame: One row per sample, including target columns, after
+                ``pre_filter`` and ``pre_transform`` but before ``transform``.
 
         Raises:
             OSError: If source data cannot be read.
         """
-        if self.cache_on_disk:
-            return self.data_cache.copy()
-        return pd.concat((self.read_data(f) for f in self.datafiles), ignore_index=True)
+        # Parallelised per file, not per row: a row-wise hook is far too small
+        # to carry the cost of being dispatched to a worker, while a whole file
+        # amortises it over every row it holds and parallelises its read too.
+        frames = Parallel(n_jobs=self.n_workers)(
+            delayed(self._preprocess)(f) for f in self.data_handler.datafiles
+        )
+
+        # A directory without data files has length 0, and pd.concat refuses an
+        # empty sequence - so answering it here is what keeps to_frame() and
+        # __len__ agreeing on such a directory.
+        if not frames:
+            return pd.DataFrame()
+
+        return pd.concat(frames, ignore_index=True)
 
     def _normalize_index(
         self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple
@@ -288,24 +633,28 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
         Returns:
             int | list: One position or a list of positions.
         """
-        if isinstance(idx, torch.Tensor) or isinstance(idx, np.ndarray):
+
+        if isinstance(idx, (torch.Tensor, np.ndarray)):
             return idx.tolist()
         elif isinstance(idx, slice):
-            return list(
-                range(
-                    idx.start if idx.start is not None else 0,
-                    idx.stop if idx.stop is not None else self.num_datapoints,
-                    idx.step if idx.step is not None else 1,
-                )
-            )
+            return list(range(*idx.indices(self.num_datapoints)))
         elif isinstance(idx, tuple):
             return [i for i in idx]
         else:
             return idx
 
-    def _map_index(
-        self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple
-    ) -> list[tuple[int, pd.DataFrame]] | tuple[int, pd.DataFrame]:
+    def _empty_selection(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return empty feature and target tensors for an empty multi-index."""
+        if len(self) == 0:
+            return torch.empty((0,)), torch.empty((0,))
+
+        sample_x, sample_y = self[0]
+        return (
+            sample_x.new_empty((0, *sample_x.shape)),
+            sample_y.new_empty((0, *sample_y.shape)),
+        )
+
+    def _map_index(self, index: int) -> tuple[int, pd.DataFrame]:
         """Locate requested global positions in their source tables.
 
         Args:
@@ -320,119 +669,35 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
                 requested position, its row position and source table.
         """
 
-        def _map_single_index(idx: int) -> tuple[int, pd.DataFrame]:
-            """Locate one dataset position in its source table.
-
-            Args:
-                idx (int): Global dataset position to locate.
-
-            Returns:
-                tuple[int, pd.DataFrame]: Row position within the source table
-                    and the table containing it.
-
-            Raises:
-                IndexError: If ``idx`` is negative or outside the dataset.
-            """
-            if idx < 0:
-                raise IndexError("Indices cannot be negative")
-
-            if self.cache_on_disk:
-                if idx >= len(self.data_cache):
-                    raise IndexError("Index out of bounds")
-                return idx, self.data_cache
-            else:
-                i = idx
-                containing_dataframe = None
-                for _df in self.datafiles:
-                    if _df not in self.data_cache:
-                        self.data_cache[_df] = self.read_data(_df)
-
-                    candidate_dataframe = self.data_cache[_df]
-                    if i < len(candidate_dataframe):
-                        containing_dataframe = candidate_dataframe
-                        break
-                    else:
-                        i -= len(candidate_dataframe)
-
-                if containing_dataframe is None:
-                    raise IndexError(
-                        f"Index {idx} could not be found in dataset of length {self.num_datapoints}"
-                    )
-
-                return i, containing_dataframe
-
-        index = self._normalize_index(idx)
-
-        if isinstance(index, Sequence):
-            if len(index) == 0:
-                raise ValueError("Error, empty index list cannot be passed.")
-
-            return [_map_single_index(i) for i in index]
-
-        else:
-            return _map_single_index(index)
-
-    def _split_labels(
-        self, data: pd.Series | pd.DataFrame
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Separate feature values and targets from retrieved sample data.
-
-        Args:
-            data (pd.Series | pd.DataFrame): One sample or a table of samples
-                after any retrieval-time transformation.
-
-        Raises:
-            ValueError: If no target columns were configured or a configured
-                target column is absent from ``data``.
-
-        Returns:
-            tuple[torch.Tensor, torch.Tensor]: Float feature tensor and target
-                tensor. Target shape follows whether ``label_columns`` was a
-                string or a sequence.
-        """
-        # Refusing here is the whole point: skorch's own convention for a
-        # missing target is `y = torch.Tensor([0])`, which would let a model
-        # train to convergence against a constant fabricated label without ever
-        # failing. Better to be unusable than quietly wrong.
-        if self.label_columns is None:
-            raise ValueError(
-                "label_columns was not set, so features and labels cannot be "
-                "separated. Pass label_columns to the constructor."
+        if index < 0 or index >= self.num_datapoints:
+            raise IndexError(
+                f"Index {index} could not be found in dataset of length "
+                f"{self.num_datapoints}"
             )
 
-        # Normalised to a list for the membership tests below, but the original
-        # form is kept around: str vs. sequence decides the label's shape.
-        single_label = isinstance(self.label_columns, str)
-        labels = [self.label_columns] if single_label else list(self.label_columns)
+        # side="right" is load-bearing: it steps past zero-length files,
+        # whose repeated offset would otherwise be the one selected.
+        file_idx = int(np.searchsorted(self._offsets, index, side="right")) - 1
+        local_idx = index - int(self._offsets[file_idx])
 
-        # Normal retrieval keeps samples as DataFrames so pandas preserves
-        # per-column dtypes. A transform may still deliberately return a Series.
-        columns = data.index if isinstance(data, pd.Series) else data.columns
+        frame = self._read_cached(self.data_handler.datafiles[file_idx])
 
-        missing = [column for column in labels if column not in columns]
+        return local_idx, frame
+
+    def _split_row(self, row: pd.Series) -> tuple[torch.Tensor, torch.Tensor]:
+        """Split one row into features and targets by configured column names."""
+        missing = [label for label in self.label_columns if label not in row.index]
         if missing:
             raise ValueError(
-                f"label column(s) {missing} not found in the sample; have "
-                f"{list(columns)}. Note that `transform` is applied before the "
-                "split, so it has to keep the label columns."
+                f"label columns {missing!r} not found; have {list(row.index)!r}"
             )
 
-        # Built by walking `columns` rather than subtracting a set, so the
-        # frame's own column order is preserved - a model's input layer is
-        # positional, so a reordering here would silently scramble features.
-        features = [column for column in columns if column not in labels]
-
-        # .copy() throughout: pandas hands back read-only views when no cast is
-        # needed, and those would alias the dataset's cached frame.
-        x = torch.from_numpy(data[features].to_numpy().copy())
-        # A bare string selects a single column, which keeps the label one axis
-        # flatter than the list form all the way through - scalar per sample
-        # rather than a length-1 vector. Do not impose a dtype here: losses
-        # such as CrossEntropyLoss and BCEWithLogitsLoss require different
-        # target dtypes, so callers can choose one through ``transform``.
-        selector = self.label_columns if single_label else labels
-        y = torch.from_numpy(np.asarray(data[selector]).copy())
-        return x, y
+        X = torch.tensor(row.drop(labels=self.label_columns).to_numpy())
+        if self._label_is_scalar:
+            y = torch.tensor(row[self.label_columns[0]])
+        else:
+            y = torch.tensor(row[self.label_columns].to_numpy())
+        return X, y
 
     def __getitem__(
         self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple
@@ -445,36 +710,36 @@ class PandasDataset(DatasetProtocol, torch.utils.data.Dataset):
 
         Raises:
             IndexError: If a requested position is outside the dataset.
-            ValueError: If target columns are not configured or are removed by
-                the sample transformation.
+            ValueError: If target columns are not configured or are unavailable
+                when no ``transform`` is configured.
 
         Returns:
             tuple[torch.Tensor, torch.Tensor]: Prepared features and targets.
+                Empty multi-index selections return empty tensors with the
+                same trailing shape and dtype as one sample when the dataset is
+                non-empty.
         """
-        indices_frames = self._map_index(idx)
+        index = self._normalize_index(idx)
 
-        def _transform_one(i: int, df: pd.DataFrame):
-            return self.transform(df.iloc[[i], :])
+        if isinstance(index, Sequence):
+            if len(index) == 0:
+                return self._empty_selection()
 
-        if isinstance(indices_frames, Sequence) and isinstance(
-            indices_frames[0], Sequence
-        ):
-            transformed = [_transform_one(i, df) for i, df in indices_frames]
-            if all(isinstance(sample, pd.DataFrame) for sample in transformed):
-                data = pd.concat(transformed, ignore_index=True)
-            else:
-                data = pd.DataFrame(transformed)
-            return self._split_labels(data)
+            # iterate with __getitem__ and return an ND tensor x, y
+            data = [self.__getitem__(i) for i in index]
+            X, y = (
+                torch.stack([d[0] for d in data]),
+                torch.stack([d[1] for d in data]),
+            )
+            return X, y
         else:
-            i, df = indices_frames
-            data = _transform_one(i, df)
-            x, y = self._split_labels(data)
-            if x.ndim > 1 and x.shape[0] == 1:
-                x = x.squeeze(0)
-            if y.ndim > 0 and y.shape[0] == 1:
-                y = y.squeeze(0)
+            local_idx, df = self._map_index(index)
+            if self.transform is not None:
+                X, y = self.transform(df.iloc[local_idx])
+            else:
+                X, y = self._split_row(df.iloc[local_idx])
 
-            return x, y
+            return X, y
 
     def __len__(self):
         """Return the total number of samples in the dataset.
