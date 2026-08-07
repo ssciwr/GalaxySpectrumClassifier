@@ -126,13 +126,9 @@ def resolve_type_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     return resolved
 
 
+# TODO: this must be brought into line with the dataset. Currently doesn't work well and doubles functionality
 def to_xy(
     dataset: DatasetProtocol | torch.utils.data.Subset,
-    task: str = "binary-classification",
-    label_column: str = "source",
-    feature_columns: list[str] | None = None,
-    class_map: dict[Any, int] | None = None,
-    dtype=np.float32,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Convert a dataset or subset into feature and target arrays.
 
@@ -142,68 +138,14 @@ def to_xy(
     Args:
         dataset (DatasetProtocol | torch.utils.data.Subset): Dataset providing
             a tabular representation, or a subset of one.
-        task (str, optional): Learning-task kind. Classification targets are
-            returned as integer indices; regression targets retain their data
-            type. Defaults to "binary-classification".
-        label_column (str, optional): Column containing the target value.
-            Defaults to "source".
-        feature_columns (list[str] | None, optional): Ordered feature-column
-            names. Defaults to all columns except ``label_column``.
-        class_map (dict[Any, int] | None, optional): Mapping from label value
-            to class index, applied to every label of a classification task.
-            Used to make classification targets consistent across datasets.
-            Defaults to None, which expects values already usable as indices.
-        dtype (Any, optional): Data type for the feature matrix. Defaults to
-            np.float32.
-
-    Raises:
-        ValueError: If the target column is absent or the task is unsupported.
-        KeyError: If a classification target is not present in ``class_map``.
 
     Returns:
         tuple[np.ndarray, np.ndarray]: Feature matrix and one target value per
             selected sample.
     """
-    # Subsets only carry indices into their parent, so unwrap down to the
-    # dataset itself while composing the indices into that one frame.
-    indices = None
-    base = dataset
-    while isinstance(base, torch.utils.data.Subset):
-        indices = (
-            list(base.indices)
-            if indices is None
-            else [base.indices[i] for i in indices]
-        )
-        base = base.dataset
 
-    df = base.to_frame()
+    # TODO: this is slow, the dataset needs some improvements wrt performance
 
-    if indices is not None:
-        df = df.iloc[indices]
+    X, y = dataset[:]
 
-    if label_column not in df.columns:
-        raise ValueError(
-            f"label column {label_column!r} not found; have {list(df.columns)}"
-        )
-
-    if feature_columns is None:
-        feature_columns = [c for c in df.columns if c != label_column]
-
-    # copy=True because pandas hands back a read-only view into the frame's own
-    # block whenever no conversion is needed. torch.as_tensor would then share
-    # that memory, so an in-place op on a batch would write straight into the
-    # frame a dataset is caching - which is the undefined behaviour torch warns
-    # about when it collates a non-writable array.
-    X = df[feature_columns].to_numpy(dtype=dtype, copy=True)
-
-    if task in ["binary-classification", "multiclass-classification"]:
-        if class_map is not None:
-            y = np.array([class_map[x] for x in df[label_column].to_numpy()])
-        else:
-            # astype already copies, so this y is writable either way.
-            y = df[label_column].to_numpy().astype(np.int64)
-        return X, y
-    elif task == "regression":
-        return X, df[label_column].to_numpy(copy=True)
-    else:
-        raise ValueError("unknown task")
+    return X.numpy(), y.numpy()
