@@ -39,6 +39,11 @@ class _ArrayDataset:
     def to_frame(self):
         return self._frame
 
+    def __getitem__(self, idx):
+        y = torch.from_numpy(self._frame.iloc[idx, :]["source"].to_numpy())
+        X = torch.from_numpy(self._frame.iloc[idx, :].drop("source", axis=1).to_numpy())
+        return X, y
+
 
 @pytest.fixture
 def random_forest_model():

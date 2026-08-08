@@ -4,8 +4,7 @@ import pytest
 import torch
 from sklearn.ensemble import RandomForestClassifier
 
-from GalaxySpectrumClassifier import TabularDataset
-from GalaxySpectrumClassifier.utils import load_type, resolve_type_kwargs, to_xy
+from GalaxySpectrumClassifier.utils import load_type, resolve_type_kwargs
 
 
 def test_load_type_module_level_name():
@@ -80,26 +79,3 @@ def test_resolve_type_kwargs_ignores_dicts_with_extra_keys():
 
 def test_resolve_type_kwargs_empty():
     assert resolve_type_kwargs({}) == {}
-
-
-def test_to_xy_class_map_missing_label_raises(tmp_path):
-    datapath = tmp_path / "data"
-    datapath.mkdir()
-    pd.DataFrame({"a": [1.0, 2.0], "source": ["agn", "unknown"]}).to_csv(
-        datapath / "0.dat", index=False
-    )
-    dataset = TabularDataset(
-        datapath, read_kwargs={"sep": ","}, suffix=".dat", label_columns=[]
-    )
-
-    with pytest.raises(KeyError):
-        to_xy(dataset, class_map={"agn": 0})
-
-
-def test_to_xy_unknown_task_raises(create_data):
-    dataset = TabularDataset(
-        create_data, read_kwargs={"sep": ","}, suffix=".dat", label_columns=[]
-    )
-
-    with pytest.raises(ValueError, match="unknown task"):
-        to_xy(dataset, task="clustering", label_column="d")
