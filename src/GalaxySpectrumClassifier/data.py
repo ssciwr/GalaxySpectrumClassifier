@@ -1,15 +1,17 @@
 import torch.utils.data
-from typing import Callable, Sequence, Any
+from typing import Any
+from collections.abc import Callable
 from pathlib import Path
-import pandas as pd
 import numpy as np
 import warnings
-import pyarrow.parquet as pq
 from cachetools import LFUCache
 from joblib import Parallel, delayed
+import pyarrow.parquet as pq
+import pyarrow as pa
+import pyarrow.csv as pcsv
 
-from .base import DatasetProtocol
 from .utils import load_type
+from numpy.lib.recfunctions import structured_to_unstructured as s2u
 
 
 class DataHandler:
@@ -77,25 +79,25 @@ class DataHandler:
         if not len(self.datafiles):
             raise ValueError(f"Error, no datafiles with suffix {self.extension} found")
 
-    def read_data(self, path: str | Path) -> pd.DataFrame:
+    def read_data(self, path: str | Path) -> pa.Table:
         """Read one data file into a table.
 
         Args:
             path (str | Path): File to read.
 
         Returns:
-            pd.DataFrame: The rows held by ``path``.
+            pa.Table: The rows held by ``path``.
 
         Raises:
             NotImplementedError: If the format does not implement reading.
         """
         raise NotImplementedError
 
-    def write_data(self, data: pd.DataFrame, path: str | Path) -> None:
+    def write_data(self, data: pa.Table, path: str | Path) -> None:
         """Write a table to one data file.
 
         Args:
-            data (pd.DataFrame): Rows to store.
+            data (pa.Table): Rows to store.
             path (str | Path): Destination file.
 
         Raises:
@@ -126,24 +128,23 @@ class CSVDataHandler(DataHandler):
         {"skiprows", "skipfooter", "nrows", "skip_blank_lines", "chunksize", "iterator"}
     )
 
-    def read_data(self, path: str | Path) -> pd.DataFrame:
+    def read_data(self, path: str | Path) -> pa.Table:
         """Read one separated-value file into a table.
 
         Args:
             path (str | Path): File to read.
 
         Returns:
-            pd.DataFrame: The rows held by ``path``.
+            pa.Table: The rows held by ``path``.
 
         Raises:
             OSError: If ``path`` cannot be read.
             pd.errors.ParserError: If ``path`` does not parse under the
                 configured read options.
         """
-        df = pd.read_csv(path, **self.read_kwargs)
-        return df
+        return pcsv.read_csv(path, **self.read_kwargs)
 
-    def write_data(self, data: pd.DataFrame, path: str | Path) -> None:
+    def write_data(self, data: pa.Table, path: str | Path) -> None:
         """Write a table to one separated-value file.
 
         The row index is not written unless ``write_kwargs`` asks for it, so a
@@ -151,14 +152,13 @@ class CSVDataHandler(DataHandler):
         ``read_data``'s defaults.
 
         Args:
-            data (pd.DataFrame): Rows to store.
+            data (pa.Table): Rows to store.
             path (str | Path): Destination file.
 
         Raises:
             OSError: If ``path`` cannot be written.
         """
-        write_kwargs: dict[str, Any] = {"index": False} | self.write_kwargs
-        data.to_csv(path, **write_kwargs)
+        pcsv.write_csv(data, path, **self.write_kwargs)
 
     def count_rows(self) -> list[int]:
         """Count the data rows of each file with the configured CSV parser.
@@ -176,11 +176,9 @@ class CSVDataHandler(DataHandler):
 
         row_counts = []
         for datafile in self.datafiles:
-            if self.read_kwargs.get("engine") == "pyarrow":
-                n = len(pd.read_csv(datafile, **self.read_kwargs))
-            else:
-                chunks = pd.read_csv(datafile, chunksize=100_000, **self.read_kwargs)
-                n = sum(len(chunk) for chunk in chunks)
+            n = self.read_data(
+                datafile
+            )  # TODO: make sure this doesn't materialize everything
             row_counts.append(n)
 
         return row_counts
@@ -192,32 +190,31 @@ class ParquetDataHandler(DataHandler):
     # Predicate pushdown drops rows the footer's num_rows still counts.
     _FORBIDDEN_READ_KWARGS: frozenset[str] = frozenset({"filters"})
 
-    def read_data(self, path: str | Path) -> pd.DataFrame:
+    def read_data(self, path: str | Path) -> pa.Table:
         """Read one Parquet file into a table.
 
         Args:
             path (str | Path): File to read.
 
         Returns:
-            pd.DataFrame: The rows held by ``path``.
+            pa.Table: The rows held by ``path``.
 
         Raises:
             OSError: If ``path`` cannot be read.
         """
-        df = pd.read_parquet(path, **self.read_kwargs)
-        return df
+        return pq.read_table(path, **self.read_kwargs)
 
-    def write_data(self, data: pd.DataFrame, path: str | Path) -> None:
+    def write_data(self, data: pa.Table, path: str | Path) -> None:
         """Write a table to one Parquet file.
 
         Args:
-            data (pd.DataFrame): Rows to store.
+            data (pa.Table): Rows to store.
             path (str | Path): Destination file.
 
         Raises:
             OSError: If ``path`` cannot be written.
         """
-        data.to_parquet(path, **self.write_kwargs)
+        pq.write_table(path, data, **self.write_kwargs)
 
     def count_rows(self) -> list[int]:
         """Count the rows of each file from its stored metadata.
@@ -269,7 +266,7 @@ def register_dataformat(key: str, handler: type[DataHandler]) -> None:
     DATAFORMATS[key] = handler
 
 
-class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
+class TabularDataset(torch.utils.data.Dataset):
     """Present the data files of one directory as one indexed dataset.
 
     Every row of those files is a sample, read from disk on access, and a
@@ -300,9 +297,10 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         pre_transform: Callable | str | None = None,
         pre_filter: Callable | str | None = None,
         sort_key: Callable | str | None = None,
-        label_columns: str | Sequence[str] | None = None,
+        label_columns: str | list[str] | None = None,
         n_workers: int = 1,
         max_cached_files: int | None = 8,
+        storage_dtype: str = "pa.float64",
     ):
         """Create a dataset from the data files of one directory.
 
@@ -354,7 +352,7 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
                 that file is ordered by. Defaults to None, which orders the
                 files lexically by path, placing ``10.csv`` before ``2.csv``.
                 ``utils.natural_key`` orders them numerically instead.
-            label_columns (str | Sequence[str], optional): Name of one
+            label_columns (str | list[str], optional): Name of one
                 target column or an ordered collection of target columns. A
                 string produces one target value per sample; a collection
                 preserves a target dimension, including for one column. Pass an
@@ -372,6 +370,7 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
                 per process, so a dataset iterated by worker processes holds
                 this many in each of them. Defaults to 8. Pass None to read
                 from disk on every retrieval.
+            storage_dtype (pyarrow.DataType): pyarrow datatype which is used to store cached tables. defaults to pyarrow.float64
 
         Raises:
             ValueError: If ``dataformat`` is not a registered format, if
@@ -423,14 +422,18 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
 
         if label_columns is None:
             raise ValueError("label_columns must be set; pass [] for no targets.")
-
-        # A bare string means "one scalar target per sample"; a sequence (even
-        # of one name) means "a target vector per sample". Keep both the shape
-        # intent and the declared order for name-based row splitting.
-        self._label_is_scalar = isinstance(label_columns, str)
-        self.label_columns = (
-            [label_columns] if self._label_is_scalar else list(label_columns)
-        )
+        else:
+            # A bare string means "one scalar target per sample"; a sequence (even
+            # of one name) means "a target vector per sample". Keep both the shape
+            # intent and the declared order for name-based row splitting.
+            self._label_is_scalar = isinstance(label_columns, str)
+            self.label_columns: list[str] = (
+                [
+                    label_columns,
+                ]
+                if self._label_is_scalar
+                else label_columns
+            )
 
         self.n_workers = n_workers
 
@@ -487,11 +490,6 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
                 """
                 self.data_handler.write_data(self._preprocess(source), target)
 
-            # Per file, like to_frame(): reading and the row-wise hooks are what
-            # is worth sending to a worker, and each call writes its own file,
-            # so nothing has to come back. Preprocessing has to happen inside
-            # the dispatched call - `delayed` defers only the call it wraps, so
-            # passing _preprocess(source) as an argument would run it here.
             Parallel(n_jobs=self.n_workers)(
                 delayed(_write_cache_file)(source, target)
                 for source, target in zip(self.data_handler.datafiles, targets)
@@ -530,52 +528,47 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         """
         return cls(**cfg)
 
-    def _preprocess(self, path: str | Path) -> pd.DataFrame:
+    def _preprocess(self, path: str | Path) -> np.rec.recarray:
         """Read one data file and apply the configured row-wise preparation.
 
         Args:
             path (str | Path): File to read.
 
         Returns:
-            pd.DataFrame: The rows of ``path`` that ``pre_filter`` keeps, each
-                as ``pre_transform`` returns it.
+            np.rec.recarray: The rows of ``path`` that ``pre_filter`` keeps, each
+                as ``pre_transform`` returns it, as a numpy structured array
 
-        Raises:
-            OSError: If ``path`` cannot be read.
-            pd.errors.ParserError: If ``path`` does not parse.
         """
-        data = self.data_handler.read_data(path)
-
+        data: pa.Table = self.data_handler.read_data(path)
         if self.pre_filter is None and self.pre_transform is None:
-            return data
+            return np.rec.fromarrays(data, names=data.column_names)
 
-        # A row is handed over as a dict rather than a Series: a Series holds
-        # one dtype, so an integer label column would come back as float. Going
-        # through records keeps every column's own dtype, and is also ~130x
-        # faster than DataFrame.apply(axis=1), which builds a Series per row.
-        rows = data.to_dict("records")
+        rows: np.rec.recarray = np.rec.fromarrays(data, names=data.column_names)
 
         if self.pre_filter is not None:
-            rows = [row for row in rows if self.pre_filter(row)]
+            mask = np.fromiter(
+                (self.pre_filter(r) for r in rows), dtype=bool, count=len(rows)
+            )
+            rows: np.rec.recarray = rows[mask]
 
         if self.pre_transform is not None:
-            rows = [self.pre_transform(row) for row in rows]
+            try:
+                rows = self.pre_transform(data)
+            except Exception as _:
+                rows = np.rec.array(
+                    [self.pre_transform(r) for r in rows], dtype=rows.dtype
+                )
 
-        # from_records([]) yields a frame with no columns at all, which would
-        # not survive the concatenation in to_frame().
-        if not rows:
-            return data.iloc[:0]
+        return rows
 
-        return pd.DataFrame.from_records(rows)
-
-    def _read_cached(self, path: Path) -> pd.DataFrame:
+    def _read_cached(self, path: Path) -> np.rec.recarray:
         """Prepare one data file, keeping the result if the cache is enabled.
 
         Args:
             path (Path): File to read.
 
         Returns:
-            pd.DataFrame: The same rows ``_preprocess`` returns for ``path``.
+            pa.Table: The same rows ``_preprocess`` returns for ``path``.
 
         Raises:
             OSError: If ``path`` cannot be read.
@@ -595,33 +588,6 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
             self._file_cache[path] = frame
 
         return frame
-
-    def to_frame(self) -> pd.DataFrame:
-        """Return all samples in dataset order, without the retrieval transform.
-
-        Returns:
-            pd.DataFrame: One row per sample, including target columns, after
-                ``pre_filter`` and ``pre_transform`` but before ``transform``.
-
-        Raises:
-            OSError: If source data cannot be read.
-        """
-        # Parallelised per file, not per row: a row-wise hook is far too small
-        # to carry the cost of being dispatched to a worker, while a whole file
-        # amortises it over every row it holds and parallelises its read too.
-        frames = Parallel(n_jobs=self.n_workers)(
-            delayed(self._preprocess)(f) for f in self.data_handler.datafiles
-        )
-
-        # TODO: apply transform function to each row here if it exists.
-
-        # A directory without data files has length 0, and pd.concat refuses an
-        # empty sequence - so answering it here is what keeps to_frame() and
-        # __len__ agreeing on such a directory.
-        if not frames:
-            return pd.DataFrame()
-
-        return pd.concat(frames, ignore_index=True)
 
     def _normalize_index(
         self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple
@@ -656,7 +622,7 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
             sample_y.new_empty((0, *sample_y.shape)),
         )
 
-    def _map_index(self, index: int) -> tuple[int, pd.DataFrame]:
+    def _map_index(self, index: int) -> tuple[int, pa.Table]:
         """Locate requested global positions in their source tables.
 
         Args:
@@ -667,7 +633,7 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
             ValueError: If no positions are supplied.
 
         Returns:
-            tuple[int, pd.DataFrame] | list[tuple[int, pd.DataFrame]]: For each
+            tuple[int, pa.Table] | list[tuple[int, pa.Table]]: For each
                 requested position, its row position and source table.
         """
 
@@ -681,36 +647,18 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
         # whose repeated offset would otherwise be the one selected.
         file_idx = int(np.searchsorted(self._offsets, index, side="right")) - 1
         local_idx = index - int(self._offsets[file_idx])
+        print(len(self.data_handler.datafiles))
+        print(file_idx)
+        array = self._read_cached(self.data_handler.datafiles[file_idx])
 
-        frame = self._read_cached(self.data_handler.datafiles[file_idx])
+        return local_idx, array
 
-        return local_idx, frame
-
-    def _split_row(self, row: pd.Series) -> tuple[torch.Tensor, torch.Tensor]:
-        """Split one row into features and targets by configured column names."""
-
-        # simplify, might be unnecessary to make label_cols into a list first
-        missing = [label for label in self.label_columns if label not in row.index]
-        if missing:
-            raise ValueError(
-                f"label columns {missing!r} not found; have {list(row.index)!r}"
-            )
-
-        X = torch.tensor(row.drop(labels=self.label_columns).to_numpy())
-        if self._label_is_scalar:
-            y = torch.tensor(row[self.label_columns[0]])
-        else:
-            y = torch.tensor(row[self.label_columns].to_numpy())
-        return X, y
-
-    def __getitem__(
-        self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         """Retrieve and prepare one or more feature-and-target samples.
 
         Args:
-            idx (int | slice | torch.Tensor | np.ndarray | list | tuple):
-                Position or positions to retrieve.
+            idx (int):
+                Position to retrieve.
 
         Raises:
             IndexError: If a requested position is outside the dataset.
@@ -723,27 +671,36 @@ class TabularDataset(DatasetProtocol, torch.utils.data.Dataset):
                 same trailing shape and dtype as one sample when the dataset is
                 non-empty.
         """
-        index = self._normalize_index(idx)
+        local_idx, array = self._map_index(idx)
+        subset = array[local_idx, local_idx + 1]
+        rows = None
+        if self.transform is not None:
+            try:
+                rows = self.transform(subset)
+            except Exception as _:
+                rows = np.rec.array(
+                    [self.transform(r) for r in subset], dtype=subset.dtype
+                )
 
-        if isinstance(index, Sequence):
-            if len(index) == 0:
-                return self._empty_selection()
+        return_data = rows if rows is not None else subset
 
-            # iterate with __getitem__ and return an ND tensor x, y
-            data = [self.__getitem__(i) for i in index]
-            X, y = (
-                torch.stack([d[0] for d in data]),
-                torch.stack([d[1] for d in data]),
+        missing = [
+            label
+            for label in self.label_columns
+            if label not in return_data.dtype.names
+        ]
+        if missing:
+            raise ValueError(
+                f"label columns {missing!r} not found; have {return_data.dtype.names}!"
             )
-            return X, y
-        else:
-            local_idx, df = self._map_index(index)
-            if self.transform is not None:
-                X, y = self.transform(df.iloc[local_idx])
-            else:
-                X, y = self._split_row(df.iloc[local_idx])
 
-            return X, y
+        feature_columns = [
+            c for c in return_data.dtype.names if c not in self.label_columns
+        ]
+
+        X = torch.from_numpy(s2u(return_data[feature_columns]))
+        y = torch.from_numpy(s2u(return_data[self.label_columns]))
+        return X, y
 
     def __len__(self):
         """Return the total number of samples in the dataset.
