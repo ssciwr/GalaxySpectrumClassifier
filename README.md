@@ -95,9 +95,8 @@ stopping, learning-rate schedulers, metrics, snapshots, and model export.
 
 `TabularDataset` treats each row in a directory of tabular files as one sample.
 It currently supports registered tabular formats such as CSV and parquet through
-pandas-backed handlers. Files are ordered consistently, rows can be indexed like
-a torch dataset, and `to_frame()` materializes the dataset when an sklearn-style
-trainer needs arrays.
+pandas-backed handlers. Files are ordered consistently and rows can be indexed like
+a torch dataset.
 
 The dataset configuration names the data path, read options, file suffix, and
 target column or columns:
