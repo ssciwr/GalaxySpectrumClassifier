@@ -654,7 +654,7 @@ class TabularDataset(torch.utils.data.Dataset):
         return local_idx, array
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        """Retrieve and prepare one or more feature-and-target samples.
+        """Retrieve and prepare one feature-and-target sample.
 
         Args:
             idx (int):
@@ -672,7 +672,7 @@ class TabularDataset(torch.utils.data.Dataset):
                 non-empty.
         """
         local_idx, array = self._map_index(idx)
-        subset = array[local_idx, local_idx + 1]
+        subset = array[local_idx]
         rows = None
         if self.transform is not None:
             try:
@@ -700,6 +700,49 @@ class TabularDataset(torch.utils.data.Dataset):
 
         X = torch.from_numpy(s2u(return_data[feature_columns]))
         y = torch.from_numpy(s2u(return_data[self.label_columns]))
+        return X, y
+
+    def __getitems__(self, idx: list[int]) -> tuple[torch.Tensor, torch.Tensor]:
+        """_summary_ TODO
+
+        Args:
+            idx (list[int]): _description_
+
+        Raises:
+            ValueError: _description_
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: _description_
+        """
+        subsets = []
+        for local_idx, array in [self._map_index(i) for i in idx]:
+            if self.transform is not None:
+                try:
+                    rows = self.transform(array[local_idx])
+                    subsets.append(rows)
+                except Exception as _:
+                    rows = np.rec.array(
+                        [self.transform(r) for r in array[local_idx]],
+                        dtype=array.dtype,
+                    )
+                    subsets.append(rows)
+
+        subset = np.concat(
+            subsets
+        )  # make np.rec.recordarray from subsets. fails intentionally if dtype doesn't match. needs to be fixed first in pre_transform
+
+        missing = [
+            label for label in self.label_columns if label not in subset.dtype.names
+        ]
+        if missing:
+            raise ValueError(
+                f"label columns {missing!r} not found; have {subset.dtype.names}!"
+            )
+
+        feature_columns = [c for c in subset.dtype.names if c not in self.label_columns]
+
+        X = torch.from_numpy(s2u(subset[feature_columns]))
+        y = torch.from_numpy(s2u(subset[self.label_columns]))
         return X, y
 
     def __len__(self):
