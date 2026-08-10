@@ -121,13 +121,6 @@ class DataHandler:
 class CSVDataHandler(DataHandler):
     """Handle character-separated data files through pandas."""
 
-    # `chunksize` and `iterator` are here for a second reason: they make
-    # pd.read_csv return a TextFileReader rather than a frame, breaking
-    # read_data's declared return type whatever the counting does.
-    _FORBIDDEN_READ_KWARGS: frozenset[str] = frozenset(
-        {"skiprows", "skipfooter", "nrows", "skip_blank_lines", "chunksize", "iterator"}
-    )
-
     def read_data(self, path: str | Path) -> pa.Table:
         """Read one separated-value file into a table.
 
@@ -179,7 +172,7 @@ class CSVDataHandler(DataHandler):
             n = self.read_data(
                 datafile
             )  # TODO: make sure this doesn't materialize everything
-            row_counts.append(n)
+            row_counts.append(len(n))
 
         return row_counts
 
@@ -300,7 +293,6 @@ class TabularDataset(torch.utils.data.Dataset):
         label_columns: str | list[str] | None = None,
         n_workers: int = 1,
         max_cached_files: int | None = 8,
-        storage_dtype: str = "pa.float64",
     ):
         """Create a dataset from the data files of one directory.
 
@@ -370,7 +362,6 @@ class TabularDataset(torch.utils.data.Dataset):
                 per process, so a dataset iterated by worker processes holds
                 this many in each of them. Defaults to 8. Pass None to read
                 from disk on every retrieval.
-            storage_dtype (pyarrow.DataType): pyarrow datatype which is used to store cached tables. defaults to pyarrow.float64
 
         Raises:
             ValueError: If ``dataformat`` is not a registered format, if
@@ -488,7 +479,11 @@ class TabularDataset(torch.utils.data.Dataset):
                     source (Path): Data file to read and prepare.
                     target (Path): Destination file.
                 """
-                self.data_handler.write_data(self._preprocess(source), target)
+                records = self._preprocess(source)
+                self.data_handler.write_data(
+                    pa.table({name: records[name] for name in records.dtype.names}),
+                    target,
+                )
 
             Parallel(n_jobs=self.n_workers)(
                 delayed(_write_cache_file)(source, target)
@@ -589,6 +584,29 @@ class TabularDataset(torch.utils.data.Dataset):
 
         return frame
 
+    def to_table(self) -> pa.Table:
+        """_summary_
+
+        Returns:
+            pa.Table: _description_
+        """
+        # load everything and prefilter -> pretransform -> transform -> to pa.table -> return
+        records = []
+        for path in self.data_handler.datafiles:
+            recs = self._preprocess(path)
+            if self.transform:
+                try:
+                    recs = self.transform(recs)
+                except Exception as _:
+                    recs = np.rec.array(
+                        [self.transform(r) for r in recs], dtype=recs.dtype
+                    )
+            records.append(recs)
+        records = np.concat(records)
+        return pa.table(
+            {pa.table({name: records[name] for name in records.dtype.names})}
+        )
+
     def _normalize_index(
         self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple
     ):
@@ -671,7 +689,7 @@ class TabularDataset(torch.utils.data.Dataset):
                 same trailing shape and dtype as one sample when the dataset is
                 non-empty.
         """
-        local_idx, array = self._map_index(idx)
+        local_idx, array = self._map_index(self._normalize_index(idx))
         subset = array[local_idx]
         rows = None
         if self.transform is not None:

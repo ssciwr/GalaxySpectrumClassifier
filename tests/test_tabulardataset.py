@@ -798,11 +798,15 @@ def test_tabulardataset_memory_cache_rejects_sizes_below_one(cache_sources):
         ("iterator", True),
     ],
 )
-def test_csvdatahandler_rejects_row_changing_read_kwargs(create_data, option, value):
-    with pytest.raises(ValueError, match=f"read_kwargs \\['{option}'\\]"):
-        CSVDataHandler(
-            path=str(create_data), extension="dat", read_kwargs={option: value}
-        )
+def test_csvdatahandler_forbids_nothing(create_data, option, value):
+    # count_rows() re-derives its counts from read_data() itself, so no CSV
+    # read option can desync the two; CSVDataHandler forbids nothing.
+    handler = CSVDataHandler(
+        path=str(create_data), extension="dat", read_kwargs={option: value}
+    )
+
+    assert handler.read_kwargs == {option: value}
+    assert CSVDataHandler._FORBIDDEN_READ_KWARGS == frozenset()
 
 
 def test_parquetdatahandler_rejects_row_changing_read_kwargs(tmp_path):
@@ -814,11 +818,13 @@ def test_parquetdatahandler_rejects_row_changing_read_kwargs(tmp_path):
         )
 
 
-def test_datahandler_rejects_every_forbidden_option_at_once(create_data):
-    forbidden = dict.fromkeys(CSVDataHandler._FORBIDDEN_READ_KWARGS, 1)
+def test_datahandler_rejects_every_forbidden_option_at_once(tmp_path):
+    forbidden = dict.fromkeys(ParquetDataHandler._FORBIDDEN_READ_KWARGS, 1)
 
     with pytest.raises(ValueError) as excinfo:
-        CSVDataHandler(path=str(create_data), extension="dat", read_kwargs=forbidden)
+        ParquetDataHandler(
+            path=str(tmp_path), extension="parquet", read_kwargs=forbidden
+        )
 
     # Every offending option is named, not just the first one found.
     assert str(sorted(forbidden)) in str(excinfo.value)
@@ -933,11 +939,17 @@ def test_tabulardataset_offsets_follow_the_file_lengths(uneven_sources):
     assert len(dataset) == 8
 
 
-def test_tabulardataset_rejects_row_changing_read_kwargs(cache_sources):
-    datapath, dataformat = cache_sources
-    forbidden = {"csv": {"nrows": 2}, "parquet": {"filters": [("source", "==", 1)]}}
+def test_tabulardataset_rejects_row_changing_read_kwargs(tmp_path):
+    # Parquet's filters is the only read_kwargs option TabularDataset still
+    # forbids; CSV forbids nothing, since count_rows() re-derives its counts
+    # from read_data() itself.
+    datapath = tmp_path / "source"
+    datapath.mkdir()
+    pd.DataFrame({"a": [0, 1], "source": [0, 1]}).to_parquet(datapath / "0.parquet")
 
     with pytest.raises(ValueError, match="read_kwargs"):
         TabularDataset(
-            datapath, dataformat=dataformat, read_kwargs=forbidden[dataformat]
+            datapath,
+            dataformat="parquet",
+            read_kwargs={"filters": [("source", "==", 1)]},
         )
