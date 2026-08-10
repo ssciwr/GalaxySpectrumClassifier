@@ -275,6 +275,8 @@ class TabularDataset(torch.utils.data.Dataset):
     Retrieving a sample may serve its file from an in-memory cache of at most
     ``max_cached_files`` files, so a file edited after it was first read can go
     on being served as it was. Whole-directory passes always read from disk.
+
+    All files must have the same schema and per-column dtypes. If that is not the case, they must be preprocessed first.
     """
 
     def __init__(
@@ -321,8 +323,9 @@ class TabularDataset(torch.utils.data.Dataset):
                 written again rather than reused. Defaults to False.
             transform (Callable | str | None, optional): Callable, or import
                 path to one, that prepares a retrieved sample. It receives the
-                retrieved row as a ``pd.Series`` after ``pre_filter`` and
-                ``pre_transform`` and must return ``(features, target)`` as
+                retrieved row as a structured numpy scalar (``np.record``),
+                with one field per column, after ``pre_filter`` and
+                ``pre_transform``, and must return ``(features, target)`` as
                 tensors. When provided, this callable is responsible for any
                 label selection; the dataset does not split ``label_columns``
                 after ``transform``. Defaults to None.
@@ -709,40 +712,37 @@ class TabularDataset(torch.utils.data.Dataset):
         """
         positions = self._normalize_index(idx)
         if isinstance(positions, list):
-            return self.__getitems__(positions)
+            return self._get_slice(positions)
 
         local_idx, array = self._map_index(positions)
         subset = array[local_idx]
-        rows = None
+
         if self.transform is not None:
-            try:
-                rows = self.transform(subset)
-            except Exception as _:
-                rows = np.rec.array(
-                    [self.transform(r) for r in subset], dtype=subset.dtype
-                )
+            return self.transform(subset)
 
-        return_data = rows if rows is not None else subset
-
-        missing = [
-            label
-            for label in self.label_columns
-            if label not in return_data.dtype.names
-        ]
+        names = subset.dtype.names
+        missing = [label for label in self.label_columns if label not in names]
         if missing:
-            raise ValueError(
-                f"label columns {missing!r} not found; have {return_data.dtype.names}!"
-            )
+            raise ValueError(f"label columns {missing!r} not found; have {names}!")
 
-        feature_columns = [
-            c for c in return_data.dtype.names if c not in self.label_columns
-        ]
+        # One conversion for the whole row, split by position afterwards: two
+        # separate s2u() calls on the feature and label field subsets would
+        # promote each subset's dtype independently (e.g. a lone int label
+        # would stay int64 while mixed float/int features promote to
+        # float64), and selecting fields out of dtype order produces a
+        # negative-stride view torch.from_numpy rejects.
+        position = {name: i for i, name in enumerate(names)}
+        feature_positions = [position[c] for c in names if c not in self.label_columns]
+        label_positions = [position[c] for c in self.label_columns]
 
-        X = torch.from_numpy(s2u(return_data[feature_columns]))
-        y = torch.from_numpy(s2u(return_data[self.label_columns]))
+        full = s2u(subset)
+        X = torch.from_numpy(full[..., feature_positions])
+        y = torch.from_numpy(full[..., label_positions])
+        if self._label_is_scalar:
+            y = y.squeeze(-1)
         return X, y
 
-    def __getitems__(self, idx: list[int]) -> tuple[torch.Tensor, torch.Tensor]:
+    def _get_slice(self, idx: list[int]) -> tuple[torch.Tensor, torch.Tensor]:
         """Retrieve and prepare several feature-and-target samples at once.
 
         Args:
@@ -762,37 +762,36 @@ class TabularDataset(torch.utils.data.Dataset):
         if not idx:
             return self._empty_selection()
 
-        subsets = []
-        for local_idx, array in (self._map_index(i) for i in idx):
-            subset = array[local_idx]
-            rows = None
-            if self.transform is not None:
-                try:
-                    rows = self.transform(subset)
-                except Exception as _:
-                    rows = np.rec.array(
-                        [self.transform(r) for r in subset], dtype=subset.dtype
-                    )
+        if self.transform is not None:
+            xs, ys = [], []
+            for local_idx, array in (self._map_index(i) for i in idx):
+                x, y = self.transform(array[local_idx])
+                xs.append(x)
+                ys.append(y)
+            return torch.stack(xs), torch.stack(ys)
 
-            row = rows if rows is not None else subset
-            # A single retrieved row is a 0-d record; wrapped as a 1-row
-            # array so every position concatenates into one recarray below.
-            subsets.append(np.array([row]))
-
+        # A single retrieved row is a 0-d record; wrapped as a 1-row array so
+        # every position concatenates into one recarray below.
+        subsets = [
+            np.array([array[local_idx]])
+            for local_idx, array in (self._map_index(i) for i in idx)
+        ]
         subset = np.concatenate(subsets)
 
-        missing = [
-            label for label in self.label_columns if label not in subset.dtype.names
-        ]
+        names = subset.dtype.names
+        missing = [label for label in self.label_columns if label not in names]
         if missing:
-            raise ValueError(
-                f"label columns {missing!r} not found; have {subset.dtype.names}!"
-            )
+            raise ValueError(f"label columns {missing!r} not found; have {names}!")
 
-        feature_columns = [c for c in subset.dtype.names if c not in self.label_columns]
+        position = {name: i for i, name in enumerate(names)}
+        feature_positions = [position[c] for c in names if c not in self.label_columns]
+        label_positions = [position[c] for c in self.label_columns]
 
-        X = torch.from_numpy(s2u(subset[feature_columns]))
-        y = torch.from_numpy(s2u(subset[self.label_columns]))
+        full = s2u(subset)
+        X = torch.from_numpy(full[..., feature_positions])
+        y = torch.from_numpy(full[..., label_positions])
+        if self._label_is_scalar:
+            y = y.squeeze(-1)
         return X, y
 
     def __len__(self):

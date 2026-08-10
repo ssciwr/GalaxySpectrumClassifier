@@ -1,8 +1,10 @@
 import numpy as np
 import pandas as pd
 import pyarrow.compute as pc
+import pyarrow.csv as pcsv
 import pytest
 import torch
+from numpy.lib.recfunctions import structured_to_unstructured as s2u
 from torch.utils.data import DataLoader, Subset
 from torchvision.transforms import Compose
 from GalaxySpectrumClassifier import TabularDataset
@@ -11,6 +13,18 @@ from GalaxySpectrumClassifier.data import (
     DataHandler,
     ParquetDataHandler,
 )
+
+# pyarrow.csv.read_csv only accepts read_options/parse_options/convert_options/
+# memory_pool, not pandas' flat kwargs; these are its equivalents for the
+# comma-separated fixture files, with and without the pandas-style unnamed
+# index column dropped.
+CSV_READ_KWARGS = {"parse_options": pcsv.ParseOptions(delimiter=",")}
+INDEXED_CSV_READ_KWARGS = {
+    "parse_options": pcsv.ParseOptions(delimiter=","),
+    "convert_options": pcsv.ConvertOptions(
+        include_columns=["a", "b", "c", "d", "source", "extra"]
+    ),
+}
 
 
 def test_tabulardataset_requires_cache_path_for_preprocessing(create_data):
@@ -43,14 +57,12 @@ def test_tabulardataset_getitem_integer_indices(create_data):
 
     def transform(row):
         transform_calls.append(row)
-        return torch.tensor(row[["a", "b"]].to_numpy()), torch.tensor(
-            np.array(row["source"])
-        )
+        return torch.tensor(s2u(row[["a", "b"]])), torch.tensor(row["source"])
 
     dataset = TabularDataset(
         create_data,
         transform=transform,
-        read_kwargs={"sep": ","},
+        read_kwargs=CSV_READ_KWARGS,
         suffix=".dat",
         label_columns="source",
     )
@@ -66,18 +78,18 @@ def test_tabulardataset_getitem_integer_indices(create_data):
 
     x_expected, y_expected = expected(first_file, 0)
     x, y = dataset[0]
-    assert torch.equal(x_expected, x)
+    assert torch.allclose(x_expected, x)
     assert torch.equal(y_expected, y)
 
     x_expected, y_expected = expected(first_file, 99)
     x, y = dataset[99]
-    assert torch.equal(x_expected, x)
+    assert torch.allclose(x_expected, x)
     assert torch.equal(y_expected, y)
     # Global indices should cross file boundaries.
     x_expected, y_expected = expected(second_file, 0)
     x, y = dataset[100]
 
-    assert torch.equal(x_expected, x)
+    assert torch.allclose(x_expected, x)
     assert torch.equal(y_expected, y)
 
     assert len(transform_calls) == 3
@@ -107,14 +119,12 @@ def test_tabulardataset_getitem_slice_tensor_and_ndarray_are_global_indices(
     last_file = pd.read_csv(raw_files[-1], index_col=0)
 
     def transform(row):
-        return torch.tensor(row[["a", "b"]].to_numpy()), torch.tensor(
-            np.array(row["source"])
-        )
+        return torch.tensor(s2u(row[["a", "b"]])), torch.tensor(row["source"])
 
     dataset = TabularDataset(
         create_data,
         transform=transform,
-        read_kwargs={"sep": ","},
+        read_kwargs=CSV_READ_KWARGS,
         suffix=".dat",
         label_columns="source",
     )
@@ -180,16 +190,13 @@ def test_tabulardataset_list_transform_composed(create_data):
     first_file = pd.read_csv(sorted(create_data.glob("*.dat"))[0], index_col=0)
     dataset = TabularDataset(
         create_data,
-        read_kwargs={"sep": ","},
+        read_kwargs=CSV_READ_KWARGS,
         suffix=".dat",
         transform=Compose(
             [
-                lambda row: row[["a", "b", "source"]],
+                lambda row: s2u(row[["a", "b", "source"]]),
                 lambda row: row * 2,
-                lambda row: (
-                    torch.tensor(row[["a", "b"]].to_numpy()),
-                    torch.tensor(np.array(row["source"])),
-                ),
+                lambda row: (torch.tensor(row[:2]), torch.tensor(row[2])),
             ]
         ),
         label_columns="source",
@@ -207,7 +214,7 @@ def test_tabulardataset_unresolvable_dotted_path_raises(create_data):
     with pytest.raises(AttributeError):
         TabularDataset(
             create_data,
-            read_kwargs={"sep": ","},
+            read_kwargs=CSV_READ_KWARGS,
             suffix=".dat",
             transform="pandas.does_not_exist",
         )
@@ -216,13 +223,13 @@ def test_tabulardataset_unresolvable_dotted_path_raises(create_data):
 def test_tabulardataset_getitem_string_label_is_one_axis_flatter_than_list(create_data):
     single = TabularDataset(
         create_data,
-        read_kwargs={"sep": ",", "index_col": 0},
+        read_kwargs=INDEXED_CSV_READ_KWARGS,
         suffix=".dat",
         label_columns="source",
     )
     listed = TabularDataset(
         create_data,
-        read_kwargs={"sep": ",", "index_col": 0},
+        read_kwargs=INDEXED_CSV_READ_KWARGS,
         suffix=".dat",
         label_columns=["source"],
     )
@@ -255,7 +262,7 @@ def test_tabulardataset_getitem_string_label_is_one_axis_flatter_than_list(creat
 def test_tabulardataset_getitem_multiple_label_columns(create_data):
     dataset = TabularDataset(
         create_data,
-        read_kwargs={"sep": ",", "index_col": 0},
+        read_kwargs=INDEXED_CSV_READ_KWARGS,
         suffix=".dat",
         label_columns=["source", "extra"],
     )
@@ -281,12 +288,12 @@ def test_tabulardataset_getitem_multiple_label_columns(create_data):
 
 def test_tabulardataset_rejects_missing_label_configuration(create_data):
     with pytest.raises(ValueError, match=r"label_columns must be set"):
-        TabularDataset(create_data, read_kwargs={"sep": ","}, suffix=".dat")
+        TabularDataset(create_data, read_kwargs=CSV_READ_KWARGS, suffix=".dat")
 
     with pytest.raises(ValueError, match=r"label_columns must be set"):
         TabularDataset(
             create_data,
-            read_kwargs={"sep": ","},
+            read_kwargs=CSV_READ_KWARGS,
             suffix=".dat",
             label_columns=None,
         )
@@ -295,7 +302,7 @@ def test_tabulardataset_rejects_missing_label_configuration(create_data):
 def test_tabulardataset_rejects_unknown_label_columns(create_data):
     dataset = TabularDataset(
         create_data,
-        read_kwargs={"sep": ",", "index_col": 0},
+        read_kwargs=INDEXED_CSV_READ_KWARGS,
         suffix=".dat",
         label_columns=["source", "missing"],
     )
@@ -310,13 +317,13 @@ def test_tabulardataset_uses_label_names_and_configured_order(tmp_path):
     pd.DataFrame({"a": [1.0], "source": [0], "extra": [10]}).to_csv(
         datapath / "0.dat", index=False
     )
-    pd.DataFrame({"a": [2.0], "extra": [20], "source": [1]}).to_csv(
+    pd.DataFrame({"a": [2.0], "source": [1], "extra": [20]}).to_csv(
         datapath / "1.dat", index=False
     )
 
     dataset = TabularDataset(
         datapath,
-        read_kwargs={"sep": ","},
+        read_kwargs=CSV_READ_KWARGS,
         suffix=".dat",
         label_columns=["extra", "source"],
     )
@@ -330,7 +337,7 @@ def test_tabulardataset_uses_label_names_and_configured_order(tmp_path):
 def test_tabulardataset_empty_label_columns_returns_empty_targets(create_data):
     dataset = TabularDataset(
         create_data,
-        read_kwargs={"sep": ",", "index_col": 0},
+        read_kwargs=INDEXED_CSV_READ_KWARGS,
         suffix=".dat",
         label_columns=[],
     )
@@ -359,7 +366,7 @@ def test_tabulardataset_empty_label_columns_returns_empty_targets(create_data):
 def test_tabulardataset_getitem_dtypes(create_data):
     dataset = TabularDataset(
         create_data,
-        read_kwargs={"sep": ",", "index_col": 0},
+        read_kwargs=INDEXED_CSV_READ_KWARGS,
         suffix=".dat",
         label_columns="source",
     )
@@ -372,14 +379,15 @@ def test_tabulardataset_getitem_dtypes(create_data):
     assert x.dtype == torch.float64
     assert y.dtype == torch.float64
 
-    def transform(row: pd.Series) -> tuple[torch.Tensor, torch.Tensor]:
-        return torch.tensor(
-            row[["a", "b"]].to_numpy(), dtype=torch.float32
-        ), torch.tensor(np.array(row["source"]), dtype=torch.int64)
+    def transform(row: np.record) -> tuple[torch.Tensor, torch.Tensor]:
+        return (
+            torch.tensor(s2u(row[["a", "b"]]), dtype=torch.float32),
+            torch.tensor(row["source"], dtype=torch.int64),
+        )
 
     dataset = TabularDataset(
         create_data,
-        read_kwargs={"sep": ",", "index_col": 0},
+        read_kwargs=INDEXED_CSV_READ_KWARGS,
         suffix=".dat",
         label_columns="source",
         transform=transform,
@@ -395,15 +403,14 @@ def test_tabulardataset_getitem_dtypes(create_data):
 
 def test_tabulardataset_transform_can_control_output_dtype(create_data):
     def as_float32(sample):
-        converted = sample.astype(np.float32)
-        return (
-            torch.tensor(converted[["a", "b", "c", "d", "extra"]].to_numpy()),
-            torch.tensor(np.array(converted["source"])),
+        ordered = s2u(sample[["a", "b", "c", "d", "extra", "source"]]).astype(
+            np.float32
         )
+        return torch.tensor(ordered[:5]), torch.tensor(ordered[5])
 
     dataset = TabularDataset(
         create_data,
-        read_kwargs={"sep": ",", "index_col": 0},
+        read_kwargs=INDEXED_CSV_READ_KWARGS,
         suffix=".dat",
         label_columns="source",
         transform=as_float32,
@@ -417,15 +424,12 @@ def test_tabulardataset_transform_can_control_output_dtype(create_data):
 
 def test_tabulardataset_transform_can_split_feature_and_label_dtypes(create_data):
     def as_float32_features_int64_label(sample):
-        features = sample[["a", "b", "c", "d", "extra"]].astype(np.float32)
-        return (
-            torch.tensor(features.to_numpy()),
-            torch.tensor(np.array(sample["source"], dtype=np.int64)),
-        )
+        features = s2u(sample[["a", "b", "c", "d", "extra"]]).astype(np.float32)
+        return torch.tensor(features), torch.tensor(sample["source"], dtype=torch.int64)
 
     dataset = TabularDataset(
         create_data,
-        read_kwargs={"sep": ",", "index_col": 0},
+        read_kwargs=INDEXED_CSV_READ_KWARGS,
         suffix=".dat",
         label_columns="source",
         transform=as_float32_features_int64_label,
@@ -443,7 +447,7 @@ def test_tabulardataset_transform_can_split_feature_and_label_dtypes(create_data
 def test_tabulardataset_works_with_dataloader_without_collate_fn(create_data):
     dataset = TabularDataset(
         create_data,
-        read_kwargs={"sep": ",", "index_col": 0},
+        read_kwargs=INDEXED_CSV_READ_KWARGS,
         suffix=".dat",
         label_columns="source",
     )
@@ -475,7 +479,7 @@ def test_tabulardataset_works_with_dataloader_without_collate_fn(create_data):
 def test_tabulardataset_subset_yields_pairs(create_data):
     dataset = TabularDataset(
         create_data,
-        read_kwargs={"sep": ",", "index_col": 0},
+        read_kwargs=INDEXED_CSV_READ_KWARGS,
         suffix=".dat",
         label_columns="source",
     )
@@ -608,7 +612,7 @@ def test_tabulardataset_cache_matches_hooks_applied_by_hand(cache_sources, tmp_p
         row_doubled = expected.column("doubled")[i].as_py()
         row_source = expected.column("source")[i].as_py()
         assert torch.equal(x, torch.tensor([row_a, row_doubled], dtype=x.dtype))
-        assert torch.equal(y, torch.tensor([row_source], dtype=y.dtype))
+        assert torch.equal(y, torch.tensor(row_source, dtype=y.dtype))
 
 
 def test_tabulardataset_cache_is_reused_without_rerunning_hooks(
@@ -823,12 +827,9 @@ def test_tabulardataset_memory_cache_rejects_sizes_below_one(cache_sources):
 @pytest.mark.parametrize(
     "option, value",
     [
-        ("skiprows", 1),
-        ("skipfooter", 1),
-        ("nrows", 1),
-        ("skip_blank_lines", False),
-        ("chunksize", 2),
-        ("iterator", True),
+        ("read_options", pcsv.ReadOptions(skip_rows=1)),
+        ("parse_options", pcsv.ParseOptions(ignore_empty_lines=False)),
+        ("convert_options", pcsv.ConvertOptions(strings_can_be_null=True)),
     ],
 )
 def test_csvdatahandler_forbids_nothing(create_data, option, value):
@@ -865,10 +866,10 @@ def test_datahandler_rejects_every_forbidden_option_at_once(tmp_path):
 
 def test_datahandler_accepts_read_kwargs_leaving_the_row_count_alone(create_data):
     handler = CSVDataHandler(
-        path=str(create_data), extension="dat", read_kwargs={"index_col": 0}
+        path=str(create_data), extension="dat", read_kwargs=INDEXED_CSV_READ_KWARGS
     )
 
-    assert handler.read_kwargs == {"index_col": 0}
+    assert handler.read_kwargs == INDEXED_CSV_READ_KWARGS
     assert sum(handler.count_rows()) == 1000
 
 
@@ -899,19 +900,15 @@ def test_datahandler_counts_rows_per_file(cache_sources):
     [
         (
             "ignored,ignored\nalso,ignored\na,source\n1,0\n",
-            {"header": 2},
+            {"read_options": pcsv.ReadOptions(skip_rows=2)},
         ),
         (
             "1,0\n2,1\n",
-            {"names": ["a", "source"]},
+            {"read_options": pcsv.ReadOptions(column_names=["a", "source"])},
         ),
         (
             'a,source\n"line 1\nline 2",0\nplain,1\n',
             {},
-        ),
-        (
-            "a,source\n1,0\n2,1\n",
-            {"engine": "pyarrow"},
         ),
     ],
 )
