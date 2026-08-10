@@ -107,15 +107,15 @@ trainer:
     # Set it to e.g. {AGN: 0, POPSTAR: 1} when the labels are not indices.
     class_map:
 dataset:
-  path: ../data/classification_v2
+  path: ../data/bronze/default
+  # pyarrow.csv.read_csv's read_kwargs, not pandas.read_csv's - only accepts
+  # options CSVDataHandler can translate into pyarrow's read/parse/convert
+  # options, currently just `sep`.
   read_kwargs:
-    engine: python
-    comment: "#"
-    na_values:
-      - nan
-      - NaN
     sep: ","
   suffix: .csv
+  label_columns:
+    - 'source'
   # transform/pre_transform/pre_filter accept a dotted path to a module-level
   # callable, e.g. "GalaxySpectrumClassifier.utils.identity". Setting either
   # pre_* switches the dataset into cache_on_disk mode, which needs cache_path.
