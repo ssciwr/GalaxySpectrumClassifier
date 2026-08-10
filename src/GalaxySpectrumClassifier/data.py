@@ -11,7 +11,6 @@ import pyarrow as pa
 import pyarrow.csv as pcsv
 
 from .utils import load_type
-from numpy.lib.recfunctions import structured_to_unstructured as s2u
 
 
 class DataHandler:
@@ -147,9 +146,11 @@ class CSVDataHandler(DataHandler):
         if "sep" in kwargs:
             kwargs = dict(kwargs)
             kwargs["parse_options"] = pcsv.ParseOptions(delimiter=kwargs.pop("sep"))
-        return pcsv.read_csv(path, **kwargs)
+        data = pcsv.read_csv(path, **kwargs)
+        data = data.combine_chunks()
+        return data
 
-    def write_data(self, data: pa.Table, path: str | Path) -> None:
+    def write_data(self, data: pa.RecordBatch, path: str | Path) -> None:
         """Write a table to one separated-value file.
 
         The row index is not written unless ``write_kwargs`` asks for it, so a
@@ -195,7 +196,7 @@ class ParquetDataHandler(DataHandler):
     # Predicate pushdown drops rows the footer's num_rows still counts.
     _FORBIDDEN_READ_KWARGS: frozenset[str] = frozenset({"filters"})
 
-    def read_data(self, path: str | Path) -> pa.Table:
+    def read_data(self, path: str | Path) -> pa.RecordBatch:
         """Read one Parquet file into a table.
 
         Args:
@@ -207,9 +208,11 @@ class ParquetDataHandler(DataHandler):
         Raises:
             OSError: If ``path`` cannot be read.
         """
-        return pq.read_table(path, **self.read_kwargs)
+        data = pq.read_table(path, **self.read_kwargs)
+        data = data.combine_chunks()
+        return data
 
-    def write_data(self, data: pa.Table, path: str | Path) -> None:
+    def write_data(self, data: pa.RecordBatch, path: str | Path) -> None:
         """Write a table to one Parquet file.
 
         Args:
@@ -489,7 +492,7 @@ class TabularDataset(torch.utils.data.Dataset):
                 """
                 records = self._preprocess(source)
                 self.data_handler.write_data(
-                    pa.table({name: records[name] for name in records.dtype.names}),
+                    records,
                     target,
                 )
 
@@ -544,21 +547,13 @@ class TabularDataset(torch.utils.data.Dataset):
         """
         data: pa.Table = self.data_handler.read_data(path)
 
-        if self.pre_filter is None and self.pre_transform is None:
-            return np.rec.fromarrays(data, names=data.column_names)
-
         if self.pre_filter is not None:
             data = self.pre_filter(data)
 
         if self.pre_transform is not None:
-            transformed_table = self.pre_transform(data)
-            dataarray = np.rec.fromarrays(
-                transformed_table, names=transformed_table.column_names
-            )
-        else:
-            dataarray = np.rec.fromarrays(data, names=data.column_names)
+            data = self.pre_transform(data)
 
-        return dataarray
+        return data
 
     def _read_cached(self, path: Path) -> np.rec.recarray:
         """Prepare one data file, keeping the result if the cache is enabled.
@@ -587,38 +582,6 @@ class TabularDataset(torch.utils.data.Dataset):
             self._file_cache[path] = frame
 
         return frame
-
-    def to_table(self) -> pa.Table:
-        """Return all samples in dataset order, as one table.
-
-        Rows reflect ``pre_filter``/``pre_transform`` (already baked in when a
-        cache is in use) and ``transform``, applied per file and in parallel
-        across ``n_workers``, matching how a whole-directory pass writes a
-        cache.
-
-        Returns:
-            pa.Table: One row per sample, in dataset order.
-        """
-
-        def _table_for(path: str | Path) -> pa.Table:
-            recs = self._preprocess(path)
-            if self.transform is not None:
-                try:
-                    recs = self.transform(recs)
-                except Exception as _:
-                    recs = np.rec.array(
-                        [self.transform(r) for r in recs], dtype=recs.dtype
-                    )
-            return pa.table({name: recs[name] for name in recs.dtype.names})
-
-        tables = Parallel(n_jobs=self.n_workers)(
-            delayed(_table_for)(path) for path in self.data_handler.datafiles
-        )
-
-        if not tables:
-            return pa.table({})
-
-        return pa.concat_tables(tables)
 
     def _normalize_index(
         self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple
@@ -707,32 +670,30 @@ class TabularDataset(torch.utils.data.Dataset):
         if isinstance(positions, list):
             return self._get_slice(positions)
 
-        local_idx, array = self._map_index(positions)
-        subset = array[local_idx]
+        local_idx, table = self._map_index(positions)
+
+        rows = table.take(
+            # need this to get back table
+            [
+                local_idx,
+            ]
+        )
 
         if self.transform is not None:
-            return self.transform(subset)
+            return self.transform(rows)
 
-        names = subset.dtype.names
+        names = table.column_names
         missing = [label for label in self.label_columns if label not in names]
         if missing:
             raise ValueError(f"label columns {missing!r} not found; have {names}!")
 
-        # One conversion for the whole row, split by position afterwards: two
-        # separate s2u() calls on the feature and label field subsets would
-        # promote each subset's dtype independently (e.g. a lone int label
-        # would stay int64 while mixed float/int features promote to
-        # float64), and selecting fields out of dtype order produces a
-        # negative-stride view torch.from_numpy rejects.
-        position = {name: i for i, name in enumerate(names)}
-        feature_positions = [position[c] for c in names if c not in self.label_columns]
-        label_positions = [position[c] for c in self.label_columns]
+        # select the labels from the column
+        y = torch.tensor(rows.select(self.label_columns).to_tensor())
 
-        full = s2u(subset)
-        X = torch.from_numpy(full[..., feature_positions])
-        y = torch.from_numpy(full[..., label_positions])
-        if self._label_is_scalar:
-            y = y.squeeze(-1)
+        # select the features from the X
+        feature_names = [name for name in names if name not in self.label_columns]
+        X = torch.tensor(rows.select(feature_names).to_tensor())
+
         return X, y
 
     def _get_slice(self, idx: list[int]) -> tuple[torch.Tensor, torch.Tensor]:
@@ -758,34 +719,36 @@ class TabularDataset(torch.utils.data.Dataset):
         if self.transform is not None:
             xs, ys = [], []
             for local_idx, array in (self._map_index(i) for i in idx):
-                x, y = self.transform(array[local_idx])
+                x, y = self.transform(
+                    array.take(
+                        [
+                            local_idx,
+                        ]
+                    )
+                )
                 xs.append(x)
                 ys.append(y)
             return torch.stack(xs), torch.stack(ys)
 
-        # A single retrieved row is a 0-d record; wrapped as a 1-row array so
-        # every position concatenates into one recarray below.
-        subsets = [
-            np.array([array[local_idx]])
-            for local_idx, array in (self._map_index(i) for i in idx)
-        ]
-        subset = np.concatenate(subsets)
+        xs, ys = [], []
+        for local_idx, array in (self._map_index(i) for i in idx):
+            table = array.take(local_idx)
+            names = table.column_names
+            missing = [label for label in self.label_columns if label not in names]
+            if missing:
+                raise ValueError(f"label columns {missing!r} not found; have {names}!")
 
-        names = subset.dtype.names
-        missing = [label for label in self.label_columns if label not in names]
-        if missing:
-            raise ValueError(f"label columns {missing!r} not found; have {names}!")
+            # select the labels from the column
+            y_ = torch.tensor(table.select(self.label_columns).to_tensor())
 
-        position = {name: i for i, name in enumerate(names)}
-        feature_positions = [position[c] for c in names if c not in self.label_columns]
-        label_positions = [position[c] for c in self.label_columns]
+            # select the features from the X
+            feature_names = [name for name in names if name not in self.label_columns]
+            x_ = torch.tensor(table.select(feature_names).to_tensor())
 
-        full = s2u(subset)
-        X = torch.from_numpy(full[..., feature_positions])
-        y = torch.from_numpy(full[..., label_positions])
-        if self._label_is_scalar:
-            y = y.squeeze(-1)
-        return X, y
+            xs.append(x_)
+            ys.append(y_)
+
+        return torch.stack(xs), torch.stack(ys)
 
     def __len__(self):
         """Return the total number of samples in the dataset.
