@@ -533,30 +533,15 @@ def cache_sources(request, tmp_path):
     return datapath, dataformat
 
 
-def keep_labelled(row):
-    """Keep the rows whose target is 1.
-
-    Args:
-        row (dict): One observation.
-
-    Returns:
-        bool: Whether the row is kept.
-    """
-    return row["source"] == 1
+def keep_labelled(table):
+    # filter pyarrow table the pyarrow way
+    expr = pc.field("source") == 1
+    return table.filter(expr)
 
 
-def double_a(row):
-    """Add a column holding twice the value of ``a``.
-
-    Args:
-        row (np.record): One observation.
-
-    Returns:
-        dict: The observation with ``doubled`` added.
-    """
-    fields = {name: row[name] for name in row.dtype.names}
-    fields["doubled"] = row["a"] * 2
-    return fields
+def double_a(table):
+    # preprocess pyarrow tables the pyarrow way
+    return table.append_column("doubled", pc.multiply(table["a"], 2))
 
 
 def test_tabulardataset_cache_writes_one_file_per_source(cache_sources, tmp_path):
@@ -655,10 +640,9 @@ def test_tabulardataset_overwrite_cache_rewrites(cache_sources, tmp_path):
     datapath, dataformat = cache_sources
     cache_path = tmp_path / "cache"
 
-    def triple_a(row):
-        fields = {name: row[name] for name in row.dtype.names}
-        fields["doubled"] = row["a"] * 3
-        return fields
+    def triple_a(table):
+        # preprocess pyarrow tables the pyarrow way
+        return table.append_column("doubled", pc.multiply(table["a"], 3))
 
     TabularDataset(
         datapath,

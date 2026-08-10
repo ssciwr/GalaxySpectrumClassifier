@@ -342,18 +342,11 @@ class TabularDataset(torch.utils.data.Dataset):
                 label selection; the dataset does not split ``label_columns``
                 after ``transform``. Defaults to None.
             pre_transform (Callable | str | None, optional): Callable, or
-                import path to one, applied to every retained row, received as
-                a ``dict`` of column name to value, and returning that
-                observation changed. Applied after ``pre_filter`` and before
-                ``transform``. Keys it adds become columns, and column data
-                types are inferred from the returned rows. Requires
-                ``cache_path``. Defaults to None.
+                import path to one. Can receive and return a pyarrow.table and must return one.
+                Defaults to None. Defaults to None.
             pre_filter (Callable | str | None, optional): Callable, or import
-                path to one, applied to every row read, received as a ``dict``
-                of column name to value, and returning whether that observation
-                is kept. Applied before ``pre_transform``, so it sees only the
-                columns present on disk, and it determines the dataset's
-                length. Requires ``cache_path``. Defaults to None.
+                path to one. Can receive and return a pyarrow.table and must return one.
+                Defaults to None.
             sort_key (Callable | str | None, optional): Callable, or import
                 path to one, receiving one file path and returning the value
                 that file is ordered by. Defaults to None, which orders the
@@ -550,34 +543,22 @@ class TabularDataset(torch.utils.data.Dataset):
 
         """
         data: pa.Table = self.data_handler.read_data(path)
+
         if self.pre_filter is None and self.pre_transform is None:
             return np.rec.fromarrays(data, names=data.column_names)
 
-        rows: np.rec.recarray = np.rec.fromarrays(data, names=data.column_names)
-
         if self.pre_filter is not None:
-            mask = np.fromiter(
-                (self.pre_filter(r) for r in rows), dtype=bool, count=len(rows)
-            )
-            rows: np.rec.recarray = rows[mask]
+            data = self.pre_filter(data)
 
         if self.pre_transform is not None:
-            try:
-                rows = self.pre_transform(data)
-            except Exception as _:
-                # dtype is inferred from what pre_transform actually returns,
-                # not pinned to the pre-transform dtype, so a transform that
-                # adds a field (e.g. a derived column) is reflected here
-                # rather than silently dropped.
-                if len(rows):
-                    results = [self.pre_transform(r) for r in rows]
-                    names = list(results[0].keys())
-                    rows = np.rec.fromrecords(
-                        [tuple(r[name] for name in names) for r in results],
-                        names=", ".join(names),
-                    )
+            transformed_table = self.pre_transform(data)
+            dataarray = np.rec.fromarrays(
+                transformed_table, names=transformed_table.column_names
+            )
+        else:
+            dataarray = np.rec.fromarrays(data, names=data.column_names)
 
-        return rows
+        return dataarray
 
     def _read_cached(self, path: Path) -> np.rec.recarray:
         """Prepare one data file, keeping the result if the cache is enabled.
