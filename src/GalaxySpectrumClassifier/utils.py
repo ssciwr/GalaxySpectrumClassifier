@@ -6,8 +6,6 @@ from typing import Any
 import numpy as np
 import torch.utils.data
 
-from .base import DatasetProtocol
-
 
 # The three task kinds the trainers know how to evaluate. This drives two
 # things: which predict_proba() shape a "needs_proba" metric receives, and
@@ -127,7 +125,7 @@ def resolve_type_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
 
 
 def to_xy(
-    dataset: DatasetProtocol | torch.utils.data.Subset,
+    dataset: torch.utils.data.Dataset | torch.utils.data.Subset,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Convert a dataset or subset into feature and target arrays.
 
@@ -135,7 +133,7 @@ def to_xy(
     rows are dropped during conversion.
 
     Args:
-        dataset (DatasetProtocol | torch.utils.data.Subset): Dataset providing
+        dataset (torch.utils.data.Dataset | torch.utils.data.Subset): Dataset providing
             a tabular representation, or a subset of one.
 
     Returns:

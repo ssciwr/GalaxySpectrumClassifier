@@ -1,6 +1,5 @@
 from typing import Any, Self, Protocol, runtime_checkable
 import torch
-import numpy as np
 
 
 @runtime_checkable
@@ -22,46 +21,6 @@ class Configurable(Protocol):
             TypeError: If required configuration values are missing or have
                 incompatible types.
             ValueError: If the configuration contains invalid values.
-        """
-        ...
-
-
-@runtime_checkable
-class DatasetProtocol(Configurable, Protocol):
-    """Define the dataset operations required by the trainers."""
-
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return features and targets for one or more sample positions.
-
-        Args:
-            idx (int :
-                Position or positions to retrieve.
-
-        Returns:
-            tuple[torch.Tensor, torch.Tensor]: Feature values and their
-                corresponding targets.
-
-        Raises:
-            IndexError: If a requested position is outside the dataset.
-            ValueError: If the index form or the stored sample data cannot be
-                represented as a feature-target pair.
-        """
-        ...
-
-    def __len__(self) -> int:
-        """Return the number of samples available in the dataset.
-
-        Returns:
-            int: Number of addressable samples.
-        """
-        ...
-
-    def to_xy(self) -> tuple[np.ndarray, np.ndarray]:
-        """Return the dataset samples in numpy arrays for features and labels
-
-        Returns:
-            np.array: the feature columns of the dataset
-            np.array: the label columns of the dataset
         """
         ...
 
@@ -167,7 +126,7 @@ class TrainerProtocol(Configurable, Protocol):
         """Evaluate the current model against a dataset.
 
         Args:
-            data (DatasetProtocol): Samples and targets to evaluate.
+            data (torch.utils.data.Dataset): Samples and targets to evaluate.
 
         Returns:
             Any: Evaluation results in the trainer's chosen format.
