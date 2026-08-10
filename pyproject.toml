@@ -50,7 +50,7 @@ docs = [
     "sphinx_mdinclude",
     "sphinx_rtd_theme",
 ]
-vscode = ["ipykernel"]
+vscode = ["ipykernel", "ipywidgets"]
 
 
 # The following section contains setuptools-specific configuration
