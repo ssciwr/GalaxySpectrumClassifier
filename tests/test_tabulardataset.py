@@ -1,10 +1,10 @@
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.csv as pcsv
 import pytest
 import torch
-from numpy.lib.recfunctions import structured_to_unstructured as s2u
 from torch.utils.data import DataLoader, Subset
 from torchvision.transforms import Compose
 from GalaxySpectrumClassifier import TabularDataset
@@ -25,6 +25,27 @@ INDEXED_CSV_READ_KWARGS = {
         include_columns=["a", "b", "c", "d", "source", "extra"]
     ),
 }
+
+
+def _read_dataset_table(dataset):
+    return pa.concat_tables(
+        [
+            dataset.data_handler.read_data(path)
+            for path in dataset.data_handler.datafiles
+        ]
+    ).combine_chunks()
+
+
+def _columns_to_numpy(table, columns, dtype=None):
+    values = np.stack(
+        [table.column(column).to_numpy(zero_copy_only=False) for column in columns],
+        axis=1,
+    )
+    return values.astype(dtype) if dtype is not None else values
+
+
+def _column_scalar(table, column):
+    return table.column(column)[0].as_py()
 
 
 def test_tabulardataset_requires_cache_path_for_preprocessing(create_data):
@@ -55,9 +76,12 @@ def test_tabulardataset_getitem_integer_indices(create_data):
 
     transform_calls = []
 
-    def transform(row):
-        transform_calls.append(row)
-        return torch.tensor(s2u(row[["a", "b"]])), torch.tensor(row["source"])
+    def transform(table):
+        transform_calls.append(table)
+        return (
+            torch.tensor(_columns_to_numpy(table, ["a", "b"]).squeeze(0)),
+            torch.tensor(_column_scalar(table, "source")),
+        )
 
     dataset = TabularDataset(
         create_data,
@@ -102,7 +126,10 @@ def test_tabulardataset_getitem_negative_index_is_out_of_range(create_data):
     dataset = TabularDataset(
         create_data,
         suffix=".dat",
-        transform=lambda row: row[["a", "b", "source"]],
+        transform=lambda table: (
+            torch.tensor(_columns_to_numpy(table, ["a", "b"]).squeeze(0)),
+            torch.tensor(_column_scalar(table, "source")),
+        ),
         label_columns="source",
     )
 
@@ -118,8 +145,11 @@ def test_tabulardataset_getitem_slice_tensor_and_ndarray_are_global_indices(
     second_file = pd.read_csv(raw_files[1], index_col=0)
     last_file = pd.read_csv(raw_files[-1], index_col=0)
 
-    def transform(row):
-        return torch.tensor(s2u(row[["a", "b"]])), torch.tensor(row["source"])
+    def transform(table):
+        return (
+            torch.tensor(_columns_to_numpy(table, ["a", "b"]).squeeze(0)),
+            torch.tensor(_column_scalar(table, "source")),
+        )
 
     dataset = TabularDataset(
         create_data,
@@ -194,7 +224,7 @@ def test_tabulardataset_list_transform_composed(create_data):
         suffix=".dat",
         transform=Compose(
             [
-                lambda row: s2u(row[["a", "b", "source"]]),
+                lambda table: _columns_to_numpy(table, ["a", "b", "source"]).squeeze(0),
                 lambda row: row * 2,
                 lambda row: (torch.tensor(row[:2]), torch.tensor(row[2])),
             ]
@@ -202,7 +232,8 @@ def test_tabulardataset_list_transform_composed(create_data):
         label_columns="source",
     )
 
-    # The transform runs on the whole row, so it hits the label column too.
+    # The transform receives the whole one-row table, so it hits the label
+    # column too when it extracts it.
     x, y = dataset[0]
     np.testing.assert_allclose(
         x.numpy(), first_file.loc[0, ["a", "b"]].to_numpy(dtype=np.float32) * 2
@@ -266,7 +297,7 @@ def test_tabulardataset_getitem_multiple_label_columns(create_data):
         suffix=".dat",
         label_columns=["source", "extra"],
     )
-    table = dataset.to_table().slice(0, 4)
+    table = _read_dataset_table(dataset).slice(0, 4)
 
     x, y = dataset[0:4]
     # Every label column is removed from the features, in table order.
@@ -341,7 +372,7 @@ def test_tabulardataset_empty_label_columns_returns_empty_targets(create_data):
         suffix=".dat",
         label_columns=[],
     )
-    table = dataset.to_table()
+    table = _read_dataset_table(dataset)
     columns = table.column_names
 
     x, y = dataset[0]
@@ -373,16 +404,18 @@ def test_tabulardataset_getitem_dtypes(create_data):
 
     x, y = dataset[0]
     assert x.dtype == torch.float64
-    assert y.dtype == torch.float64
+    assert y.dtype == torch.int64
 
     x, y = dataset[0:4]
     assert x.dtype == torch.float64
-    assert y.dtype == torch.float64
+    assert y.dtype == torch.int64
 
-    def transform(row: np.record) -> tuple[torch.Tensor, torch.Tensor]:
+    def transform(table: pa.Table) -> tuple[torch.Tensor, torch.Tensor]:
         return (
-            torch.tensor(s2u(row[["a", "b"]]), dtype=torch.float32),
-            torch.tensor(row["source"], dtype=torch.int64),
+            torch.tensor(
+                _columns_to_numpy(table, ["a", "b"]).squeeze(0), dtype=torch.float32
+            ),
+            torch.tensor(_column_scalar(table, "source"), dtype=torch.int64),
         )
 
     dataset = TabularDataset(
@@ -402,10 +435,10 @@ def test_tabulardataset_getitem_dtypes(create_data):
 
 
 def test_tabulardataset_transform_can_control_output_dtype(create_data):
-    def as_float32(sample):
-        ordered = s2u(sample[["a", "b", "c", "d", "extra", "source"]]).astype(
-            np.float32
-        )
+    def as_float32(table):
+        ordered = _columns_to_numpy(
+            table, ["a", "b", "c", "d", "extra", "source"], dtype=np.float32
+        ).squeeze(0)
         return torch.tensor(ordered[:5]), torch.tensor(ordered[5])
 
     dataset = TabularDataset(
@@ -423,9 +456,13 @@ def test_tabulardataset_transform_can_control_output_dtype(create_data):
 
 
 def test_tabulardataset_transform_can_split_feature_and_label_dtypes(create_data):
-    def as_float32_features_int64_label(sample):
-        features = s2u(sample[["a", "b", "c", "d", "extra"]]).astype(np.float32)
-        return torch.tensor(features), torch.tensor(sample["source"], dtype=torch.int64)
+    def as_float32_features_int64_label(table):
+        features = _columns_to_numpy(
+            table, ["a", "b", "c", "d", "extra"], dtype=np.float32
+        ).squeeze(0)
+        return torch.tensor(features), torch.tensor(
+            _column_scalar(table, "source"), dtype=torch.int64
+        )
 
     dataset = TabularDataset(
         create_data,
@@ -451,7 +488,7 @@ def test_tabulardataset_works_with_dataloader_without_collate_fn(create_data):
         suffix=".dat",
         label_columns="source",
     )
-    table = dataset.to_table().slice(0, 8)
+    table = _read_dataset_table(dataset).slice(0, 8)
     feature_columns = [c for c in table.column_names if c != "source"]
 
     # The point of the (x, y) contract: torch's default collate already
@@ -484,7 +521,7 @@ def test_tabulardataset_subset_yields_pairs(create_data):
         label_columns="source",
     )
     subset = Subset(dataset, [100, 5, 999])
-    table = dataset.to_table()
+    table = _read_dataset_table(dataset)
     feature_columns = [c for c in table.column_names if c != "source"]
 
     # Subsets index the parent per item, so the pair contract has to survive
@@ -574,7 +611,7 @@ def test_tabulardataset_cache_matches_hooks_applied_by_hand(cache_sources, tmp_p
     # The hooks have no lazy counterpart to compare against, so the comparison
     # is against the sources with the same two steps applied by hand.
     plain = TabularDataset(datapath, dataformat=dataformat, label_columns="source")
-    expected = plain.to_table()
+    expected = _read_dataset_table(plain)
     expected = expected.filter(pc.equal(expected.column("source"), 1))
     expected = expected.append_column("doubled", pc.multiply(expected.column("a"), 2))
 
@@ -589,7 +626,7 @@ def test_tabulardataset_cache_matches_hooks_applied_by_hand(cache_sources, tmp_p
 
     assert len(cached) == expected.num_rows
     # Both hooks ran exactly once: doubled is twice a, not four times.
-    assert cached.to_table().equals(expected)
+    assert _read_dataset_table(cached).equals(expected)
 
     for i in range(len(cached)):
         x, y = cached[i]
@@ -659,7 +696,7 @@ def test_tabulardataset_overwrite_cache_rewrites(cache_sources, tmp_path):
         pre_transform=triple_a,
         label_columns=[],
     )
-    stale_table = stale.to_table()
+    stale_table = _read_dataset_table(stale)
     assert pc.all(
         pc.equal(stale_table.column("doubled"), pc.multiply(stale_table.column("a"), 2))
     ).as_py()
@@ -672,7 +709,7 @@ def test_tabulardataset_overwrite_cache_rewrites(cache_sources, tmp_path):
         overwrite_cache=True,
         label_columns=[],
     )
-    rewritten_table = rewritten.to_table()
+    rewritten_table = _read_dataset_table(rewritten)
     assert pc.all(
         pc.equal(
             rewritten_table.column("doubled"),
@@ -692,7 +729,7 @@ def test_tabulardataset_cache_length_covers_dropped_rows(cache_sources, tmp_path
         label_columns="source",
     )
 
-    assert len(dataset) == dataset.to_table().num_rows
+    assert len(dataset) == _read_dataset_table(dataset).num_rows
     dataset[len(dataset) - 1]
     with pytest.raises(IndexError):
         dataset[len(dataset)]
@@ -790,7 +827,7 @@ def test_tabulardataset_memory_cache_matches_uncached(cache_sources, tmp_path):
     uncached = TabularDataset(datapath, max_cached_files=None, **shared)
 
     assert uncached._file_cache is None
-    assert cached.to_table().equals(uncached.to_table())
+    assert _read_dataset_table(cached).equals(_read_dataset_table(uncached))
 
     for i in range(len(uncached)):
         x_cached, y_cached = cached[i]

@@ -7,7 +7,6 @@ import onnx
 import pytest
 import torch
 import yaml
-from numpy.lib.recfunctions import structured_to_unstructured as s2u
 from onnx.reference import ReferenceEvaluator
 from safetensors.torch import load_file
 from sklearn.metrics import accuracy_score, log_loss, roc_auc_score
@@ -28,9 +27,23 @@ from GalaxySpectrumClassifier.utils import load_type
 
 
 def _features(sample):
-    """Select every field but ``source`` from a transform's structured scalar."""
-    feature_names = [name for name in sample.dtype.names if name != "source"]
-    return s2u(sample[feature_names]).astype(np.float32)
+    """Select every column but ``source`` from a transform's one-row table."""
+    feature_names = [name for name in sample.column_names if name != "source"]
+    return (
+        np.stack(
+            [
+                sample.column(feature).to_numpy(zero_copy_only=False)
+                for feature in feature_names
+            ],
+            axis=1,
+        )
+        .astype(np.float32)
+        .squeeze(0)
+    )
+
+
+def _target_scalar(sample):
+    return sample.column("source")[0].as_py()
 
 
 def _as_float32(sample):
@@ -41,7 +54,7 @@ def _as_float32(sample):
     """
     return (
         torch.from_numpy(_features(sample)),
-        torch.tensor(sample["source"], dtype=torch.float32),
+        torch.tensor(_target_scalar(sample), dtype=torch.float32),
     )
 
 
@@ -49,7 +62,7 @@ def _as_float32_vector_label(sample):
     """Provide MSELoss-compatible features and a length-1 vector target."""
     return (
         torch.from_numpy(_features(sample)),
-        torch.tensor([sample["source"]], dtype=torch.float32),
+        torch.tensor([_target_scalar(sample)], dtype=torch.float32),
     )
 
 
@@ -57,7 +70,7 @@ def _as_float32_features_int64_labels(sample):
     """Provide CrossEntropyLoss-compatible features and targets."""
     return (
         torch.from_numpy(_features(sample)),
-        torch.tensor(sample["source"], dtype=torch.int64),
+        torch.tensor(_target_scalar(sample), dtype=torch.int64),
     )
 
 

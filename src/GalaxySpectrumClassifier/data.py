@@ -277,8 +277,9 @@ def register_dataformat(key: str, handler: type[DataHandler]) -> None:
 class TabularDataset(torch.utils.data.Dataset):
     """Present the data files of one directory as one indexed dataset.
 
-    Every row of those files is a sample, read from disk on access, and a
-    retrieved sample passes through ``transform``. ``pre_filter`` and
+    Every row of those files is a sample, read from disk or the in-memory
+    file cache on access, and a retrieved sample passes through ``transform``.
+    ``pre_filter`` and
     ``pre_transform`` require a ``cache_path``: they run once at construction
     and the dataset reads their result from there instead of from ``path``.
 
@@ -338,12 +339,12 @@ class TabularDataset(torch.utils.data.Dataset):
                 written again rather than reused. Defaults to False.
             transform (Callable | str | None, optional): Callable, or import
                 path to one, that prepares a retrieved sample. It receives the
-                retrieved row as a structured numpy scalar (``np.record``),
-                with one field per column, after ``pre_filter`` and
-                ``pre_transform``, and must return ``(features, target)`` as
-                tensors. When provided, this callable is responsible for any
-                label selection; the dataset does not split ``label_columns``
-                after ``transform``. Defaults to None.
+                one-row ``pyarrow.Table`` returned by ``table.take([row_idx])``,
+                after ``pre_filter`` and ``pre_transform``, and must return
+                ``(features, target)`` as torch tensors. When provided, this
+                callable is responsible for any label selection; the dataset
+                does not split ``label_columns`` after ``transform``. Defaults
+                to None.
             pre_transform (Callable | str | None, optional): Callable, or
                 import path to one. Can receive and return a pyarrow.table and must return one.
                 Defaults to None. Defaults to None.
@@ -687,12 +688,17 @@ class TabularDataset(torch.utils.data.Dataset):
         if missing:
             raise ValueError(f"label columns {missing!r} not found; have {names}!")
 
-        # select the labels from the column
-        y = torch.tensor(rows.select(self.label_columns).to_tensor())
-
         # select the features from the X
         feature_names = [name for name in names if name not in self.label_columns]
-        X = torch.tensor(rows.select(feature_names).to_tensor())
+        X = torch.tensor(rows.select(feature_names).to_tensor()).squeeze(0)
+
+        if self.label_columns:
+            # select the labels from the column
+            y = torch.tensor(rows.select(self.label_columns).to_tensor()).squeeze(0)
+            if self._label_is_scalar:
+                y = y.squeeze(0)
+        else:
+            y = X.new_empty((0,))
 
         return X, y
 
@@ -732,18 +738,29 @@ class TabularDataset(torch.utils.data.Dataset):
 
         xs, ys = [], []
         for local_idx, array in (self._map_index(i) for i in idx):
-            table = array.take(local_idx)
+            table = array.take(
+                [
+                    local_idx,
+                ]
+            )
             names = table.column_names
             missing = [label for label in self.label_columns if label not in names]
             if missing:
                 raise ValueError(f"label columns {missing!r} not found; have {names}!")
 
-            # select the labels from the column
-            y_ = torch.tensor(table.select(self.label_columns).to_tensor())
-
             # select the features from the X
             feature_names = [name for name in names if name not in self.label_columns]
-            x_ = torch.tensor(table.select(feature_names).to_tensor())
+            x_ = torch.tensor(table.select(feature_names).to_tensor()).squeeze(0)
+
+            if self.label_columns:
+                # select the labels from the column
+                y_ = torch.tensor(table.select(self.label_columns).to_tensor()).squeeze(
+                    0
+                )
+                if self._label_is_scalar:
+                    y_ = y_.squeeze(0)
+            else:
+                y_ = x_.new_empty((0,))
 
             xs.append(x_)
             ys.append(y_)
