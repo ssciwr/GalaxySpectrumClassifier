@@ -207,7 +207,7 @@ class ParquetDataHandler(DataHandler):
         Raises:
             OSError: If ``path`` cannot be written.
         """
-        pq.write_table(path, data, **self.write_kwargs)
+        pq.write_table(data, path, **self.write_kwargs)
 
     def count_rows(self) -> list[int]:
         """Count the rows of each file from its stored metadata.
@@ -550,9 +550,17 @@ class TabularDataset(torch.utils.data.Dataset):
             try:
                 rows = self.pre_transform(data)
             except Exception as _:
-                rows = np.rec.array(
-                    [self.pre_transform(r) for r in rows], dtype=rows.dtype
-                )
+                # dtype is inferred from what pre_transform actually returns,
+                # not pinned to the pre-transform dtype, so a transform that
+                # adds a field (e.g. a derived column) is reflected here
+                # rather than silently dropped.
+                if len(rows):
+                    results = [self.pre_transform(r) for r in rows]
+                    names = list(results[0].keys())
+                    rows = np.rec.fromrecords(
+                        [tuple(r[name] for name in names) for r in results],
+                        names=", ".join(names),
+                    )
 
         return rows
 
@@ -585,27 +593,36 @@ class TabularDataset(torch.utils.data.Dataset):
         return frame
 
     def to_table(self) -> pa.Table:
-        """_summary_
+        """Return all samples in dataset order, as one table.
+
+        Rows reflect ``pre_filter``/``pre_transform`` (already baked in when a
+        cache is in use) and ``transform``, applied per file and in parallel
+        across ``n_workers``, matching how a whole-directory pass writes a
+        cache.
 
         Returns:
-            pa.Table: _description_
+            pa.Table: One row per sample, in dataset order.
         """
-        # load everything and prefilter -> pretransform -> transform -> to pa.table -> return
-        records = []
-        for path in self.data_handler.datafiles:
+
+        def _table_for(path: str | Path) -> pa.Table:
             recs = self._preprocess(path)
-            if self.transform:
+            if self.transform is not None:
                 try:
                     recs = self.transform(recs)
                 except Exception as _:
                     recs = np.rec.array(
                         [self.transform(r) for r in recs], dtype=recs.dtype
                     )
-            records.append(recs)
-        records = np.concat(records)
-        return pa.table(
-            {pa.table({name: records[name] for name in records.dtype.names})}
+            return pa.table({name: recs[name] for name in recs.dtype.names})
+
+        tables = Parallel(n_jobs=self.n_workers)(
+            delayed(_table_for)(path) for path in self.data_handler.datafiles
         )
+
+        if not tables:
+            return pa.table({})
+
+        return pa.concat_tables(tables)
 
     def _normalize_index(
         self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple
@@ -665,18 +682,19 @@ class TabularDataset(torch.utils.data.Dataset):
         # whose repeated offset would otherwise be the one selected.
         file_idx = int(np.searchsorted(self._offsets, index, side="right")) - 1
         local_idx = index - int(self._offsets[file_idx])
-        print(len(self.data_handler.datafiles))
-        print(file_idx)
         array = self._read_cached(self.data_handler.datafiles[file_idx])
 
         return local_idx, array
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        """Retrieve and prepare one feature-and-target sample.
+    def __getitem__(
+        self, idx: int | slice | torch.Tensor | np.ndarray | list | tuple
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Retrieve and prepare one feature-and-target sample, or several.
 
         Args:
-            idx (int):
-                Position to retrieve.
+            idx (int | slice | torch.Tensor | np.ndarray | list | tuple):
+                Position to retrieve, or a slice/collection of positions,
+                delegated to ``__getitems__``.
 
         Raises:
             IndexError: If a requested position is outside the dataset.
@@ -689,7 +707,11 @@ class TabularDataset(torch.utils.data.Dataset):
                 same trailing shape and dtype as one sample when the dataset is
                 non-empty.
         """
-        local_idx, array = self._map_index(self._normalize_index(idx))
+        positions = self._normalize_index(idx)
+        if isinstance(positions, list):
+            return self.__getitems__(positions)
+
+        local_idx, array = self._map_index(positions)
         subset = array[local_idx]
         rows = None
         if self.transform is not None:
@@ -721,33 +743,43 @@ class TabularDataset(torch.utils.data.Dataset):
         return X, y
 
     def __getitems__(self, idx: list[int]) -> tuple[torch.Tensor, torch.Tensor]:
-        """_summary_ TODO
+        """Retrieve and prepare several feature-and-target samples at once.
 
         Args:
-            idx (list[int]): _description_
+            idx (list[int]): Global positions to retrieve.
 
         Raises:
-            ValueError: _description_
+            IndexError: If a requested position is outside the dataset.
+            ValueError: If target columns are not configured or are unavailable
+                when no ``transform`` is configured.
 
         Returns:
-            tuple[torch.Tensor, torch.Tensor]: _description_
+            tuple[torch.Tensor, torch.Tensor]: Prepared features and targets,
+                stacked in ``idx`` order. Empty ``idx`` returns empty tensors
+                with the same trailing shape and dtype as one sample when the
+                dataset is non-empty.
         """
+        if not idx:
+            return self._empty_selection()
+
         subsets = []
-        for local_idx, array in [self._map_index(i) for i in idx]:
+        for local_idx, array in (self._map_index(i) for i in idx):
+            subset = array[local_idx]
+            rows = None
             if self.transform is not None:
                 try:
-                    rows = self.transform(array[local_idx])
-                    subsets.append(rows)
+                    rows = self.transform(subset)
                 except Exception as _:
                     rows = np.rec.array(
-                        [self.transform(r) for r in array[local_idx]],
-                        dtype=array.dtype,
+                        [self.transform(r) for r in subset], dtype=subset.dtype
                     )
-                    subsets.append(rows)
 
-        subset = np.concat(
-            subsets
-        )  # make np.rec.recordarray from subsets. fails intentionally if dtype doesn't match. needs to be fixed first in pre_transform
+            row = rows if rows is not None else subset
+            # A single retrieved row is a 0-d record; wrapped as a 1-row
+            # array so every position concatenates into one recarray below.
+            subsets.append(np.array([row]))
+
+        subset = np.concatenate(subsets)
 
         missing = [
             label for label in self.label_columns if label not in subset.dtype.names

@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pyarrow.compute as pc
 import pytest
 import torch
 from torch.utils.data import DataLoader, Subset
@@ -258,17 +259,23 @@ def test_tabulardataset_getitem_multiple_label_columns(create_data):
         suffix=".dat",
         label_columns=["source", "extra"],
     )
-    frame = dataset.to_frame()
+    table = dataset.to_table().slice(0, 4)
 
     x, y = dataset[0:4]
-    # Every label column is removed from the features, in frame order.
+    # Every label column is removed from the features, in table order.
     assert x.shape == (4, 4)
     assert y.shape == (4, 2)
     np.testing.assert_allclose(
-        x.numpy(), frame.iloc[0:4][["a", "b", "c", "d"]].to_numpy(dtype=np.float32)
+        x.numpy(),
+        np.stack(
+            [table.column(c).to_numpy() for c in ["a", "b", "c", "d"]], axis=1
+        ).astype(np.float32),
     )
     np.testing.assert_array_equal(
-        y.numpy(), frame.iloc[0:4][["source", "extra"]].to_numpy(dtype=np.int64)
+        y.numpy(),
+        np.stack(
+            [table.column(c).to_numpy() for c in ["source", "extra"]], axis=1
+        ).astype(np.int64),
     )
 
 
@@ -327,16 +334,26 @@ def test_tabulardataset_empty_label_columns_returns_empty_targets(create_data):
         suffix=".dat",
         label_columns=[],
     )
-    frame = dataset.to_frame()
+    table = dataset.to_table()
+    columns = table.column_names
 
     x, y = dataset[0]
-    np.testing.assert_allclose(x.numpy(), frame.iloc[0].to_numpy(dtype=np.float32))
+    np.testing.assert_allclose(
+        x.numpy(),
+        np.array([table.column(c)[0].as_py() for c in columns], dtype=np.float32),
+    )
     assert y.shape == (0,)
 
     x, y = dataset[0:4]
-    assert x.shape == (4, len(frame.columns))
+    assert x.shape == (4, len(columns))
     assert y.shape == (4, 0)
-    np.testing.assert_allclose(x.numpy(), frame.iloc[0:4].to_numpy(dtype=np.float32))
+    sliced = table.slice(0, 4)
+    np.testing.assert_allclose(
+        x.numpy(),
+        np.stack([sliced.column(c).to_numpy() for c in columns], axis=1).astype(
+            np.float32
+        ),
+    )
 
 
 def test_tabulardataset_getitem_dtypes(create_data):
@@ -430,7 +447,8 @@ def test_tabulardataset_works_with_dataloader_without_collate_fn(create_data):
         suffix=".dat",
         label_columns="source",
     )
-    frame = dataset.to_frame()
+    table = dataset.to_table().slice(0, 8)
+    feature_columns = [c for c in table.column_names if c != "source"]
 
     # The point of the (x, y) contract: torch's default collate already
     # produces the two-tuple batches skorch unpacks, so no collate_fn is needed.
@@ -443,10 +461,13 @@ def test_tabulardataset_works_with_dataloader_without_collate_fn(create_data):
     assert x.shape == (8, 5)
     assert y.shape == (8,)
     np.testing.assert_allclose(
-        x.numpy(), frame.iloc[0:8].drop(columns=["source"]).to_numpy(dtype=np.float32)
+        x.numpy(),
+        np.stack([table.column(c).to_numpy() for c in feature_columns], axis=1).astype(
+            np.float32
+        ),
     )
     np.testing.assert_array_equal(
-        y.numpy(), frame.iloc[0:8]["source"].to_numpy(dtype=np.int64)
+        y.numpy(), table.column("source").to_numpy().astype(np.int64)
     )
     assert sum(len(batch_y) for _, batch_y in loader) == len(dataset)
 
@@ -459,7 +480,8 @@ def test_tabulardataset_subset_yields_pairs(create_data):
         label_columns="source",
     )
     subset = Subset(dataset, [100, 5, 999])
-    frame = dataset.to_frame()
+    table = dataset.to_table()
+    feature_columns = [c for c in table.column_names if c != "source"]
 
     # Subsets index the parent per item, so the pair contract has to survive
     # them - this is what random_split hands to the trainer.
@@ -467,9 +489,14 @@ def test_tabulardataset_subset_yields_pairs(create_data):
         x, y = subset[position]
         np.testing.assert_allclose(
             x.numpy(),
-            frame.iloc[index].drop(labels=["source"]).to_numpy(dtype=np.float32),
+            np.array(
+                [table.column(c)[index].as_py() for c in feature_columns],
+                dtype=np.float32,
+            ),
         )
-        np.testing.assert_array_equal(y.numpy(), np.int64(frame.iloc[index]["source"]))
+        np.testing.assert_array_equal(
+            y.numpy(), np.int64(table.column("source")[index].as_py())
+        )
 
 
 @pytest.fixture(params=["csv", "parquet"])
@@ -518,12 +545,14 @@ def double_a(row):
     """Add a column holding twice the value of ``a``.
 
     Args:
-        row (dict): One observation.
+        row (np.record): One observation.
 
     Returns:
         dict: The observation with ``doubled`` added.
     """
-    return {**row, "doubled": row["a"] * 2}
+    fields = {name: row[name] for name in row.dtype.names}
+    fields["doubled"] = row["a"] * 2
+    return fields
 
 
 def test_tabulardataset_cache_writes_one_file_per_source(cache_sources, tmp_path):
@@ -554,11 +583,11 @@ def test_tabulardataset_cache_matches_hooks_applied_by_hand(cache_sources, tmp_p
     datapath, dataformat = cache_sources
 
     # The hooks have no lazy counterpart to compare against, so the comparison
-    # is against the sources with the same two steps applied by pandas.
+    # is against the sources with the same two steps applied by hand.
     plain = TabularDataset(datapath, dataformat=dataformat, label_columns="source")
-    expected = plain.to_frame()
-    expected = expected[expected["source"] == 1].reset_index(drop=True)
-    expected["doubled"] = expected["a"] * 2
+    expected = plain.to_table()
+    expected = expected.filter(pc.equal(expected.column("source"), 1))
+    expected = expected.append_column("doubled", pc.multiply(expected.column("a"), 2))
 
     cached = TabularDataset(
         datapath,
@@ -569,15 +598,17 @@ def test_tabulardataset_cache_matches_hooks_applied_by_hand(cache_sources, tmp_p
         label_columns="source",
     )
 
-    assert len(cached) == len(expected)
+    assert len(cached) == expected.num_rows
     # Both hooks ran exactly once: doubled is twice a, not four times.
-    pd.testing.assert_frame_equal(cached.to_frame(), expected)
+    assert cached.to_table().equals(expected)
 
     for i in range(len(cached)):
         x, y = cached[i]
-        row = expected.iloc[i]
-        assert torch.equal(x, torch.tensor([row["a"], row["doubled"]], dtype=x.dtype))
-        assert torch.equal(y, torch.tensor(row["source"], dtype=y.dtype))
+        row_a = expected.column("a")[i].as_py()
+        row_doubled = expected.column("doubled")[i].as_py()
+        row_source = expected.column("source")[i].as_py()
+        assert torch.equal(x, torch.tensor([row_a, row_doubled], dtype=x.dtype))
+        assert torch.equal(y, torch.tensor([row_source], dtype=y.dtype))
 
 
 def test_tabulardataset_cache_is_reused_without_rerunning_hooks(
@@ -621,7 +652,9 @@ def test_tabulardataset_overwrite_cache_rewrites(cache_sources, tmp_path):
     cache_path = tmp_path / "cache"
 
     def triple_a(row):
-        return {**row, "doubled": row["a"] * 3}
+        fields = {name: row[name] for name in row.dtype.names}
+        fields["doubled"] = row["a"] * 3
+        return fields
 
     TabularDataset(
         datapath,
@@ -638,7 +671,10 @@ def test_tabulardataset_overwrite_cache_rewrites(cache_sources, tmp_path):
         pre_transform=triple_a,
         label_columns=[],
     )
-    assert (stale.to_frame()["doubled"] == stale.to_frame()["a"] * 2).all()
+    stale_table = stale.to_table()
+    assert pc.all(
+        pc.equal(stale_table.column("doubled"), pc.multiply(stale_table.column("a"), 2))
+    ).as_py()
 
     rewritten = TabularDataset(
         datapath,
@@ -648,7 +684,13 @@ def test_tabulardataset_overwrite_cache_rewrites(cache_sources, tmp_path):
         overwrite_cache=True,
         label_columns=[],
     )
-    assert (rewritten.to_frame()["doubled"] == rewritten.to_frame()["a"] * 3).all()
+    rewritten_table = rewritten.to_table()
+    assert pc.all(
+        pc.equal(
+            rewritten_table.column("doubled"),
+            pc.multiply(rewritten_table.column("a"), 3),
+        )
+    ).as_py()
 
 
 def test_tabulardataset_cache_length_covers_dropped_rows(cache_sources, tmp_path):
@@ -662,7 +704,7 @@ def test_tabulardataset_cache_length_covers_dropped_rows(cache_sources, tmp_path
         label_columns="source",
     )
 
-    assert len(dataset) == len(dataset.to_frame())
+    assert len(dataset) == dataset.to_table().num_rows
     dataset[len(dataset) - 1]
     with pytest.raises(IndexError):
         dataset[len(dataset)]
@@ -745,15 +787,6 @@ def test_tabulardataset_memory_cache_evicts_beyond_the_limit(cache_sources):
     assert len(dataset._file_cache) == 1
 
 
-def test_tabulardataset_to_frame_does_not_populate_the_memory_cache(cache_sources):
-    datapath, dataformat = cache_sources
-
-    dataset = TabularDataset(datapath, dataformat=dataformat, label_columns="source")
-
-    dataset.to_frame()
-    assert len(dataset._file_cache) == 0
-
-
 def test_tabulardataset_memory_cache_matches_uncached(cache_sources, tmp_path):
     datapath, dataformat = cache_sources
 
@@ -769,7 +802,7 @@ def test_tabulardataset_memory_cache_matches_uncached(cache_sources, tmp_path):
     uncached = TabularDataset(datapath, max_cached_files=None, **shared)
 
     assert uncached._file_cache is None
-    pd.testing.assert_frame_equal(cached.to_frame(), uncached.to_frame())
+    assert cached.to_table().equals(uncached.to_table())
 
     for i in range(len(uncached)):
         x_cached, y_cached = cached[i]
