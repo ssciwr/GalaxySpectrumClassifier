@@ -30,14 +30,11 @@ class SimpleNN(torch.nn.Module):
 
 
 class _ArrayDataset:
-    """Minimal DatasetProtocol stand-in: to_xy() only ever needs to_frame()."""
+    """Minimal DatasetProtocol stand-in"""
 
     def __init__(self, X, y):
         self._frame = pd.DataFrame(X, columns=[f"f{i}" for i in range(X.shape[1])])
         self._frame["source"] = y
-
-    def to_frame(self):
-        return self._frame
 
     def __getitem__(self, idx):
         y = torch.from_numpy(self._frame.iloc[idx, :]["source"].to_numpy())
