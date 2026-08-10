@@ -124,6 +124,14 @@ class CSVDataHandler(DataHandler):
     def read_data(self, path: str | Path) -> pa.Table:
         """Read one separated-value file into a table.
 
+        ``pyarrow.csv.read_csv`` takes its delimiter through a
+        ``ParseOptions`` object rather than a flat keyword, unlike
+        ``pyarrow.parquet.read_table``'s plain keyword arguments. A ``sep``
+        entry in ``read_kwargs`` is translated into that object here so
+        ``read_kwargs`` itself can stay a plain, YAML-safe dict like every
+        other kwargs mapping in this codebase, instead of holding a live
+        ``ParseOptions`` instance.
+
         Args:
             path (str | Path): File to read.
 
@@ -135,7 +143,11 @@ class CSVDataHandler(DataHandler):
             pd.errors.ParserError: If ``path`` does not parse under the
                 configured read options.
         """
-        return pcsv.read_csv(path, **self.read_kwargs)
+        kwargs = self.read_kwargs
+        if "sep" in kwargs:
+            kwargs = dict(kwargs)
+            kwargs["parse_options"] = pcsv.ParseOptions(delimiter=kwargs.pop("sep"))
+        return pcsv.read_csv(path, **kwargs)
 
     def write_data(self, data: pa.Table, path: str | Path) -> None:
         """Write a table to one separated-value file.

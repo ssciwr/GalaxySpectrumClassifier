@@ -7,6 +7,7 @@ import onnx
 import pytest
 import torch
 import yaml
+from numpy.lib.recfunctions import structured_to_unstructured as s2u
 from onnx.reference import ReferenceEvaluator
 from safetensors.torch import load_file
 from sklearn.metrics import accuracy_score, log_loss, roc_auc_score
@@ -26,34 +27,37 @@ from GalaxySpectrumClassifier.epoch_trainer import EpochTrainer
 from GalaxySpectrumClassifier.utils import load_type
 
 
+def _features(sample):
+    """Select every field but ``source`` from a transform's structured scalar."""
+    feature_names = [name for name in sample.dtype.names if name != "source"]
+    return s2u(sample[feature_names]).astype(np.float32)
+
+
 def _as_float32(sample):
     """Provide BCEWithLogitsLoss-compatible features and a scalar target.
 
     NeuralNetBinaryClassifier squeezes its output to one value per sample, so
     the target has to match that shape rather than carry a trailing axis.
     """
-    converted = sample.astype(np.float32)
     return (
-        torch.tensor(converted.drop(labels=["source"]).to_numpy()),
-        torch.tensor(np.array(converted["source"])),
+        torch.from_numpy(_features(sample)),
+        torch.tensor(sample["source"], dtype=torch.float32),
     )
 
 
 def _as_float32_vector_label(sample):
     """Provide MSELoss-compatible features and a length-1 vector target."""
-    converted = sample.astype(np.float32)
     return (
-        torch.tensor(converted.drop(labels=["source"]).to_numpy()),
-        torch.tensor(converted[["source"]].to_numpy()),
+        torch.from_numpy(_features(sample)),
+        torch.tensor([sample["source"]], dtype=torch.float32),
     )
 
 
 def _as_float32_features_int64_labels(sample):
     """Provide CrossEntropyLoss-compatible features and targets."""
-    features = sample.drop(labels=["source"]).astype(np.float32)
     return (
-        torch.tensor(features.to_numpy()),
-        torch.tensor(np.array(sample["source"], dtype=np.int64)),
+        torch.from_numpy(_features(sample)),
+        torch.tensor(sample["source"], dtype=torch.int64),
     )
 
 

@@ -126,7 +126,6 @@ def resolve_type_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     return resolved
 
 
-# TODO: this must be brought into line with the dataset. Currently doesn't work well and doubles functionality
 def to_xy(
     dataset: DatasetProtocol | torch.utils.data.Subset,
 ) -> tuple[np.ndarray, np.ndarray]:
