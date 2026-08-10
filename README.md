@@ -95,7 +95,7 @@ stopping, learning-rate schedulers, metrics, snapshots, and model export.
 
 `TabularDataset` treats each row in a directory of tabular files as one sample.
 It currently supports registered tabular formats such as CSV and parquet through
-pandas-backed handlers. Files are ordered consistently and rows can be indexed like
+PyArrow-backed handlers. Files are ordered consistently and rows can be indexed like
 a torch dataset.
 
 The dataset configuration names the data path, read options, file suffix, and
@@ -108,7 +108,7 @@ dataset = TabularDataset(
     path="data/classification_v2",
     dataformat="csv",
     suffix=".csv",
-    read_kwargs={"sep": ",", "comment": "#"},
+    read_kwargs={"sep": ","},
     label_columns="source",
 )
 
