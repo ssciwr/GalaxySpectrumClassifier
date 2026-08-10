@@ -1,0 +1,56 @@
+# Example: 2-layer MLP (skorch-wrapped torch, trained epoch by epoch) on the
+# classification_v2 Cloudy grids (AGN vs. star-forming). Paths are relative to
+# notebooks/. No calibration here yet - that's a separate notebook.
+trainer:
+  output_path: ../training/binaryclassifier_epoch_example
+  max_epochs: 20
+  batch_size: 256
+  model_type: torchvision.ops.MLP
+  model_kwargs:
+    # Linear(18, 64) -> ReLU -> Linear(64, 1): 18 input features (all dataset
+    # columns except `source`), one hidden layer of 64, one output logit.
+    in_channels: 18
+    hidden_channels: [64, 1]
+  # The MLP emits a raw logit, matching BCEWithLogitsLoss.
+  loss_type: torch.nn.BCEWithLogitsLoss
+  optimizer_type: torch.optim.Adam
+  optimizer_kwargs:
+    lr: 0.001
+  # Must be one of utils.TASKS - it decides which skorch net wraps the model
+  # and the predict_proba shape handed to needs_proba metrics.
+  task: binary-classification
+  train_dataset_type: GalaxySpectrumClassifier.TabularDataset
+  val_dataset_type: GalaxySpectrumClassifier.TabularDataset
+  test_dataset_type: GalaxySpectrumClassifier.TabularDataset
+  train_dataset_args: [../data/gold/epoch_trainer_example/train]
+  val_dataset_args: [../data/gold/epoch_trainer_example/val]
+  test_dataset_args: [../data/gold/epoch_trainer_example/test]
+  # Same read/transform settings for all three splits, so they're declared
+  # once and reused via YAML anchors.
+  train_dataset_kwargs: &dataset_kwargs
+    suffix: .csv
+    label_columns: source
+    # Resolved from the notebook's kernel namespace - see the `to_float32`
+    # cell just above where this config is loaded.
+    transform: __main__.to_float32
+  val_dataset_kwargs: *dataset_kwargs
+  test_dataset_kwargs: *dataset_kwargs
+  # Rows are grouped by split-file origin, so shuffling is not optional here.
+  train_loader_kwargs:
+    shuffle: true
+  metrics:
+    - name: accuracy
+      type: sklearn.metrics.accuracy_score
+      needs_proba: false
+    - name: balanced_accuracy
+      type: sklearn.metrics.balanced_accuracy_score
+      needs_proba: false
+    - name: roc_auc
+      type: sklearn.metrics.roc_auc_score
+      needs_proba: true
+    - name: log_loss
+      type: sklearn.metrics.log_loss
+      needs_proba: true
+      lower_is_better: true
+  seed: 42
+  progressbar: true
