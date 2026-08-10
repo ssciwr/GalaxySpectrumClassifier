@@ -108,7 +108,6 @@ dataset = TabularDataset(
     path="data/classification_v2",
     dataformat="csv",
     suffix=".csv",
-    read_kwargs={"sep": ","},
     label_columns="source",
 )
 
