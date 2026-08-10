@@ -84,15 +84,6 @@ trainer:
       kwargs:
       needs_proba: true
   seed: 42
-  # Forwarded to to_xy(dataset, ...) in fit/validate/test. `task` is not taken
-  # from the trainer's own setting above, so it has to be repeated here.
-  data_xy_kwargs:
-    task: binary-classification
-    label_column: source
-    feature_columns:
-    # The `source` column is already encoded as 0/1, so no mapping is needed.
-    # Set it to e.g. {AGN: 0, POPSTAR: 1} when the labels are not indices.
-    class_map:
 dataset:
   path: ../data/bronze/default
   # pyarrow.csv.read_csv's read_kwargs, not pandas.read_csv's - only accepts
@@ -101,8 +92,7 @@ dataset:
   read_kwargs:
     sep: ","
   suffix: .csv
-  label_columns:
-    - 'source'
+  label_columns: 'source'
   # transform/pre_transform/pre_filter accept a dotted path to a module-level
   # callable, e.g. "GalaxySpectrumClassifier.utils.identity". Setting either
   # pre_* switches the dataset into cache_on_disk mode, which needs cache_path.
