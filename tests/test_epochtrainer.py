@@ -26,34 +26,51 @@ from GalaxySpectrumClassifier.epoch_trainer import EpochTrainer
 from GalaxySpectrumClassifier.utils import load_type
 
 
+def _features(sample):
+    """Select every column but ``source`` from a transform's one-row table."""
+    feature_names = [name for name in sample.column_names if name != "source"]
+    return (
+        np.stack(
+            [
+                sample.column(feature).to_numpy(zero_copy_only=False)
+                for feature in feature_names
+            ],
+            axis=1,
+        )
+        .astype(np.float32)
+        .squeeze(0)
+    )
+
+
+def _target_scalar(sample):
+    return sample.column("source")[0].as_py()
+
+
 def _as_float32(sample):
     """Provide BCEWithLogitsLoss-compatible features and a scalar target.
 
     NeuralNetBinaryClassifier squeezes its output to one value per sample, so
     the target has to match that shape rather than carry a trailing axis.
     """
-    converted = sample.astype(np.float32)
     return (
-        torch.tensor(converted.drop(labels=["source"]).to_numpy()),
-        torch.tensor(np.array(converted["source"])),
+        torch.from_numpy(_features(sample)),
+        torch.tensor(_target_scalar(sample), dtype=torch.float32),
     )
 
 
 def _as_float32_vector_label(sample):
     """Provide MSELoss-compatible features and a length-1 vector target."""
-    converted = sample.astype(np.float32)
     return (
-        torch.tensor(converted.drop(labels=["source"]).to_numpy()),
-        torch.tensor(converted[["source"]].to_numpy()),
+        torch.from_numpy(_features(sample)),
+        torch.tensor([_target_scalar(sample)], dtype=torch.float32),
     )
 
 
 def _as_float32_features_int64_labels(sample):
     """Provide CrossEntropyLoss-compatible features and targets."""
-    features = sample.drop(labels=["source"]).astype(np.float32)
     return (
-        torch.tensor(features.to_numpy()),
-        torch.tensor(np.array(sample["source"], dtype=np.int64)),
+        torch.from_numpy(_features(sample)),
+        torch.tensor(_target_scalar(sample), dtype=torch.int64),
     )
 
 
@@ -105,19 +122,16 @@ def _trainer_kwargs(tmp_path, data_path, **overrides):
         "test_dataset_args": [str(data_path)],
         "train_dataset_kwargs": {
             "suffix": ".dat",
-            "read_kwargs": {"sep": ","},
             "label_columns": "source",
             "transform": "test_epochtrainer._as_float32",
         },
         "val_dataset_kwargs": {
             "suffix": ".dat",
-            "read_kwargs": {"sep": ","},
             "label_columns": "source",
             "transform": "test_epochtrainer._as_float32",
         },
         "test_dataset_kwargs": {
             "suffix": ".dat",
-            "read_kwargs": {"sep": ","},
             "label_columns": "source",
             "transform": "test_epochtrainer._as_float32",
         },
@@ -179,7 +193,6 @@ def test_epochtrainer_constructs_all_datasets_and_preserves_rebuild_config(
             create_data,
             train_dataset_kwargs={
                 "suffix": ".dat",
-                "read_kwargs": {"sep": ","},
                 "label_columns": "source",
                 # Constructor kwargs may name types in YAML-safe form.
                 "transform": {"type": "GalaxySpectrumClassifier.utils.identity"},
@@ -605,7 +618,6 @@ def test_epochtrainer_trains_multiclass_with_transform_controlled_dtypes(
 ):
     dataset_kwargs = {
         "suffix": ".dat",
-        "read_kwargs": {"sep": ","},
         "label_columns": "source",
         "transform": "test_epochtrainer._as_float32_features_int64_labels",
     }
@@ -636,7 +648,6 @@ def test_epochtrainer_trains_multiclass_with_transform_controlled_dtypes(
 def test_epochtrainer_trains_regression_with_vector_targets(tmp_path, create_data):
     dataset_kwargs = {
         "suffix": ".dat",
-        "read_kwargs": {"sep": ","},
         "label_columns": ["source"],
         "transform": "test_epochtrainer._as_float32_vector_label",
     }

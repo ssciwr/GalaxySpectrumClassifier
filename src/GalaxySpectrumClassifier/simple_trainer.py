@@ -5,8 +5,9 @@ import numpy as np
 import pyaml
 import yaml
 import skops.io as sio
+import torch.utils.data
 
-from .base import DatasetProtocol, Trainable, TrainerProtocol
+from .base import Trainable, TrainerProtocol
 from .utils import load_type, resolve_type_kwargs, to_xy
 from .utils import TASKS, DEFAULT_METRICS
 
@@ -35,7 +36,6 @@ class SimpleTrainer(TrainerProtocol):
         task: str = "binary-classification",
         metrics: list[dict[str, Any]] | None = None,
         seed: int = 42,
-        data_xy_kwargs: dict[str, Any] | None = None,
     ):
         """Configure a model, optional calibration, and evaluation metrics.
 
@@ -80,9 +80,6 @@ class SimpleTrainer(TrainerProtocol):
                 for ``task``.
             seed (int, optional): Seed used for trainer-managed random state.
                 Defaults to 42.
-            data_xy_kwargs (dict[str, Any] | None, optional): Extra keyword
-                options used whenever a dataset is converted to arrays.
-                Defaults to None.
 
         Raises:
             ValueError: If ``task`` is unsupported, or calibration is requested
@@ -107,7 +104,6 @@ class SimpleTrainer(TrainerProtocol):
             "task": task,
             "metrics": metrics,
             "seed": seed,
-            "data_xy_kwargs": data_xy_kwargs,
         }
 
         self.output_path = Path(output_path).resolve()
@@ -135,8 +131,6 @@ class SimpleTrainer(TrainerProtocol):
         self.metrics: list[MetricSpec] = self._build_metrics(
             metrics if metrics is not None else DEFAULT_METRICS[task]
         )
-
-        self.data_xy_kwargs = data_xy_kwargs if data_xy_kwargs is not None else {}
 
     def build_model(
         self,
@@ -260,11 +254,11 @@ class SimpleTrainer(TrainerProtocol):
             )
         return metrics
 
-    def fit(self, dataset: DatasetProtocol) -> Trainable:
+    def fit(self, dataset: torch.utils.data.Dataset) -> Trainable:
         """Fit the configured model using every retained sample in a dataset.
 
         Args:
-            dataset (DatasetProtocol): Dataset supplying training features and
+            dataset (torch.utils.data.Dataset): Dataset supplying training features and
                 targets.
 
         Returns:
@@ -274,21 +268,23 @@ class SimpleTrainer(TrainerProtocol):
             ValueError: If the dataset cannot be converted for the configured
                 task or is incompatible with the model.
         """
-        X, y = to_xy(dataset, **self.data_xy_kwargs)
+        X, y = to_xy(
+            dataset,
+        )
         self.model.fit(X, y)
         return self.model
 
     def train(
         self,
-        train_data: DatasetProtocol,
-        validation_data: DatasetProtocol | None = None,
+        train_data: torch.utils.data.Dataset,
+        validation_data: torch.utils.data.Dataset | None = None,
     ) -> Trainable:
         """Fit the configured model using training data.
 
         Args:
-            train_data (DatasetProtocol): Dataset supplying training features
+            train_data (torch.utils.data.Dataset): Dataset supplying training features
                 and targets.
-            validation_data (DatasetProtocol | None, optional): Accepted for
+            validation_data (torch.utils.data.Dataset | None, optional): Accepted for
                 interface compatibility; it does not affect this trainer.
                 Defaults to None.
 
@@ -297,11 +293,11 @@ class SimpleTrainer(TrainerProtocol):
         """
         return self.fit(train_data)
 
-    def evaluate(self, data: DatasetProtocol) -> dict[str, float]:
+    def evaluate(self, data: torch.utils.data.Dataset) -> dict[str, float]:
         """Score the current model with each configured metric.
 
         Args:
-            data (DatasetProtocol): Dataset supplying evaluation features and
+            data (torch.utils.data.Dataset): Dataset supplying evaluation features and
                 targets. The model is not fitted again.
 
         Raises:
@@ -312,7 +308,9 @@ class SimpleTrainer(TrainerProtocol):
             dict[str, float]: Mapping from each configured metric name to its
                 score.
         """
-        X, y = to_xy(data, **self.data_xy_kwargs)
+        X, y = to_xy(
+            data,
+        )
 
         # predict() is cheap and always needed by at least the default
         # metric; predict_proba() is only computed if some configured metric

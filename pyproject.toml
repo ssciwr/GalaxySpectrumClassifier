@@ -30,6 +30,7 @@ dependencies = [
     "onnx>=1.17.0",
     "onnxscript>=0.1.0",
     "pandas[parquet]>=3.0.3",
+    "pyarrow>=25.0.0",
     "pyaml>=26.2.1",
     "scikit-learn>=1.9.0",
     "scipy>=1.18.0",

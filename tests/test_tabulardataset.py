@@ -1,5 +1,8 @@
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.compute as pc
+import pyarrow.csv as pcsv
 import pytest
 import torch
 from torch.utils.data import DataLoader, Subset
@@ -10,6 +13,39 @@ from GalaxySpectrumClassifier.data import (
     DataHandler,
     ParquetDataHandler,
 )
+
+# pyarrow.csv.read_csv only accepts read_options/parse_options/convert_options/
+# memory_pool, not pandas' flat kwargs; these are its equivalents for the
+# comma-separated fixture files, with and without the pandas-style unnamed
+# index column dropped.
+CSV_READ_KWARGS = {"parse_options": pcsv.ParseOptions(delimiter=",")}
+INDEXED_CSV_READ_KWARGS = {
+    "parse_options": pcsv.ParseOptions(delimiter=","),
+    "convert_options": pcsv.ConvertOptions(
+        include_columns=["a", "b", "c", "d", "source", "extra"]
+    ),
+}
+
+
+def _read_dataset_table(dataset):
+    return pa.concat_tables(
+        [
+            dataset.data_handler.read_data(path)
+            for path in dataset.data_handler.datafiles
+        ]
+    ).combine_chunks()
+
+
+def _columns_to_numpy(table, columns, dtype=None):
+    values = np.stack(
+        [table.column(column).to_numpy(zero_copy_only=False) for column in columns],
+        axis=1,
+    )
+    return values.astype(dtype) if dtype is not None else values
+
+
+def _column_scalar(table, column):
+    return table.column(column)[0].as_py()
 
 
 def test_tabulardataset_requires_cache_path_for_preprocessing(create_data):
@@ -40,16 +76,17 @@ def test_tabulardataset_getitem_integer_indices(create_data):
 
     transform_calls = []
 
-    def transform(row):
-        transform_calls.append(row)
-        return torch.tensor(row[["a", "b"]].to_numpy()), torch.tensor(
-            np.array(row["source"])
+    def transform(table):
+        transform_calls.append(table)
+        return (
+            torch.tensor(_columns_to_numpy(table, ["a", "b"]).squeeze(0)),
+            torch.tensor(_column_scalar(table, "source")),
         )
 
     dataset = TabularDataset(
         create_data,
         transform=transform,
-        read_kwargs={"sep": ","},
+        read_kwargs=CSV_READ_KWARGS,
         suffix=".dat",
         label_columns="source",
     )
@@ -65,18 +102,18 @@ def test_tabulardataset_getitem_integer_indices(create_data):
 
     x_expected, y_expected = expected(first_file, 0)
     x, y = dataset[0]
-    assert torch.equal(x_expected, x)
+    assert torch.allclose(x_expected, x)
     assert torch.equal(y_expected, y)
 
     x_expected, y_expected = expected(first_file, 99)
     x, y = dataset[99]
-    assert torch.equal(x_expected, x)
+    assert torch.allclose(x_expected, x)
     assert torch.equal(y_expected, y)
     # Global indices should cross file boundaries.
     x_expected, y_expected = expected(second_file, 0)
     x, y = dataset[100]
 
-    assert torch.equal(x_expected, x)
+    assert torch.allclose(x_expected, x)
     assert torch.equal(y_expected, y)
 
     assert len(transform_calls) == 3
@@ -89,7 +126,10 @@ def test_tabulardataset_getitem_negative_index_is_out_of_range(create_data):
     dataset = TabularDataset(
         create_data,
         suffix=".dat",
-        transform=lambda row: row[["a", "b", "source"]],
+        transform=lambda table: (
+            torch.tensor(_columns_to_numpy(table, ["a", "b"]).squeeze(0)),
+            torch.tensor(_column_scalar(table, "source")),
+        ),
         label_columns="source",
     )
 
@@ -105,15 +145,16 @@ def test_tabulardataset_getitem_slice_tensor_and_ndarray_are_global_indices(
     second_file = pd.read_csv(raw_files[1], index_col=0)
     last_file = pd.read_csv(raw_files[-1], index_col=0)
 
-    def transform(row):
-        return torch.tensor(row[["a", "b"]].to_numpy()), torch.tensor(
-            np.array(row["source"])
+    def transform(table):
+        return (
+            torch.tensor(_columns_to_numpy(table, ["a", "b"]).squeeze(0)),
+            torch.tensor(_column_scalar(table, "source")),
         )
 
     dataset = TabularDataset(
         create_data,
         transform=transform,
-        read_kwargs={"sep": ","},
+        read_kwargs=CSV_READ_KWARGS,
         suffix=".dat",
         label_columns="source",
     )
@@ -179,22 +220,20 @@ def test_tabulardataset_list_transform_composed(create_data):
     first_file = pd.read_csv(sorted(create_data.glob("*.dat"))[0], index_col=0)
     dataset = TabularDataset(
         create_data,
-        read_kwargs={"sep": ","},
+        read_kwargs=CSV_READ_KWARGS,
         suffix=".dat",
         transform=Compose(
             [
-                lambda row: row[["a", "b", "source"]],
+                lambda table: _columns_to_numpy(table, ["a", "b", "source"]).squeeze(0),
                 lambda row: row * 2,
-                lambda row: (
-                    torch.tensor(row[["a", "b"]].to_numpy()),
-                    torch.tensor(np.array(row["source"])),
-                ),
+                lambda row: (torch.tensor(row[:2]), torch.tensor(row[2])),
             ]
         ),
         label_columns="source",
     )
 
-    # The transform runs on the whole row, so it hits the label column too.
+    # The transform receives the whole one-row table, so it hits the label
+    # column too when it extracts it.
     x, y = dataset[0]
     np.testing.assert_allclose(
         x.numpy(), first_file.loc[0, ["a", "b"]].to_numpy(dtype=np.float32) * 2
@@ -206,7 +245,7 @@ def test_tabulardataset_unresolvable_dotted_path_raises(create_data):
     with pytest.raises(AttributeError):
         TabularDataset(
             create_data,
-            read_kwargs={"sep": ","},
+            read_kwargs=CSV_READ_KWARGS,
             suffix=".dat",
             transform="pandas.does_not_exist",
         )
@@ -215,13 +254,13 @@ def test_tabulardataset_unresolvable_dotted_path_raises(create_data):
 def test_tabulardataset_getitem_string_label_is_one_axis_flatter_than_list(create_data):
     single = TabularDataset(
         create_data,
-        read_kwargs={"sep": ",", "index_col": 0},
+        read_kwargs=INDEXED_CSV_READ_KWARGS,
         suffix=".dat",
         label_columns="source",
     )
     listed = TabularDataset(
         create_data,
-        read_kwargs={"sep": ",", "index_col": 0},
+        read_kwargs=INDEXED_CSV_READ_KWARGS,
         suffix=".dat",
         label_columns=["source"],
     )
@@ -254,32 +293,38 @@ def test_tabulardataset_getitem_string_label_is_one_axis_flatter_than_list(creat
 def test_tabulardataset_getitem_multiple_label_columns(create_data):
     dataset = TabularDataset(
         create_data,
-        read_kwargs={"sep": ",", "index_col": 0},
+        read_kwargs=INDEXED_CSV_READ_KWARGS,
         suffix=".dat",
         label_columns=["source", "extra"],
     )
-    frame = dataset.to_frame()
+    table = _read_dataset_table(dataset).slice(0, 4)
 
     x, y = dataset[0:4]
-    # Every label column is removed from the features, in frame order.
+    # Every label column is removed from the features, in table order.
     assert x.shape == (4, 4)
     assert y.shape == (4, 2)
     np.testing.assert_allclose(
-        x.numpy(), frame.iloc[0:4][["a", "b", "c", "d"]].to_numpy(dtype=np.float32)
+        x.numpy(),
+        np.stack(
+            [table.column(c).to_numpy() for c in ["a", "b", "c", "d"]], axis=1
+        ).astype(np.float32),
     )
     np.testing.assert_array_equal(
-        y.numpy(), frame.iloc[0:4][["source", "extra"]].to_numpy(dtype=np.int64)
+        y.numpy(),
+        np.stack(
+            [table.column(c).to_numpy() for c in ["source", "extra"]], axis=1
+        ).astype(np.int64),
     )
 
 
 def test_tabulardataset_rejects_missing_label_configuration(create_data):
     with pytest.raises(ValueError, match=r"label_columns must be set"):
-        TabularDataset(create_data, read_kwargs={"sep": ","}, suffix=".dat")
+        TabularDataset(create_data, read_kwargs=CSV_READ_KWARGS, suffix=".dat")
 
     with pytest.raises(ValueError, match=r"label_columns must be set"):
         TabularDataset(
             create_data,
-            read_kwargs={"sep": ","},
+            read_kwargs=CSV_READ_KWARGS,
             suffix=".dat",
             label_columns=None,
         )
@@ -288,7 +333,7 @@ def test_tabulardataset_rejects_missing_label_configuration(create_data):
 def test_tabulardataset_rejects_unknown_label_columns(create_data):
     dataset = TabularDataset(
         create_data,
-        read_kwargs={"sep": ",", "index_col": 0},
+        read_kwargs=INDEXED_CSV_READ_KWARGS,
         suffix=".dat",
         label_columns=["source", "missing"],
     )
@@ -303,13 +348,13 @@ def test_tabulardataset_uses_label_names_and_configured_order(tmp_path):
     pd.DataFrame({"a": [1.0], "source": [0], "extra": [10]}).to_csv(
         datapath / "0.dat", index=False
     )
-    pd.DataFrame({"a": [2.0], "extra": [20], "source": [1]}).to_csv(
+    pd.DataFrame({"a": [2.0], "source": [1], "extra": [20]}).to_csv(
         datapath / "1.dat", index=False
     )
 
     dataset = TabularDataset(
         datapath,
-        read_kwargs={"sep": ","},
+        read_kwargs=CSV_READ_KWARGS,
         suffix=".dat",
         label_columns=["extra", "source"],
     )
@@ -323,46 +368,59 @@ def test_tabulardataset_uses_label_names_and_configured_order(tmp_path):
 def test_tabulardataset_empty_label_columns_returns_empty_targets(create_data):
     dataset = TabularDataset(
         create_data,
-        read_kwargs={"sep": ",", "index_col": 0},
+        read_kwargs=INDEXED_CSV_READ_KWARGS,
         suffix=".dat",
         label_columns=[],
     )
-    frame = dataset.to_frame()
+    table = _read_dataset_table(dataset)
+    columns = table.column_names
 
     x, y = dataset[0]
-    np.testing.assert_allclose(x.numpy(), frame.iloc[0].to_numpy(dtype=np.float32))
+    np.testing.assert_allclose(
+        x.numpy(),
+        np.array([table.column(c)[0].as_py() for c in columns], dtype=np.float32),
+    )
     assert y.shape == (0,)
 
     x, y = dataset[0:4]
-    assert x.shape == (4, len(frame.columns))
+    assert x.shape == (4, len(columns))
     assert y.shape == (4, 0)
-    np.testing.assert_allclose(x.numpy(), frame.iloc[0:4].to_numpy(dtype=np.float32))
+    sliced = table.slice(0, 4)
+    np.testing.assert_allclose(
+        x.numpy(),
+        np.stack([sliced.column(c).to_numpy() for c in columns], axis=1).astype(
+            np.float32
+        ),
+    )
 
 
 def test_tabulardataset_getitem_dtypes(create_data):
     dataset = TabularDataset(
         create_data,
-        read_kwargs={"sep": ",", "index_col": 0},
+        read_kwargs=INDEXED_CSV_READ_KWARGS,
         suffix=".dat",
         label_columns="source",
     )
 
     x, y = dataset[0]
     assert x.dtype == torch.float64
-    assert y.dtype == torch.float64
+    assert y.dtype == torch.int64
 
     x, y = dataset[0:4]
     assert x.dtype == torch.float64
-    assert y.dtype == torch.float64
+    assert y.dtype == torch.int64
 
-    def transform(row: pd.Series) -> tuple[torch.Tensor, torch.Tensor]:
-        return torch.tensor(
-            row[["a", "b"]].to_numpy(), dtype=torch.float32
-        ), torch.tensor(np.array(row["source"]), dtype=torch.int64)
+    def transform(table: pa.Table) -> tuple[torch.Tensor, torch.Tensor]:
+        return (
+            torch.tensor(
+                _columns_to_numpy(table, ["a", "b"]).squeeze(0), dtype=torch.float32
+            ),
+            torch.tensor(_column_scalar(table, "source"), dtype=torch.int64),
+        )
 
     dataset = TabularDataset(
         create_data,
-        read_kwargs={"sep": ",", "index_col": 0},
+        read_kwargs=INDEXED_CSV_READ_KWARGS,
         suffix=".dat",
         label_columns="source",
         transform=transform,
@@ -377,16 +435,15 @@ def test_tabulardataset_getitem_dtypes(create_data):
 
 
 def test_tabulardataset_transform_can_control_output_dtype(create_data):
-    def as_float32(sample):
-        converted = sample.astype(np.float32)
-        return (
-            torch.tensor(converted[["a", "b", "c", "d", "extra"]].to_numpy()),
-            torch.tensor(np.array(converted["source"])),
-        )
+    def as_float32(table):
+        ordered = _columns_to_numpy(
+            table, ["a", "b", "c", "d", "extra", "source"], dtype=np.float32
+        ).squeeze(0)
+        return torch.tensor(ordered[:5]), torch.tensor(ordered[5])
 
     dataset = TabularDataset(
         create_data,
-        read_kwargs={"sep": ",", "index_col": 0},
+        read_kwargs=INDEXED_CSV_READ_KWARGS,
         suffix=".dat",
         label_columns="source",
         transform=as_float32,
@@ -399,16 +456,17 @@ def test_tabulardataset_transform_can_control_output_dtype(create_data):
 
 
 def test_tabulardataset_transform_can_split_feature_and_label_dtypes(create_data):
-    def as_float32_features_int64_label(sample):
-        features = sample[["a", "b", "c", "d", "extra"]].astype(np.float32)
-        return (
-            torch.tensor(features.to_numpy()),
-            torch.tensor(np.array(sample["source"], dtype=np.int64)),
+    def as_float32_features_int64_label(table):
+        features = _columns_to_numpy(
+            table, ["a", "b", "c", "d", "extra"], dtype=np.float32
+        ).squeeze(0)
+        return torch.tensor(features), torch.tensor(
+            _column_scalar(table, "source"), dtype=torch.int64
         )
 
     dataset = TabularDataset(
         create_data,
-        read_kwargs={"sep": ",", "index_col": 0},
+        read_kwargs=INDEXED_CSV_READ_KWARGS,
         suffix=".dat",
         label_columns="source",
         transform=as_float32_features_int64_label,
@@ -426,11 +484,12 @@ def test_tabulardataset_transform_can_split_feature_and_label_dtypes(create_data
 def test_tabulardataset_works_with_dataloader_without_collate_fn(create_data):
     dataset = TabularDataset(
         create_data,
-        read_kwargs={"sep": ",", "index_col": 0},
+        read_kwargs=INDEXED_CSV_READ_KWARGS,
         suffix=".dat",
         label_columns="source",
     )
-    frame = dataset.to_frame()
+    table = _read_dataset_table(dataset).slice(0, 8)
+    feature_columns = [c for c in table.column_names if c != "source"]
 
     # The point of the (x, y) contract: torch's default collate already
     # produces the two-tuple batches skorch unpacks, so no collate_fn is needed.
@@ -443,10 +502,13 @@ def test_tabulardataset_works_with_dataloader_without_collate_fn(create_data):
     assert x.shape == (8, 5)
     assert y.shape == (8,)
     np.testing.assert_allclose(
-        x.numpy(), frame.iloc[0:8].drop(columns=["source"]).to_numpy(dtype=np.float32)
+        x.numpy(),
+        np.stack([table.column(c).to_numpy() for c in feature_columns], axis=1).astype(
+            np.float32
+        ),
     )
     np.testing.assert_array_equal(
-        y.numpy(), frame.iloc[0:8]["source"].to_numpy(dtype=np.int64)
+        y.numpy(), table.column("source").to_numpy().astype(np.int64)
     )
     assert sum(len(batch_y) for _, batch_y in loader) == len(dataset)
 
@@ -454,12 +516,13 @@ def test_tabulardataset_works_with_dataloader_without_collate_fn(create_data):
 def test_tabulardataset_subset_yields_pairs(create_data):
     dataset = TabularDataset(
         create_data,
-        read_kwargs={"sep": ",", "index_col": 0},
+        read_kwargs=INDEXED_CSV_READ_KWARGS,
         suffix=".dat",
         label_columns="source",
     )
     subset = Subset(dataset, [100, 5, 999])
-    frame = dataset.to_frame()
+    table = _read_dataset_table(dataset)
+    feature_columns = [c for c in table.column_names if c != "source"]
 
     # Subsets index the parent per item, so the pair contract has to survive
     # them - this is what random_split hands to the trainer.
@@ -467,9 +530,14 @@ def test_tabulardataset_subset_yields_pairs(create_data):
         x, y = subset[position]
         np.testing.assert_allclose(
             x.numpy(),
-            frame.iloc[index].drop(labels=["source"]).to_numpy(dtype=np.float32),
+            np.array(
+                [table.column(c)[index].as_py() for c in feature_columns],
+                dtype=np.float32,
+            ),
         )
-        np.testing.assert_array_equal(y.numpy(), np.int64(frame.iloc[index]["source"]))
+        np.testing.assert_array_equal(
+            y.numpy(), np.int64(table.column("source")[index].as_py())
+        )
 
 
 @pytest.fixture(params=["csv", "parquet"])
@@ -502,28 +570,15 @@ def cache_sources(request, tmp_path):
     return datapath, dataformat
 
 
-def keep_labelled(row):
-    """Keep the rows whose target is 1.
-
-    Args:
-        row (dict): One observation.
-
-    Returns:
-        bool: Whether the row is kept.
-    """
-    return row["source"] == 1
+def keep_labelled(table):
+    # filter pyarrow table the pyarrow way
+    expr = pc.field("source") == 1
+    return table.filter(expr)
 
 
-def double_a(row):
-    """Add a column holding twice the value of ``a``.
-
-    Args:
-        row (dict): One observation.
-
-    Returns:
-        dict: The observation with ``doubled`` added.
-    """
-    return {**row, "doubled": row["a"] * 2}
+def double_a(table):
+    # preprocess pyarrow tables the pyarrow way
+    return table.append_column("doubled", pc.multiply(table["a"], 2))
 
 
 def test_tabulardataset_cache_writes_one_file_per_source(cache_sources, tmp_path):
@@ -554,11 +609,11 @@ def test_tabulardataset_cache_matches_hooks_applied_by_hand(cache_sources, tmp_p
     datapath, dataformat = cache_sources
 
     # The hooks have no lazy counterpart to compare against, so the comparison
-    # is against the sources with the same two steps applied by pandas.
+    # is against the sources with the same two steps applied by hand.
     plain = TabularDataset(datapath, dataformat=dataformat, label_columns="source")
-    expected = plain.to_frame()
-    expected = expected[expected["source"] == 1].reset_index(drop=True)
-    expected["doubled"] = expected["a"] * 2
+    expected = _read_dataset_table(plain)
+    expected = expected.filter(pc.equal(expected.column("source"), 1))
+    expected = expected.append_column("doubled", pc.multiply(expected.column("a"), 2))
 
     cached = TabularDataset(
         datapath,
@@ -569,15 +624,17 @@ def test_tabulardataset_cache_matches_hooks_applied_by_hand(cache_sources, tmp_p
         label_columns="source",
     )
 
-    assert len(cached) == len(expected)
+    assert len(cached) == expected.num_rows
     # Both hooks ran exactly once: doubled is twice a, not four times.
-    pd.testing.assert_frame_equal(cached.to_frame(), expected)
+    assert _read_dataset_table(cached).equals(expected)
 
     for i in range(len(cached)):
         x, y = cached[i]
-        row = expected.iloc[i]
-        assert torch.equal(x, torch.tensor([row["a"], row["doubled"]], dtype=x.dtype))
-        assert torch.equal(y, torch.tensor(row["source"], dtype=y.dtype))
+        row_a = expected.column("a")[i].as_py()
+        row_doubled = expected.column("doubled")[i].as_py()
+        row_source = expected.column("source")[i].as_py()
+        assert torch.equal(x, torch.tensor([row_a, row_doubled], dtype=x.dtype))
+        assert torch.equal(y, torch.tensor(row_source, dtype=y.dtype))
 
 
 def test_tabulardataset_cache_is_reused_without_rerunning_hooks(
@@ -620,8 +677,9 @@ def test_tabulardataset_overwrite_cache_rewrites(cache_sources, tmp_path):
     datapath, dataformat = cache_sources
     cache_path = tmp_path / "cache"
 
-    def triple_a(row):
-        return {**row, "doubled": row["a"] * 3}
+    def triple_a(table):
+        # preprocess pyarrow tables the pyarrow way
+        return table.append_column("doubled", pc.multiply(table["a"], 3))
 
     TabularDataset(
         datapath,
@@ -638,7 +696,10 @@ def test_tabulardataset_overwrite_cache_rewrites(cache_sources, tmp_path):
         pre_transform=triple_a,
         label_columns=[],
     )
-    assert (stale.to_frame()["doubled"] == stale.to_frame()["a"] * 2).all()
+    stale_table = _read_dataset_table(stale)
+    assert pc.all(
+        pc.equal(stale_table.column("doubled"), pc.multiply(stale_table.column("a"), 2))
+    ).as_py()
 
     rewritten = TabularDataset(
         datapath,
@@ -648,7 +709,13 @@ def test_tabulardataset_overwrite_cache_rewrites(cache_sources, tmp_path):
         overwrite_cache=True,
         label_columns=[],
     )
-    assert (rewritten.to_frame()["doubled"] == rewritten.to_frame()["a"] * 3).all()
+    rewritten_table = _read_dataset_table(rewritten)
+    assert pc.all(
+        pc.equal(
+            rewritten_table.column("doubled"),
+            pc.multiply(rewritten_table.column("a"), 3),
+        )
+    ).as_py()
 
 
 def test_tabulardataset_cache_length_covers_dropped_rows(cache_sources, tmp_path):
@@ -662,7 +729,7 @@ def test_tabulardataset_cache_length_covers_dropped_rows(cache_sources, tmp_path
         label_columns="source",
     )
 
-    assert len(dataset) == len(dataset.to_frame())
+    assert len(dataset) == _read_dataset_table(dataset).num_rows
     dataset[len(dataset) - 1]
     with pytest.raises(IndexError):
         dataset[len(dataset)]
@@ -745,15 +812,6 @@ def test_tabulardataset_memory_cache_evicts_beyond_the_limit(cache_sources):
     assert len(dataset._file_cache) == 1
 
 
-def test_tabulardataset_to_frame_does_not_populate_the_memory_cache(cache_sources):
-    datapath, dataformat = cache_sources
-
-    dataset = TabularDataset(datapath, dataformat=dataformat, label_columns="source")
-
-    dataset.to_frame()
-    assert len(dataset._file_cache) == 0
-
-
 def test_tabulardataset_memory_cache_matches_uncached(cache_sources, tmp_path):
     datapath, dataformat = cache_sources
 
@@ -769,7 +827,7 @@ def test_tabulardataset_memory_cache_matches_uncached(cache_sources, tmp_path):
     uncached = TabularDataset(datapath, max_cached_files=None, **shared)
 
     assert uncached._file_cache is None
-    pd.testing.assert_frame_equal(cached.to_frame(), uncached.to_frame())
+    assert _read_dataset_table(cached).equals(_read_dataset_table(uncached))
 
     for i in range(len(uncached)):
         x_cached, y_cached = cached[i]
@@ -790,19 +848,32 @@ def test_tabulardataset_memory_cache_rejects_sizes_below_one(cache_sources):
 @pytest.mark.parametrize(
     "option, value",
     [
-        ("skiprows", 1),
-        ("skipfooter", 1),
-        ("nrows", 1),
-        ("skip_blank_lines", False),
-        ("chunksize", 2),
-        ("iterator", True),
+        ("read_options", pcsv.ReadOptions(skip_rows=1)),
+        ("parse_options", pcsv.ParseOptions(ignore_empty_lines=False)),
+        ("convert_options", pcsv.ConvertOptions(strings_can_be_null=True)),
     ],
 )
-def test_csvdatahandler_rejects_row_changing_read_kwargs(create_data, option, value):
-    with pytest.raises(ValueError, match=f"read_kwargs \\['{option}'\\]"):
-        CSVDataHandler(
-            path=str(create_data), extension="dat", read_kwargs={option: value}
-        )
+def test_csvdatahandler_forbids_nothing(create_data, option, value):
+    # count_rows() re-derives its counts from read_data() itself, so no CSV
+    # read option can desync the two; CSVDataHandler forbids nothing.
+    handler = CSVDataHandler(
+        path=str(create_data), extension="dat", read_kwargs={option: value}
+    )
+
+    assert handler.read_kwargs == {option: value}
+    assert CSVDataHandler._FORBIDDEN_READ_KWARGS == frozenset()
+
+
+def test_csvdatahandler_passes_read_kwargs_directly_to_pyarrow(create_data):
+    handler = CSVDataHandler(
+        path=str(create_data), extension="dat", read_kwargs={"sep": ","}
+    )
+
+    with pytest.raises(TypeError):
+        handler.read_data(handler.datafiles[0])
+
+    with pytest.raises(TypeError):
+        handler.count_rows()
 
 
 def test_parquetdatahandler_rejects_row_changing_read_kwargs(tmp_path):
@@ -814,11 +885,13 @@ def test_parquetdatahandler_rejects_row_changing_read_kwargs(tmp_path):
         )
 
 
-def test_datahandler_rejects_every_forbidden_option_at_once(create_data):
-    forbidden = dict.fromkeys(CSVDataHandler._FORBIDDEN_READ_KWARGS, 1)
+def test_datahandler_rejects_every_forbidden_option_at_once(tmp_path):
+    forbidden = dict.fromkeys(ParquetDataHandler._FORBIDDEN_READ_KWARGS, 1)
 
     with pytest.raises(ValueError) as excinfo:
-        CSVDataHandler(path=str(create_data), extension="dat", read_kwargs=forbidden)
+        ParquetDataHandler(
+            path=str(tmp_path), extension="parquet", read_kwargs=forbidden
+        )
 
     # Every offending option is named, not just the first one found.
     assert str(sorted(forbidden)) in str(excinfo.value)
@@ -826,10 +899,10 @@ def test_datahandler_rejects_every_forbidden_option_at_once(create_data):
 
 def test_datahandler_accepts_read_kwargs_leaving_the_row_count_alone(create_data):
     handler = CSVDataHandler(
-        path=str(create_data), extension="dat", read_kwargs={"index_col": 0}
+        path=str(create_data), extension="dat", read_kwargs=INDEXED_CSV_READ_KWARGS
     )
 
-    assert handler.read_kwargs == {"index_col": 0}
+    assert handler.read_kwargs == INDEXED_CSV_READ_KWARGS
     assert sum(handler.count_rows()) == 1000
 
 
@@ -860,19 +933,15 @@ def test_datahandler_counts_rows_per_file(cache_sources):
     [
         (
             "ignored,ignored\nalso,ignored\na,source\n1,0\n",
-            {"header": 2},
+            {"read_options": pcsv.ReadOptions(skip_rows=2)},
         ),
         (
             "1,0\n2,1\n",
-            {"names": ["a", "source"]},
+            {"read_options": pcsv.ReadOptions(column_names=["a", "source"])},
         ),
         (
             'a,source\n"line 1\nline 2",0\nplain,1\n',
             {},
-        ),
-        (
-            "a,source\n1,0\n2,1\n",
-            {"engine": "pyarrow"},
         ),
     ],
 )
@@ -933,11 +1002,17 @@ def test_tabulardataset_offsets_follow_the_file_lengths(uneven_sources):
     assert len(dataset) == 8
 
 
-def test_tabulardataset_rejects_row_changing_read_kwargs(cache_sources):
-    datapath, dataformat = cache_sources
-    forbidden = {"csv": {"nrows": 2}, "parquet": {"filters": [("source", "==", 1)]}}
+def test_tabulardataset_rejects_row_changing_read_kwargs(tmp_path):
+    # Parquet's filters is the only read_kwargs option TabularDataset still
+    # forbids; CSV forbids nothing, since count_rows() re-derives its counts
+    # from read_data() itself.
+    datapath = tmp_path / "source"
+    datapath.mkdir()
+    pd.DataFrame({"a": [0, 1], "source": [0, 1]}).to_parquet(datapath / "0.parquet")
 
     with pytest.raises(ValueError, match="read_kwargs"):
         TabularDataset(
-            datapath, dataformat=dataformat, read_kwargs=forbidden[dataformat]
+            datapath,
+            dataformat="parquet",
+            read_kwargs={"filters": [("source", "==", 1)]},
         )

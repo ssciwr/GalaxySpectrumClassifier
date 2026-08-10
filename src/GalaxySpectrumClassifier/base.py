@@ -1,7 +1,5 @@
 from typing import Any, Self, Protocol, runtime_checkable
 import torch
-import numpy as np
-import pandas as pd
 
 
 @runtime_checkable
@@ -23,48 +21,6 @@ class Configurable(Protocol):
             TypeError: If required configuration values are missing or have
                 incompatible types.
             ValueError: If the configuration contains invalid values.
-        """
-        ...
-
-
-@runtime_checkable
-class DatasetProtocol(Configurable, Protocol):
-    """Define the dataset operations required by the trainers."""
-
-    def __getitem__(
-        self, idx: int | slice | torch.Tensor | np.ndarray | list[int] | tuple
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return features and targets for one or more sample positions.
-
-        Args:
-            idx (int | slice | torch.Tensor | np.ndarray | list[int] | tuple):
-                Position or positions to retrieve.
-
-        Returns:
-            tuple[torch.Tensor, torch.Tensor]: Feature values and their
-                corresponding targets.
-
-        Raises:
-            IndexError: If a requested position is outside the dataset.
-            ValueError: If the index form or the stored sample data cannot be
-                represented as a feature-target pair.
-        """
-        ...
-
-    def __len__(self) -> int:
-        """Return the number of samples available in the dataset.
-
-        Returns:
-            int: Number of addressable samples.
-        """
-        ...
-
-    def to_frame(self) -> pd.DataFrame:
-        """Return all dataset samples in tabular form.
-
-        Returns:
-            pd.DataFrame: A table containing one row per sample, including
-                feature and target columns.
         """
         ...
 
@@ -151,14 +107,14 @@ class TrainerProtocol(Configurable, Protocol):
     # and the signature should not claim one reading over the other.
     def train(
         self,
-        train_data: DatasetProtocol,
-        validation_data: DatasetProtocol | None = None,
+        train_data: torch.utils.data.Dataset,
+        validation_data: torch.utils.data.Dataset | None = None,
     ) -> Any:
         """Train a model on a dataset and optionally use validation data.
 
         Args:
-            train_data (DatasetProtocol): Samples used to fit the model.
-            validation_data (DatasetProtocol | None, optional): Samples used
+            train_data (torch.utils.data.Dataset): Samples used to fit the model.
+            validation_data (torch.utils.data.Dataset | None, optional): Samples used
                 to monitor or assess fitting when supported. Defaults to None.
 
         Returns:
@@ -166,11 +122,11 @@ class TrainerProtocol(Configurable, Protocol):
         """
         ...
 
-    def evaluate(self, data: DatasetProtocol) -> Any:
+    def evaluate(self, data: torch.utils.data.Dataset) -> Any:
         """Evaluate the current model against a dataset.
 
         Args:
-            data (DatasetProtocol): Samples and targets to evaluate.
+            data (torch.utils.data.Dataset): Samples and targets to evaluate.
 
         Returns:
             Any: Evaluation results in the trainer's chosen format.
