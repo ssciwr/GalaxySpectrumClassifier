@@ -122,19 +122,16 @@ def _trainer_kwargs(tmp_path, data_path, **overrides):
         "test_dataset_args": [str(data_path)],
         "train_dataset_kwargs": {
             "suffix": ".dat",
-            "read_kwargs": {"sep": ","},
             "label_columns": "source",
             "transform": "test_epochtrainer._as_float32",
         },
         "val_dataset_kwargs": {
             "suffix": ".dat",
-            "read_kwargs": {"sep": ","},
             "label_columns": "source",
             "transform": "test_epochtrainer._as_float32",
         },
         "test_dataset_kwargs": {
             "suffix": ".dat",
-            "read_kwargs": {"sep": ","},
             "label_columns": "source",
             "transform": "test_epochtrainer._as_float32",
         },
@@ -196,7 +193,6 @@ def test_epochtrainer_constructs_all_datasets_and_preserves_rebuild_config(
             create_data,
             train_dataset_kwargs={
                 "suffix": ".dat",
-                "read_kwargs": {"sep": ","},
                 "label_columns": "source",
                 # Constructor kwargs may name types in YAML-safe form.
                 "transform": {"type": "GalaxySpectrumClassifier.utils.identity"},
@@ -622,7 +618,6 @@ def test_epochtrainer_trains_multiclass_with_transform_controlled_dtypes(
 ):
     dataset_kwargs = {
         "suffix": ".dat",
-        "read_kwargs": {"sep": ","},
         "label_columns": "source",
         "transform": "test_epochtrainer._as_float32_features_int64_labels",
     }
@@ -653,7 +648,6 @@ def test_epochtrainer_trains_multiclass_with_transform_controlled_dtypes(
 def test_epochtrainer_trains_regression_with_vector_targets(tmp_path, create_data):
     dataset_kwargs = {
         "suffix": ".dat",
-        "read_kwargs": {"sep": ","},
         "label_columns": ["source"],
         "transform": "test_epochtrainer._as_float32_vector_label",
     }

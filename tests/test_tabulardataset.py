@@ -864,6 +864,18 @@ def test_csvdatahandler_forbids_nothing(create_data, option, value):
     assert CSVDataHandler._FORBIDDEN_READ_KWARGS == frozenset()
 
 
+def test_csvdatahandler_passes_read_kwargs_directly_to_pyarrow(create_data):
+    handler = CSVDataHandler(
+        path=str(create_data), extension="dat", read_kwargs={"sep": ","}
+    )
+
+    with pytest.raises(TypeError):
+        handler.read_data(handler.datafiles[0])
+
+    with pytest.raises(TypeError):
+        handler.count_rows()
+
+
 def test_parquetdatahandler_rejects_row_changing_read_kwargs(tmp_path):
     with pytest.raises(ValueError, match=r"read_kwargs \['filters'\]"):
         ParquetDataHandler(
