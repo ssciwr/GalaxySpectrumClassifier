@@ -118,18 +118,10 @@ class DataHandler:
 
 
 class CSVDataHandler(DataHandler):
-    """Handle character-separated data files through pandas."""
+    """Handle character-separated data files through PyArrow."""
 
     def read_data(self, path: str | Path) -> pa.Table:
         """Read one separated-value file into a table.
-
-        ``pyarrow.csv.read_csv`` takes its delimiter through a
-        ``ParseOptions`` object rather than a flat keyword, unlike
-        ``pyarrow.parquet.read_table``'s plain keyword arguments. A ``sep``
-        entry in ``read_kwargs`` is translated into that object here so
-        ``read_kwargs`` itself can stay a plain, YAML-safe dict like every
-        other kwargs mapping in this codebase, instead of holding a live
-        ``ParseOptions`` instance.
 
         Args:
             path (str | Path): File to read.
@@ -139,14 +131,10 @@ class CSVDataHandler(DataHandler):
 
         Raises:
             OSError: If ``path`` cannot be read.
-            pd.errors.ParserError: If ``path`` does not parse under the
+            pyarrow.ArrowInvalid: If ``path`` does not parse under the
                 configured read options.
         """
-        kwargs = self.read_kwargs
-        if "sep" in kwargs:
-            kwargs = dict(kwargs)
-            kwargs["parse_options"] = pcsv.ParseOptions(delimiter=kwargs.pop("sep"))
-        data = pcsv.read_csv(path, **kwargs)
+        data = pcsv.read_csv(path, **self.read_kwargs)
         data = data.combine_chunks()
         return data
 
@@ -169,9 +157,8 @@ class CSVDataHandler(DataHandler):
     def count_rows(self) -> list[int]:
         """Count the data rows of each file with the configured CSV parser.
 
-        Files are parsed in bounded chunks using the same options as
-        ``read_data``. The PyArrow engine does not support chunked reads, so
-        files using it are materialized one at a time.
+        Files are parsed by PyArrow's streaming reader using the same options
+        as ``read_data``.
 
         Returns:
             list[int]: Number of data rows per file, in ``datafiles`` order.
@@ -182,16 +169,14 @@ class CSVDataHandler(DataHandler):
 
         row_counts = []
         for datafile in self.datafiles:
-            n = self.read_data(
-                datafile
-            )  # TODO: make sure this doesn't materialize everything
-            row_counts.append(len(n))
+            reader = pcsv.open_csv(datafile, **self.read_kwargs)
+            row_counts.append(sum(batch.num_rows for batch in reader))
 
         return row_counts
 
 
 class ParquetDataHandler(DataHandler):
-    """Handle Parquet data files through pandas."""
+    """Handle Parquet data files through PyArrow."""
 
     # Predicate pushdown drops rows the footer's num_rows still counts.
     _FORBIDDEN_READ_KWARGS: frozenset[str] = frozenset({"filters"})
@@ -385,7 +370,7 @@ class TabularDataset(torch.utils.data.Dataset):
             OSError: If ``path`` cannot be listed, a data file cannot be read
                 while writing the cache or counting its rows, or the cache
                 cannot be written.
-            pd.errors.ParserError: If a data file does not parse while writing
+            pyarrow.ArrowInvalid: If a data file does not parse while writing
                 the cache.
         """
         self.path = Path(path).resolve()
@@ -535,15 +520,15 @@ class TabularDataset(torch.utils.data.Dataset):
         """
         return cls(**cfg)
 
-    def _preprocess(self, path: str | Path) -> np.rec.recarray:
-        """Read one data file and apply the configured row-wise preparation.
+    def _preprocess(self, path: str | Path) -> pa.Table:
+        """Read one data file and apply the configured table-wise preparation.
 
         Args:
             path (str | Path): File to read.
 
         Returns:
-            np.rec.recarray: The rows of ``path`` that ``pre_filter`` keeps, each
-                as ``pre_transform`` returns it, as a numpy structured array
+            pa.Table: The rows of ``path`` after ``pre_filter`` and
+                ``pre_transform``.
 
         """
         data: pa.Table = self.data_handler.read_data(path)
@@ -556,7 +541,7 @@ class TabularDataset(torch.utils.data.Dataset):
 
         return data
 
-    def _read_cached(self, path: Path) -> np.rec.recarray:
+    def _read_cached(self, path: Path) -> pa.Table:
         """Prepare one data file, keeping the result if the cache is enabled.
 
         Args:

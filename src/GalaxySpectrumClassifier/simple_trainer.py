@@ -5,8 +5,9 @@ import numpy as np
 import pyaml
 import yaml
 import skops.io as sio
+import torch.utils.data
 
-from .base import DatasetProtocol, Trainable, TrainerProtocol
+from .base import Trainable, TrainerProtocol
 from .utils import load_type, resolve_type_kwargs, to_xy
 from .utils import TASKS, DEFAULT_METRICS
 
@@ -253,11 +254,11 @@ class SimpleTrainer(TrainerProtocol):
             )
         return metrics
 
-    def fit(self, dataset: DatasetProtocol) -> Trainable:
+    def fit(self, dataset: torch.utils.data.Dataset) -> Trainable:
         """Fit the configured model using every retained sample in a dataset.
 
         Args:
-            dataset (DatasetProtocol): Dataset supplying training features and
+            dataset (torch.utils.data.Dataset): Dataset supplying training features and
                 targets.
 
         Returns:
@@ -275,15 +276,15 @@ class SimpleTrainer(TrainerProtocol):
 
     def train(
         self,
-        train_data: DatasetProtocol,
-        validation_data: DatasetProtocol | None = None,
+        train_data: torch.utils.data.Dataset,
+        validation_data: torch.utils.data.Dataset | None = None,
     ) -> Trainable:
         """Fit the configured model using training data.
 
         Args:
-            train_data (DatasetProtocol): Dataset supplying training features
+            train_data (torch.utils.data.Dataset): Dataset supplying training features
                 and targets.
-            validation_data (DatasetProtocol | None, optional): Accepted for
+            validation_data (torch.utils.data.Dataset | None, optional): Accepted for
                 interface compatibility; it does not affect this trainer.
                 Defaults to None.
 
@@ -292,11 +293,11 @@ class SimpleTrainer(TrainerProtocol):
         """
         return self.fit(train_data)
 
-    def evaluate(self, data: DatasetProtocol) -> dict[str, float]:
+    def evaluate(self, data: torch.utils.data.Dataset) -> dict[str, float]:
         """Score the current model with each configured metric.
 
         Args:
-            data (DatasetProtocol): Dataset supplying evaluation features and
+            data (torch.utils.data.Dataset): Dataset supplying evaluation features and
                 targets. The model is not fitted again.
 
         Raises:
