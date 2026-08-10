@@ -25,7 +25,7 @@ from collections.abc import Callable
 import yaml
 import numpy as np
 import torch
-
+from datetime import datetime
 
 MetricSpec = dict[str, Callable[..., Any] | dict[str, Any] | bool]
 
@@ -243,7 +243,12 @@ class EpochTrainer(TrainerProtocol):
             **additional_model_kwargs,
         }
         self.task = task
-        self.output_path = Path(output_path).resolve()
+        # Get current datetime
+        now = datetime.now()
+        # Format as yyyy-MM_dd-hh-mm-ss (24-hour clock)
+        timestamp = now.strftime("%Y-%m_%d-%H-%M-%S")
+
+        self.output_path = Path(str(output_path) + f"_{timestamp}").resolve()
         self.output_path.mkdir(parents=True, exist_ok=_allow_existing_output_path)
 
         # set rng

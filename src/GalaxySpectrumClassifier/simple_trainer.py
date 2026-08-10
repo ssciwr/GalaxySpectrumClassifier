@@ -6,6 +6,7 @@ import pyaml
 import yaml
 import skops.io as sio
 import torch.utils.data
+from datetime import datetime
 
 from .base import Trainable, TrainerProtocol
 from .utils import load_type, resolve_type_kwargs, to_xy
@@ -106,7 +107,12 @@ class SimpleTrainer(TrainerProtocol):
             "seed": seed,
         }
 
-        self.output_path = Path(output_path).resolve()
+        # Get current datetime
+        now = datetime.now()
+        # Format as yyyy-MM_dd-hh-mm-ss (24-hour clock)
+        timestamp = now.strftime("%Y-%m_%d-%H-%M-%S")
+
+        self.output_path = Path(str(self.output_path) + f"_{timestamp}").resolve()
         self.output_path.mkdir(parents=True, exist_ok=True)
 
         if task not in TASKS:
