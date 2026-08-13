@@ -32,25 +32,20 @@ def build_data():
 
 @pytest.fixture
 def create_data(tmp_path):
-    """Write the synthetic frames as ten comma-separated ``.dat`` files.
+    """Write the synthetic frames as ten comma-separated ``.csv`` files.
 
-    Real files on disk rather than an in-memory stand-in, so tests exercise
-    ``TabularDataset``'s own reading and per-file indexing.
 
     Args:
         tmp_path: pytest's per-test temporary directory.
 
     Returns:
-        Path: The directory to hand to ``TabularDataset(path=...)``. Note the
-            files carry the frame index as an unnamed first column, so a
-            dataset reading them without ``read_kwargs={"index_col": 0}`` sees
-            one extra feature.
+        Path: The directory to hand to ``TabularDataset(path=...)``.
     """
     datapath = tmp_path / "data"
     datapath.mkdir()
     data = build_data()
     for i, df in enumerate(data):
-        df.to_csv(Path(datapath) / f"{i}.dat")
+        df.to_csv(Path(datapath) / f"{i}.csv", index=False)
 
     return datapath
 
