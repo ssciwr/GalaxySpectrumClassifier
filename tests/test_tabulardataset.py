@@ -128,6 +128,8 @@ def test_tabulardataset_creation_filter_map_does_not_rerun(data_dir, tmp_path):
 
     build()
     calls_after_first = (_filter_calls, _map_calls)
+    assert _filter_calls > 0
+    assert _map_calls > 0
 
     # Same source data and same functions - the second construction must
     # reuse the on-disk cache from the first instead of recomputing.
@@ -167,6 +169,48 @@ def test_tabulardataset_creation_backend_kwargs_are_passed_on(tmp_path):
 
     assert ds.feature_columns == ["a", "b"]
     assert len(ds) == 2
+
+
+def test_tabulardataset_rejects_hugging_face_split(data_dir):
+    with pytest.raises(ValueError, match="must not contain 'split'"):
+        TabularDataset(
+            str(data_dir),
+            hf_dataset_kwargs={"split": "train"},
+        )
+
+
+def test_tabulardataset_accepts_explicit_data_files_without_path(tmp_path, monkeypatch):
+    explicit_file = tmp_path / "explicit.csv"
+    pd.DataFrame({"a": [7.0], "source": [1]}).to_csv(explicit_file, index=False)
+
+    monkeypatch.setattr(
+        data_module.glob,
+        "glob",
+        lambda pattern: pytest.fail(f"path glob should not be used: {pattern}"),
+    )
+
+    ds = TabularDataset(
+        label_columns="source",
+        hf_dataset_kwargs={
+            "data_files": str(explicit_file),
+            **_hf_kwargs(tmp_path),
+        },
+    )
+
+    assert ds.backend["a"] == [7.0]
+
+
+def test_tabulardataset_rejects_path_and_explicit_data_files(data_dir):
+    with pytest.raises(ValueError, match="not both"):
+        TabularDataset(
+            str(data_dir),
+            hf_dataset_kwargs={"data_files": "explicit.csv"},
+        )
+
+
+def test_tabulardataset_requires_path_or_explicit_data_files():
+    with pytest.raises(ValueError, match="provide either 'path'"):
+        TabularDataset()
 
 
 def test_tabulardataset_sorts_files_before_loading(tmp_path, monkeypatch):

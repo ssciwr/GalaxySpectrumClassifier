@@ -20,7 +20,7 @@ class TabularDataset(torch.utils.data.Dataset):
 
     def __init__(
         self,
-        path: str,
+        path: str | None = None,
         data_format: str = "csv",
         transform: Callable | str | None = None,
         pre_transform: Callable | str | None = None,
@@ -35,9 +35,11 @@ class TabularDataset(torch.utils.data.Dataset):
         """Create a dataset from a Hugging Face ``datasets`` source.
 
         Args:
-            path (str): Directory holding the data files, globbed as
-                ``{path}/*.{data_format}`` and passed to
-                ``datasets.load_dataset`` as ``data_files``.
+            path (str | None, optional): Directory holding the data files,
+                globbed as ``{path}/*.{data_format}`` and passed to
+                ``datasets.load_dataset`` as ``data_files``. Exactly one of
+                ``path`` and ``hf_dataset_kwargs["data_files"]`` must be
+                supplied. Defaults to None.
             data_format (str, optional): Loading script name passed to
                 ``datasets.load_dataset`` (e.g. "csv", "parquet"), and the
                 file extension globbed for under ``path``. Defaults to
@@ -72,7 +74,10 @@ class TabularDataset(torch.utils.data.Dataset):
                 to True.
             hf_dataset_kwargs (dict[str, Any] | None, optional): Additional
                 keyword arguments forwarded to ``datasets.load_dataset``.
-                Defaults to None.
+                ``data_files`` is passed through unchanged and may be used
+                instead of, but not together with, ``path``.
+                ``split`` is not supported because dataset splitting is owned
+                by the torch/skorch training workflow. Defaults to None.
             transform_kwargs (dict[str, Any] | None, optional): Additional
                 keyword arguments used when installing ``transform``.
                 Defaults to None.
@@ -83,11 +88,30 @@ class TabularDataset(torch.utils.data.Dataset):
                 Additional keyword arguments used when applying
                 ``pre_transform``. Defaults to None.
         """
-        data_files = sorted(glob.glob(f"{path}/*.{data_format}"))
+        hf_dataset_kwargs = dict(hf_dataset_kwargs or {})
+        if "split" in hf_dataset_kwargs:
+            raise ValueError(
+                "hf_dataset_kwargs must not contain 'split'; dataset splitting "
+                "is handled by the torch/skorch training workflow"
+            )
+
+        has_data_files = "data_files" in hf_dataset_kwargs
+        if path is not None and has_data_files:
+            raise ValueError(
+                "provide either 'path' or hf_dataset_kwargs['data_files'], not both"
+            )
+        if path is None and not has_data_files:
+            raise ValueError("provide either 'path' or hf_dataset_kwargs['data_files']")
+
+        if has_data_files:
+            data_files = hf_dataset_kwargs.pop("data_files")
+        else:
+            data_files = sorted(glob.glob(f"{path}/*.{data_format}"))
+
         ds = datasets.load_dataset(
             data_format,
             data_files=data_files,
-            **(hf_dataset_kwargs or {}),
+            **hf_dataset_kwargs,
         )
 
         if pre_filter is not None:

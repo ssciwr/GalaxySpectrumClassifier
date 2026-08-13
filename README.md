@@ -97,7 +97,11 @@ stopping, learning-rate schedulers, metrics, snapshots, and model export.
 It loads the sorted files matching `*.{data_format}` with Hugging Face
 `datasets.load_dataset`. The format can be any loading script supported by Hugging
 Face Datasets, such as `csv` or `parquet`, and rows can be indexed like a torch
-dataset.
+dataset. If `hf_dataset_kwargs` contains `data_files`, that value is passed through
+unchanged and `path` must be omitted; exactly one of `path` and `data_files` is
+required. The `split` loader argument is intentionally not supported because
+training, validation, and test splitting belongs to the torch/skorch training
+workflow.
 
 The dataset configuration names the data path, Hugging Face format, loader options,
 and target column or columns:
