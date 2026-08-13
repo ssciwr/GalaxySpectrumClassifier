@@ -26,52 +26,25 @@ from GalaxySpectrumClassifier.epoch_trainer import EpochTrainer
 from GalaxySpectrumClassifier.utils import load_type
 
 
-def _features(sample):
-    """Select every column but ``source`` from a transform's one-row table."""
-    feature_names = [name for name in sample.column_names if name != "source"]
-    return (
-        np.stack(
-            [
-                sample.column(feature).to_numpy(zero_copy_only=False)
-                for feature in feature_names
-            ],
-            axis=1,
-        )
-        .astype(np.float32)
-        .squeeze(0)
-    )
+def _float_labels(batch):
+    """Cast ``source`` to floats, for losses that need a float target (BCE, MSE).
 
-
-def _target_scalar(sample):
-    return sample.column("source")[0].as_py()
-
-
-def _as_float32(sample):
-    """Provide BCEWithLogitsLoss-compatible features and a scalar target.
-
-    NeuralNetBinaryClassifier squeezes its output to one value per sample, so
-    the target has to match that shape rather than carry a trailing axis.
+    ``TabularDataset`` invokes ``transform`` on a dict of column name ->
+    list of values (one entry per row in the batch) and expects a dict of
+    the same shape back; it does the feature/label split and tensor
+    construction itself afterwards, taking the label dtype straight from
+    whatever ``transform`` puts in the batch.
     """
-    return (
-        torch.from_numpy(_features(sample)),
-        torch.tensor(_target_scalar(sample), dtype=torch.float32),
-    )
+    batch = dict(batch)
+    batch["source"] = [float(v) for v in batch["source"]]
+    return batch
 
 
-def _as_float32_vector_label(sample):
-    """Provide MSELoss-compatible features and a length-1 vector target."""
-    return (
-        torch.from_numpy(_features(sample)),
-        torch.tensor([_target_scalar(sample)], dtype=torch.float32),
-    )
-
-
-def _as_float32_features_int64_labels(sample):
-    """Provide CrossEntropyLoss-compatible features and targets."""
-    return (
-        torch.from_numpy(_features(sample)),
-        torch.tensor(_target_scalar(sample), dtype=torch.int64),
-    )
+def _int_labels(batch):
+    """Cast ``source`` to ints, for losses that need a long target (CrossEntropy)."""
+    batch = dict(batch)
+    batch["source"] = [int(v) for v in batch["source"]]
+    return batch
 
 
 class _FixedPredictionModel:
@@ -110,7 +83,7 @@ def _trainer_kwargs(tmp_path, data_path, **overrides):
         "max_epochs": 2,
         "batch_size": 4,
         "model_type": "torch.nn.Linear",
-        "model_args": [6, 1],
+        "model_args": [5, 1],
         "loss_type": "torch.nn.BCEWithLogitsLoss",
         "optimizer_type": "torch.optim.SGD",
         "train_dataset_type": "GalaxySpectrumClassifier.data.TabularDataset",
@@ -122,17 +95,17 @@ def _trainer_kwargs(tmp_path, data_path, **overrides):
         "test_dataset_args": [str(data_path)],
         "train_dataset_kwargs": {
             "label_columns": "source",
-            "transform": "test_epochtrainer._as_float32",
+            "transform": "test_epochtrainer._float_labels",
             "hf_dataset_kwargs": {"cache_dir": str(tmp_path / "hf_cache")},
         },
         "val_dataset_kwargs": {
             "label_columns": "source",
-            "transform": "test_epochtrainer._as_float32",
+            "transform": "test_epochtrainer._float_labels",
             "hf_dataset_kwargs": {"cache_dir": str(tmp_path / "hf_cache")},
         },
         "test_dataset_kwargs": {
             "label_columns": "source",
-            "transform": "test_epochtrainer._as_float32",
+            "transform": "test_epochtrainer._float_labels",
             "hf_dataset_kwargs": {"cache_dir": str(tmp_path / "hf_cache")},
         },
         "progressbar": False,
@@ -208,14 +181,14 @@ def test_epochtrainer_constructs_all_datasets_and_preserves_rebuild_config(
     assert isinstance(trainer.train_ds, TabularDataset)
     assert isinstance(trainer.val_ds, TabularDataset)
     assert isinstance(trainer.eval_ds, TabularDataset)
-    assert trainer.train_ds.path == create_data.resolve()
-    assert trainer.val_ds.path == create_data.resolve()
-    assert trainer.eval_ds.path == create_data.resolve()
-    assert trainer.train_ds.transform("sample") == "sample"
+    assert len(trainer.train_ds) == 1000
+    assert len(trainer.val_ds) == 1000
+    assert len(trainer.eval_ds) == 1000
+    assert trainer.train_ds.feature_columns == ["a", "b", "c", "d", "extra"]
 
     assert isinstance(trainer.model, NeuralNetBinaryClassifier)
     assert isinstance(trainer.model.module, torch.nn.Linear)
-    assert trainer.model.module.in_features == 6
+    assert trainer.model.module.in_features == 5
     assert trainer.model.module.out_features == 1
     assert trainer.model.criterion is torch.nn.BCEWithLogitsLoss
     assert trainer.model.optimizer is torch.optim.SGD
@@ -263,21 +236,21 @@ def test_epochtrainer_seeds_numpy_and_torch_global_rngs(tmp_path, create_data):
             "binary-classification",
             NeuralNetBinaryClassifier,
             "accuracy_score",
-            [6, 1],
+            [5, 1],
             "torch.nn.BCEWithLogitsLoss",
         ),
         (
             "multiclass-classification",
             NeuralNetClassifier,
             "accuracy_score",
-            [6, 2],
+            [5, 2],
             "torch.nn.CrossEntropyLoss",
         ),
         (
             "regression",
             NeuralNetRegressor,
             "r2_score",
-            [6, 1],
+            [5, 1],
             "torch.nn.MSELoss",
         ),
     ],
@@ -307,7 +280,7 @@ def test_epochtrainer_passes_multiclass_classes_to_skorch(tmp_path, create_data)
             tmp_path,
             create_data,
             task="multiclass-classification",
-            model_args=[6, 2],
+            model_args=[5, 2],
             loss_type="torch.nn.CrossEntropyLoss",
             classes=[0, 1],
         )
@@ -618,7 +591,7 @@ def test_epochtrainer_trains_multiclass_with_transform_controlled_dtypes(
 ):
     dataset_kwargs = {
         "label_columns": "source",
-        "transform": "test_epochtrainer._as_float32_features_int64_labels",
+        "transform": "test_epochtrainer._int_labels",
         "hf_dataset_kwargs": {"cache_dir": str(tmp_path / "hf_cache")},
     }
     trainer = EpochTrainer(
@@ -626,7 +599,7 @@ def test_epochtrainer_trains_multiclass_with_transform_controlled_dtypes(
             tmp_path,
             create_data,
             task="multiclass-classification",
-            model_args=[6, 2],
+            model_args=[5, 2],
             loss_type="torch.nn.CrossEntropyLoss",
             train_dataset_kwargs=dataset_kwargs,
             val_dataset_kwargs=dataset_kwargs,
@@ -648,7 +621,7 @@ def test_epochtrainer_trains_multiclass_with_transform_controlled_dtypes(
 def test_epochtrainer_trains_regression_with_vector_targets(tmp_path, create_data):
     dataset_kwargs = {
         "label_columns": ["source"],
-        "transform": "test_epochtrainer._as_float32_vector_label",
+        "transform": "test_epochtrainer._float_labels",
         "hf_dataset_kwargs": {"cache_dir": str(tmp_path / "hf_cache")},
     }
     trainer = EpochTrainer(
@@ -656,7 +629,7 @@ def test_epochtrainer_trains_regression_with_vector_targets(tmp_path, create_dat
             tmp_path,
             create_data,
             task="regression",
-            model_args=[6, 1],
+            model_args=[5, 1],
             loss_type="torch.nn.MSELoss",
             train_dataset_kwargs=dataset_kwargs,
             val_dataset_kwargs=dataset_kwargs,
@@ -684,7 +657,7 @@ def test_epochtrainer_evaluate_passes_multiclass_probability_matrix_to_metric(
             tmp_path,
             create_data,
             task="multiclass-classification",
-            model_args=[6, 2],
+            model_args=[5, 2],
             loss_type="torch.nn.CrossEntropyLoss",
             metrics=[
                 {
@@ -742,7 +715,7 @@ def test_epochtrainer_evaluate_rejects_probability_metrics_for_regression(
             tmp_path,
             create_data,
             task="regression",
-            model_args=[6, 1],
+            model_args=[5, 1],
             loss_type="torch.nn.MSELoss",
             metrics=[
                 {
