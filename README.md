@@ -9,13 +9,7 @@
 
 `GalaxySpectrumClassifier` requires Python 3.13 or newer. The package pulls in
 the scientific Python stack used by the trainers, including `pandas`,
-`scikit-learn`, `torch`, `skorch`, and `torchvision`.
-
-The Python package can be installed from PyPI:
-
-```sh
-python -m pip install GalaxySpectrumClassifier
-```
+`scikit-learn`, `torch`, `skorch`, and `torchvision`, as well as hugginface's `datasets` library.
 
 To install directly from a checkout of this repository:
 
@@ -25,10 +19,11 @@ cd GalaxySpectrumClassifier
 python -m pip install .
 ```
 
+PyPi releases will be available in the future.
+
 ## Development installation
 
-If you want to contribute to the development of `GalaxySpectrumClassifier`, we recommend
-the following editable installation from this repository:
+For development of `GalaxySpectrumClassifier`, use an editable installation from this repository:
 
 ```sh
 git clone git@github.com:ssciwr/GalaxySpectrumClassifier.git
@@ -94,30 +89,39 @@ stopping, learning-rate schedulers, metrics, snapshots, and model export.
 ### Tabular datasets
 
 `TabularDataset` treats each row in a directory of tabular files as one sample.
-It currently supports registered tabular formats such as CSV and parquet through
-PyArrow-backed handlers. Files are ordered consistently and rows can be indexed like
-a torch dataset.
+It loads the sorted files matching `*.{data_format}` with Hugging Face
+`datasets.load_dataset`. The format can be any loading script supported by Hugging
+Face Datasets, such as `csv` or `parquet`, and rows can be indexed like a torch
+dataset. If `hf_dataset_kwargs` contains `data_files`, that value is passed through
+unchanged and `path` must be omitted; exactly one of `path` and `data_files` is
+required. The `split` loader argument is intentionally not supported because
+training, validation, and test splitting belongs to the torch/skorch training
+workflow. For more details, have a look at the huggingface `datasets` documentation.
 
-The dataset configuration names the data path, read options, file suffix, and
-target column or columns:
+The dataset configuration names the data path, Hugging Face format, loader options,
+and target column or columns:
 
 ```python
 from GalaxySpectrumClassifier import TabularDataset
 
 dataset = TabularDataset(
     path="data/classification_v2",
-    dataformat="csv",
-    suffix=".csv",
+    data_format="csv",
+    hf_dataset_kwargs={"delimiter": ","},
     label_columns="source",
 )
 
 features, target = dataset[0]
 ```
 
-Optional `pre_filter` and `pre_transform` hooks run once into an on-disk cache,
-while `transform` prepares rows at retrieval time. These hooks can also be
-configured with dotted import paths so they can live in YAML alongside the rest
-of the experiment.
+`hf_dataset_kwargs` is forwarded to `datasets.load_dataset`, so it can also set
+options such as `cache_dir`. Optional `pre_filter` and `pre_transform` hooks are
+applied through Hugging Face Datasets' `filter` and `map`, respectively. Their
+results follow Hugging Face's fingerprinting and cache behavior rather than a
+separate preprocessing cache owned by this package. `transform` is installed with
+`with_transform` and runs lazily when rows are retrieved; it does not rewrite the
+stored dataset. Hooks may be callables or dotted import paths, and their respective
+`*_kwargs` dictionaries are forwarded to the Hugging Face operation.
 
 ### Torch, sklearn, and skorch
 
