@@ -1,9 +1,11 @@
-User API
-========
+API reference
+=============
 
 .. toctree::
+   :maxdepth: 2
 
-This is an example function:
-
-.. automodule:: GalaxySpectrumClassifier
-    :members:
+   api/data
+   api/simple_trainer
+   api/epoch_trainer
+   api/utils
+   api/base

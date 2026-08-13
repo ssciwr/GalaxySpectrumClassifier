@@ -1,3 +1,11 @@
+"""Train estimators that consume fully materialized feature and target arrays.
+
+:class:`SimpleTrainer` converts a dataset to ``X, y`` before fitting, which
+suits sklearn estimators and any torch module already wrapped in a skorch
+estimator. For models that should train in batches over multiple epochs, use
+:mod:`GalaxySpectrumClassifier.epoch_trainer` instead.
+"""
+
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any

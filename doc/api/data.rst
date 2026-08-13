@@ -1,0 +1,4 @@
+Datasets
+========
+
+.. automodule:: GalaxySpectrumClassifier.data

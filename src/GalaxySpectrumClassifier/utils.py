@@ -1,3 +1,10 @@
+"""Shared helpers for the config-driven trainers.
+
+Covers resolution of dotted import paths into live Python objects, the task and
+metric constants the trainers validate against, and conversion of a dataset
+into the arrays estimators expect.
+"""
+
 import importlib
 import re
 from pathlib import Path
@@ -7,20 +14,21 @@ import numpy as np
 import torch.utils.data
 
 
-# The three task kinds the trainers know how to evaluate. This drives two
-# things: which predict_proba() shape a "needs_proba" metric receives, and
-# which metric is used by default when the caller doesn't configure one.
+#: The three task kinds the trainers know how to evaluate. This drives two
+#: things: which predict_proba() shape a "needs_proba" metric receives, and
+#: which metric is used by default when the caller doesn't configure one.
 TASKS = ("binary-classification", "multiclass-classification", "regression")
 
-# Sensible zero-config metric per task, used when `metrics` is not given.
-# accuracy_score assumes discrete labels, so it is only appropriate for the
-# two classification tasks; regression falls back to r2_score instead.
+#: Sensible zero-config metric per task, used when `metrics` is not given.
+#: accuracy_score assumes discrete labels, so it is only appropriate for the
+#: two classification tasks; regression falls back to r2_score instead.
 DEFAULT_METRICS = {
     "binary-classification": [{"type": "sklearn.metrics.accuracy_score"}],
     "multiclass-classification": [{"type": "sklearn.metrics.accuracy_score"}],
     "regression": [{"type": "sklearn.metrics.r2_score"}],
 }
 
+#: available export formats for torch models
 EXPORT_FORMATS = ["onnx", "default", "pt", "safetensors"]
 
 
@@ -102,15 +110,15 @@ def resolve_type_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     the object it names. All other top-level values are retained unchanged.
 
     Args:
-            kwargs (dict[str, Any]): Named configuration values to resolve.
+        kwargs (dict[str, Any]): Named configuration values to resolve.
 
     Returns:
-            dict[str, Any]: A new mapping with resolvable type declarations
-                replaced by their named objects.
+        dict[str, Any]: A new mapping with resolvable type declarations
+            replaced by their named objects.
 
-        Raises:
-            ModuleNotFoundError: If a declared import path cannot be found.
-            AttributeError: If a declared import path names no object.
+    Raises:
+        ModuleNotFoundError: If a declared import path cannot be found.
+        AttributeError: If a declared import path names no object.
     """
     resolved = {}
     type_path_pattern = re.compile(r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*)+$")

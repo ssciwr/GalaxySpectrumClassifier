@@ -1,3 +1,13 @@
+"""Train torch modules in batches over repeated epochs through skorch.
+
+:class:`EpochTrainer` owns its training, validation, and test dataset
+configuration, so unlike
+:class:`~GalaxySpectrumClassifier.simple_trainer.SimpleTrainer` its
+:meth:`~EpochTrainer.train` and :meth:`~EpochTrainer.evaluate` methods take no
+dataset argument. It adds callbacks, checkpointing, early stopping, and
+learning-rate scheduling on top of the shared trainer lifecycle.
+"""
+
 from .base import Trainable, TrainerProtocol
 from .data import TabularDataset
 from .utils import (
@@ -123,8 +133,8 @@ class EpochTrainer(TrainerProtocol):
                 declarations. Each includes ``type`` and can include
                 ``kwargs``, ``name``, ``needs_proba``, ``lower_is_better``,
                 and ``use_caching``. Defaults to None.
-            callbacks (list[dict[str, str | list[Any] | dict[str, Any]]] | None,
-                optional): Additional callback declarations, each with ``type``
+            callbacks (list[dict[str, str | list[Any] | dict[str, Any]]] | None, optional):
+                Additional callback declarations, each with ``type``
                 and optional ``args`` and ``kwargs``. Defaults to None.
             train_dataset_args (list[Any] | None, optional): Positional
                 arguments for the training dataset. Defaults to None.

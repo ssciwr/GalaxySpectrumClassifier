@@ -1,3 +1,9 @@
+"""Protocols describing the interfaces the trainers and models share.
+
+All four are runtime-checkable, so an implementation only has to provide the
+listed methods rather than inherit from them.
+"""
+
 from typing import Any, Self, Protocol, runtime_checkable
 import torch
 
