@@ -51,6 +51,13 @@ def _scale_a(batch):
     return batch
 
 
+def _float_source(batch):
+    """Cast ``source`` to floats, as BCEWithLogitsLoss requires a float target."""
+    batch = dict(batch)
+    batch["source"] = [float(v) for v in batch["source"]]
+    return batch
+
+
 @pytest.fixture
 def data_dir(tmp_path):
     """Write one small CSV file with two features and a binary label column."""
@@ -228,6 +235,48 @@ def test_tabulardataset_getitems_with_transform(data_dir, tmp_path):
     assert torch.equal(y, torch.tensor([0.0, 1.0]))
 
 
+def test_tabular_dataset_works_with_parallel_dataloaders(data_dir, tmp_path):
+    ds = TabularDataset(
+        str(data_dir), label_columns="source", hf_dataset_kwargs=_hf_kwargs(tmp_path)
+    )
+    loader = DataLoader(ds, batch_size=2, num_workers=2, shuffle=False)
+
+    X, y = zip(*list(loader))
+    X = torch.cat(X)
+    y = torch.cat(y)
+
+    assert torch.equal(
+        X,
+        torch.tensor(
+            [
+                [1.0, 10.0],
+                [2.0, 20.0],
+                [3.0, 30.0],
+                [4.0, 40.0],
+                [5.0, 50.0],
+                [6.0, 60.0],
+            ]
+        ),
+    )
+    assert torch.equal(y, torch.tensor([0.0, 1.0, 0.0, 1.0, 0.0, 1.0]))
+
+
+def test_tabular_dataset_shuffled_parallel_dataloader_produces_no_repetition_of_samples(
+    data_dir, tmp_path
+):
+    ds = TabularDataset(
+        str(data_dir), label_columns="source", hf_dataset_kwargs=_hf_kwargs(tmp_path)
+    )
+    loader = DataLoader(ds, batch_size=2, num_workers=2, shuffle=True)
+
+    X, _ = zip(*list(loader))
+    X = torch.cat(X)
+
+    # Column "a" is unique per row (1..6), so it stands in for sample
+    # identity: every sample must appear exactly once, in some order.
+    assert sorted(X[:, 0].tolist()) == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+
+
 def test_tabulardataset_getitems(data_dir, tmp_path):
     ds = TabularDataset(
         str(data_dir), label_columns="source", hf_dataset_kwargs=_hf_kwargs(tmp_path)
@@ -240,7 +289,7 @@ def test_tabulardataset_getitems(data_dir, tmp_path):
     assert torch.equal(y, torch.tensor([0.0, 1.0]))
 
 
-def test_tabulardataset_works_with_simpletrainer(data_dir, tmp_path):
+def test_tabulardataset_works_with_simpletrainer_classification(data_dir, tmp_path):
     ds = TabularDataset(
         str(data_dir), label_columns="source", hf_dataset_kwargs=_hf_kwargs(tmp_path)
     )
@@ -257,8 +306,30 @@ def test_tabulardataset_works_with_simpletrainer(data_dir, tmp_path):
     assert set(trainer.evaluate(ds)) == {"accuracy_score"}
 
 
-def test_tabulardataset_works_with_epochtrainer(data_dir, tmp_path):
-    ds_kwargs = {"label_columns": "source", "hf_dataset_kwargs": _hf_kwargs(tmp_path)}
+def test_tabulardataset_works_with_simpletrainer_regression(data_dir, tmp_path):
+    ds = TabularDataset(
+        str(data_dir), label_columns="source", hf_dataset_kwargs=_hf_kwargs(tmp_path)
+    )
+    train_subset = Subset(ds, [0, 1, 2, 3])
+    trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
+        model_type="sklearn.ensemble.RandomForestRegressor",
+        model_kwargs={"n_estimators": 10, "random_state": 42},
+        task="regression",
+    )
+
+    fitted = trainer.fit(train_subset)
+
+    assert fitted is trainer.model
+    assert set(trainer.evaluate(ds)) == {"r2_score"}
+
+
+def test_tabulardataset_works_with_epochtrainer_classification(data_dir, tmp_path):
+    ds_kwargs = {
+        "label_columns": "source",
+        "transform": "test_tabulardataset._float_source",
+        "hf_dataset_kwargs": _hf_kwargs(tmp_path),
+    }
     trainer = EpochTrainer(
         output_path=str(tmp_path / "training"),
         max_epochs=1,
@@ -283,3 +354,35 @@ def test_tabulardataset_works_with_epochtrainer(data_dir, tmp_path):
     trainer.train()
 
     assert set(trainer.evaluate()) == {"accuracy_score"}
+
+
+def test_tabulardataset_works_with_epochtrainer_regression(data_dir, tmp_path):
+    ds_kwargs = {
+        "label_columns": "source",
+        "transform": "test_tabulardataset._float_source",
+        "hf_dataset_kwargs": _hf_kwargs(tmp_path),
+    }
+    trainer = EpochTrainer(
+        output_path=str(tmp_path / "training"),
+        max_epochs=1,
+        batch_size=2,
+        model_type="torch.nn.Linear",
+        model_args=[2, 1],
+        loss_type="torch.nn.MSELoss",
+        optimizer_type="torch.optim.SGD",
+        train_dataset_type="GalaxySpectrumClassifier.data.TabularDataset",
+        val_dataset_type="GalaxySpectrumClassifier.data.TabularDataset",
+        test_dataset_type="GalaxySpectrumClassifier.data.TabularDataset",
+        task="regression",
+        train_dataset_args=[str(data_dir)],
+        val_dataset_args=[str(data_dir)],
+        test_dataset_args=[str(data_dir)],
+        train_dataset_kwargs=ds_kwargs,
+        val_dataset_kwargs=ds_kwargs,
+        test_dataset_kwargs=ds_kwargs,
+        progressbar=False,
+    )
+
+    trainer.train()
+
+    assert set(trainer.evaluate()) == {"r2_score"}

@@ -130,7 +130,9 @@ def to_xy(
     """Convert a dataset or subset into feature and target arrays.
 
     The returned rows preserve the supplied dataset's or subset's order. No
-    rows are dropped during conversion.
+    rows are dropped during conversion. Honors the dataset's
+    ``squeeze_labels`` setting (unwrapping any ``Subset``), dropping the
+    target's trailing dimension when it has size 1.
 
     Args:
         dataset (torch.utils.data.Dataset | torch.utils.data.Subset): Dataset providing
@@ -140,7 +142,14 @@ def to_xy(
         tuple[np.ndarray, np.ndarray]: Feature matrix and one target value per
             selected sample.
     """
-
     X, y = dataset[:]
+    X, y = X.numpy(), y.numpy()
 
-    return X.numpy(), y.numpy()
+    underlying = dataset
+    while isinstance(underlying, torch.utils.data.Subset):
+        underlying = underlying.dataset
+
+    if getattr(underlying, "squeeze_labels", False) and y.ndim > 1 and y.shape[-1] == 1:
+        y = y.squeeze(-1)
+
+    return X, y
