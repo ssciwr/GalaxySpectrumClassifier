@@ -101,3 +101,4 @@ dataset:
   path: ../data/bronze/default
   data_format: csv
   label_columns: 'source'
+  transform: __main__.convert_types
