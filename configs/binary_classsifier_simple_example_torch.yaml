@@ -38,61 +38,51 @@ trainer:
   # to needs_proba metrics (positive-class column for binary).
   task: binary-classification
   metrics:
-    -
-      name: accuracy
+    - name: accuracy
       type: sklearn.metrics.accuracy_score
       kwargs:
       needs_proba: false
-    -
-      name: balanced_accuracy
+    - name: balanced_accuracy
       type: sklearn.metrics.balanced_accuracy_score
       kwargs:
       needs_proba: false
-    -
-      name: f1
+    - name: f1
       type: sklearn.metrics.f1_score
       kwargs:
         average: binary
         zero_division: 0
       needs_proba: false
-    -
-      name: precision
+    - name: precision
       type: sklearn.metrics.precision_score
       kwargs:
         average: binary
         zero_division: 0
       needs_proba: false
-    -
-      name: recall
+    - name: recall
       type: sklearn.metrics.recall_score
       kwargs:
         average: binary
         zero_division: 0
       needs_proba: false
-    -
-      name: matthews_corrcoef
+    - name: matthews_corrcoef
       type: sklearn.metrics.matthews_corrcoef
       kwargs:
       needs_proba: false
     # The three below score against predict_proba()[:, 1] - these are the ones
     # that actually show whether the calibrator earned its keep.
-    -
-      name: roc_auc
+    - name: roc_auc
       type: sklearn.metrics.roc_auc_score
       kwargs:
       needs_proba: true
-    -
-      name: average_precision
+    - name: average_precision
       type: sklearn.metrics.average_precision_score
       kwargs:
       needs_proba: true
-    -
-      name: log_loss
+    - name: log_loss
       type: sklearn.metrics.log_loss
       kwargs:
       needs_proba: true
-    -
-      name: brier
+    - name: brier
       type: sklearn.metrics.brier_score_loss
       kwargs:
       needs_proba: true
@@ -100,5 +90,5 @@ trainer:
 dataset:
   path: ../data/bronze/default
   data_format: csv
-  label_columns: 'source'
+  label_columns: "source"
   transform: __main__.convert_types
