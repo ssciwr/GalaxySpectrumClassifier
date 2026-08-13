@@ -10,12 +10,12 @@ from .utils import load_type
 class TabularDataset(torch.utils.data.Dataset):
     """Present a Hugging Face ``datasets`` dataset as one indexed dataset.
 
-    Loads (or reloads from ``cache_path``) the ``"train"`` split of a
-    dataset built with ``datasets.load_dataset``, applies the optional
-    ``pre_filter`` and/or ``pre_transform`` hooks once at construction, and
-    splits each retrieved sample into feature and label tensors along
-    ``label_columns``. ``transform``, if given, is applied lazily each time
-    a sample is retrieved.
+    Loads the ``"train"`` split of a dataset built with
+    ``datasets.load_dataset``, applies the optional ``pre_filter`` and/or
+    ``pre_transform`` hooks once at construction, and splits each retrieved
+    sample into feature and label tensors along ``label_columns``.
+    ``transform``, if given, is applied lazily each time a sample is
+    retrieved.
     """
 
     def __init__(
@@ -37,9 +37,7 @@ class TabularDataset(torch.utils.data.Dataset):
         Args:
             path (str): Directory holding the data files, globbed as
                 ``{path}/*.{data_format}`` and passed to
-                ``datasets.load_dataset`` as ``data_files``. Ignored when
-                ``cache_path`` already exists, in which case the dataset is
-                loaded from there instead.
+                ``datasets.load_dataset`` as ``data_files``.
             data_format (str, optional): Loading script name passed to
                 ``datasets.load_dataset`` (e.g. "csv", "parquet"), and the
                 file extension globbed for under ``path``. Defaults to
@@ -50,18 +48,17 @@ class TabularDataset(torch.utils.data.Dataset):
                 Defaults to None.
             pre_transform (Callable | str | None, optional): Callable, or
                 import path to one, applied once to every row at
-                construction, before the result is written to
-                ``cache_path``. Defaults to None.
+                construction. Defaults to None.
             pre_filter (Callable | str | None, optional): Callable, or
                 import path to one, applied once to every row at
-                construction, before the result is written to
-                ``cache_path``. Defaults to None.
+                construction. Defaults to None.
             label_columns (str | list[str] | None, optional): Name of one
                 target column or an ordered collection of target columns,
                 used to split each retrieved sample into features and
                 targets. A string produces one target column. Defaults to
-                None, which treats every column as a feature and returns an
-                empty target tensor.
+                None, which treats every column as a feature; see
+                ``__getitem__`` and ``__getitems__`` for how targets are
+                reported in that case.
             squeeze_labels (bool, optional): Whether ``__getitems__`` drops
                 the target tensor's trailing dimension when it has size 1
                 (i.e. exactly one label column), matching the ``(n,)``
@@ -74,9 +71,8 @@ class TabularDataset(torch.utils.data.Dataset):
                 ``__getitems__``; ``__getitem__`` never squeezes. Defaults
                 to True.
             hf_dataset_kwargs (dict[str, Any] | None, optional): Additional
-                keyword arguments forwarded to ``datasets.load_dataset`` or,
-                when reloading an existing cache, to
-                ``datasets.load_from_disk``. Defaults to None.
+                keyword arguments forwarded to ``datasets.load_dataset``.
+                Defaults to None.
             transform_kwargs (dict[str, Any] | None, optional): Additional
                 keyword arguments used when installing ``transform``.
                 Defaults to None.
@@ -87,9 +83,10 @@ class TabularDataset(torch.utils.data.Dataset):
                 Additional keyword arguments used when applying
                 ``pre_transform``. Defaults to None.
         """
+        data_files = sorted(glob.glob(f"{path}/*.{data_format}"))
         ds = datasets.load_dataset(
             data_format,
-            data_files=glob.glob(f"{path}/*.{data_format}"),
+            data_files=data_files,
             **(hf_dataset_kwargs or {}),
         )
 
@@ -158,8 +155,7 @@ class TabularDataset(torch.utils.data.Dataset):
             tuple[torch.Tensor, torch.Tensor]: ``(features, targets)``.
                 ``features`` stacks every column not named in
                 ``label_columns``; ``targets`` stacks the ``label_columns``
-                columns and is squeezed to drop its last dimension when
-                there is exactly one label column.
+                columns, never squeezed (unlike ``__getitems__``).
         """
         # split into X, y with self.label_columns
         raw = self.backend[idx]

@@ -37,6 +37,8 @@ class SimpleTrainer(TrainerProtocol):
         task: str = "binary-classification",
         metrics: list[dict[str, Any]] | None = None,
         seed: int = 42,
+        name: str | None = None,
+        _allow_existing_output_path: bool = False,
     ):
         """Configure a model, optional calibration, and evaluation metrics.
 
@@ -81,6 +83,8 @@ class SimpleTrainer(TrainerProtocol):
                 for ``task``.
             seed (int, optional): Seed used for trainer-managed random state.
                 Defaults to 42.
+            name (str | None, optional): Experiment name included in the output
+                directory. Defaults to None.
 
         Raises:
             ValueError: If ``task`` is unsupported, or calibration is requested
@@ -105,6 +109,7 @@ class SimpleTrainer(TrainerProtocol):
             "task": task,
             "metrics": metrics,
             "seed": seed,
+            "name": name,
         }
 
         # Get current datetime
@@ -112,8 +117,9 @@ class SimpleTrainer(TrainerProtocol):
         # Format as yyyy-MM_dd-hh-mm-ss (24-hour clock)
         timestamp = now.strftime("%Y-%m_%d-%H-%M-%S")
 
-        self.output_path = Path(str(output_path) + f"_{timestamp}").resolve()
-        self.output_path.mkdir(parents=True, exist_ok=True)
+        name_suffix = f"_{name}" if name else ""
+        self.output_path = Path(f"{output_path}{name_suffix}_{timestamp}").resolve()
+        self.output_path.mkdir(parents=True, exist_ok=_allow_existing_output_path)
 
         if task not in TASKS:
             raise ValueError(f"task must be one of {TASKS}, got {task!r}")
@@ -387,6 +393,7 @@ class SimpleTrainer(TrainerProtocol):
         directory = Path(path)
         with open(directory / "config.yaml") as f:
             config = yaml.safe_load(f)
+        config["_allow_existing_output_path"] = True
         trainer = cls(**config)
         trainer.model = trainer._load_model(directory / "model.skops")
         return trainer

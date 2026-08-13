@@ -1,4 +1,5 @@
 from .base import Trainable, TrainerProtocol
+from .data import TabularDataset
 from .utils import (
     load_type,
     resolve_type_kwargs,
@@ -46,9 +47,6 @@ class EpochTrainer(TrainerProtocol):
         model_type: str,
         loss_type: str,
         optimizer_type: str,
-        train_dataset_type: str,
-        val_dataset_type: str,
-        test_dataset_type: str,
         task: str,
         device: str = "cpu",
         optimizer_kwargs: dict[str, Any] | None = None,
@@ -79,6 +77,7 @@ class EpochTrainer(TrainerProtocol):
         export_format: str = "default",
         classes: list[Any] | None = None,
         _allow_existing_output_path: bool = False,
+        name: str | None = None,
         **additional_model_kwargs,
     ):
         """Configure datasets, model training, evaluation, and saved outputs.
@@ -93,12 +92,6 @@ class EpochTrainer(TrainerProtocol):
             loss_type (str): Dotted import path identifying the loss class.
             optimizer_type (str): Dotted import path identifying the optimizer
                 class.
-            train_dataset_type (str): Dotted import path identifying the
-                training dataset class.
-            val_dataset_type (str): Dotted import path identifying the
-                validation dataset class.
-            test_dataset_type (str): Dotted import path identifying the
-                evaluation dataset class.
             task (str): One of ``"binary-classification"``,
                 ``"multiclass-classification"``, or ``"regression"``.
                 Regression with scalar-output torch modules should configure
@@ -167,6 +160,8 @@ class EpochTrainer(TrainerProtocol):
                 multiclass classification. Passed to skorch's
                 ``NeuralNetClassifier`` because fitting from a Dataset with
                 ``y=None`` cannot infer them. Defaults to None.
+            name (str | None, optional): Experiment name included in the output
+                directory. Defaults to None.
             **additional_model_kwargs: Additional named options preserved in
                 the trainer configuration for model-related use.
 
@@ -209,9 +204,6 @@ class EpochTrainer(TrainerProtocol):
             "model_type": model_type,
             "loss_type": loss_type,
             "optimizer_type": optimizer_type,
-            "train_dataset_type": train_dataset_type,
-            "val_dataset_type": val_dataset_type,
-            "test_dataset_type": test_dataset_type,
             "task": task,
             "device": device,
             "optimizer_kwargs": optimizer_kwargs,
@@ -241,6 +233,7 @@ class EpochTrainer(TrainerProtocol):
             "early_stopping_kwargs": early_stopping_kwargs,
             "export_format": export_format,
             "classes": classes,
+            "name": name,
             **additional_model_kwargs,
         }
         self.task = task
@@ -249,8 +242,9 @@ class EpochTrainer(TrainerProtocol):
         # Format as yyyy-MM_dd-hh-mm-ss (24-hour clock)
         timestamp = now.strftime("%Y-%m_%d-%H-%M-%S")
 
-        self.output_path = Path(str(output_path) + f"_{timestamp}").resolve()
-        self.output_path = Path(output_path).resolve()
+        name_suffix = f"_{name}" if name else ""
+        self.output_path = Path(f"{output_path}{name_suffix}_{timestamp}").resolve()
+
         self.output_path.mkdir(parents=True, exist_ok=_allow_existing_output_path)
 
         # set rng
@@ -266,7 +260,7 @@ class EpochTrainer(TrainerProtocol):
         # shape (e.g. (n, 1) for a single regression target), so squeezing
         # would silently break them via broadcasting.
         squeeze_labels = task in ("binary-classification", "multiclass-classification")
-        self.train_ds = load_type(train_dataset_type)(
+        self.train_ds = TabularDataset(
             *(train_dataset_args or []),
             **{
                 "squeeze_labels": squeeze_labels,
@@ -274,7 +268,7 @@ class EpochTrainer(TrainerProtocol):
             },
         )
 
-        self.val_ds = load_type(val_dataset_type)(
+        self.val_ds = TabularDataset(
             *(val_dataset_args or []),
             **{
                 "squeeze_labels": squeeze_labels,
@@ -282,7 +276,7 @@ class EpochTrainer(TrainerProtocol):
             },
         )
 
-        self.eval_ds = load_type(test_dataset_type)(
+        self.eval_ds = TabularDataset(
             *(test_dataset_args or []),
             **{
                 "squeeze_labels": squeeze_labels,

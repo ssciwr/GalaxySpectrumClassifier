@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -6,6 +7,7 @@ import torch
 from torch.utils.data import DataLoader, Subset
 from torchvision.transforms import Compose
 
+import GalaxySpectrumClassifier.data as data_module
 from GalaxySpectrumClassifier import EpochTrainer, SimpleTrainer, TabularDataset
 
 
@@ -165,6 +167,28 @@ def test_tabulardataset_creation_backend_kwargs_are_passed_on(tmp_path):
 
     assert ds.feature_columns == ["a", "b"]
     assert len(ds) == 2
+
+
+def test_tabulardataset_sorts_files_before_loading(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    pd.DataFrame({"a": [1.0], "source": [0]}).to_csv(data_dir / "a.csv", index=False)
+    pd.DataFrame({"a": [2.0], "source": [1]}).to_csv(data_dir / "b.csv", index=False)
+
+    glob = data_module.glob.glob
+    monkeypatch.setattr(
+        data_module,
+        "glob",
+        SimpleNamespace(glob=lambda pattern: list(reversed(glob(pattern)))),
+    )
+
+    ds = TabularDataset(
+        str(data_dir),
+        label_columns="source",
+        hf_dataset_kwargs=_hf_kwargs(tmp_path),
+    )
+
+    assert ds.backend["a"] == [1.0, 2.0]
 
 
 def test_tabulardataset_creation_filter_kwargs_are_passed_on(data_dir, tmp_path):
