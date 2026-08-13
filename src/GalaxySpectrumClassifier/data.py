@@ -191,6 +191,24 @@ class TabularDataset(torch.utils.data.Dataset):
     def __getitems__(
         self, idxs: Sequence[int]
     ) -> list[tuple[torch.Tensor, torch.Tensor]]:
+        """Retrieve several samples, split into features and targets.
+
+        Args:
+            idxs (Sequence[int]): Positions to retrieve.
+
+        Raises:
+            ValueError: If ``label_columns`` names a column that does not
+                exist in the dataset.
+
+        Returns:
+            list[tuple[torch.Tensor, torch.Tensor]]: One ``(features,
+                target)`` pair per requested position. ``features`` stacks
+                every column not named in ``label_columns``. ``target``
+                stacks the ``label_columns`` columns, squeezed to drop its
+                last dimension when ``squeeze_labels`` is set and there is
+                exactly one label column; when ``label_columns`` is empty,
+                ``target`` is a scalar NaN tensor.
+        """
         raw = self.backend[idxs]
 
         if self.label_columns:
