@@ -47,7 +47,7 @@ tests = ["pytest", "pytest-cov", "nbval", "safetensors"]
 docs = [
     "nbsphinx",
     "nbsphinx-link",
-    "sphinx",
+    "sphinx>=8",
     "sphinx_mdinclude",
     "sphinx_rtd_theme",
 ]

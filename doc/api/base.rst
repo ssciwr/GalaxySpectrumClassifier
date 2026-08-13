@@ -1,0 +1,4 @@
+Protocols
+=========
+
+.. automodule:: GalaxySpectrumClassifier.base

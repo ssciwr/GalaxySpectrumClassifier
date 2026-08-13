@@ -6,7 +6,7 @@ GalaxySpectrumClassifier
    :caption: Contents:
 
    intro
-   demo
+   examples
    api
 
 Indices and tables
