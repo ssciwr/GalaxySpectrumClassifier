@@ -66,6 +66,26 @@ scores = trainer.evaluate(dataset)
 trainer.save_snapshot("example-run")
 ```
 
+### Output directories and snapshots
+
+Trainer output paths are deterministic. With `name` omitted, a trainer writes
+to exactly the configured `output_path`; with `name="experiment-2"`, it writes
+to `output_path/experiment-2`. No date or time is added. A newly constructed
+trainer requires that final directory not exist, which prevents an
+experiment from accidentally overwriting another one.
+
+Loading a snapshot reuses its saved output path by default. Pass `save_to` to
+write subsequent artifacts beneath a new base output directory instead (the
+saved `name` is still appended, if present). The new final directory must not
+already exist:
+
+```python
+restored = SimpleTrainer.load_snapshot(
+    "training/original/example-run",
+    save_to="training/resumed",
+)
+```
+
 ### Config-driven trainers
 
 Trainer configuration uses dotted import paths for models, metrics, callbacks,

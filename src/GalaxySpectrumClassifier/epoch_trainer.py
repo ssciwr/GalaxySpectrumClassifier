@@ -91,7 +91,10 @@ class EpochTrainer(TrainerProtocol):
         """Configure datasets, model training, evaluation, and saved outputs.
 
         Args:
-            output_path (str): Base directory for snapshots and exports.
+            output_path (str): Base directory for snapshots and exports. The
+                trainer uses this directory directly when ``name`` is None, or
+                the ``output_path/name`` subdirectory otherwise. The final
+                directory must not already exist, unless _allow_existing_output_path is set.
             max_epochs (int): Maximum number of training passes through the
                 training dataset across this trainer's lifecycle, including
                 any restored history after ``load_snapshot``.
@@ -170,8 +173,8 @@ class EpochTrainer(TrainerProtocol):
                 multiclass classification. Passed to skorch's
                 ``NeuralNetClassifier`` because fitting from a Dataset with
                 ``y=None`` cannot infer them. Defaults to None.
-            name (str | None, optional): Experiment name included in the output
-                directory. Defaults to None.
+            name (str | None, optional): Experiment-name subdirectory appended
+                to ``output_path``. Defaults to None.
             **additional_model_kwargs: Additional named options preserved in
                 the trainer configuration for model-related use.
 
@@ -247,8 +250,6 @@ class EpochTrainer(TrainerProtocol):
             **additional_model_kwargs,
         }
         self.task = task
-        # Get current datetime
-
         self.output_path = Path(output_path)
         if name:
             self.output_path = self.output_path / name
@@ -796,7 +797,12 @@ class EpochTrainer(TrainerProtocol):
 
         Args:
             path (str): Directory containing a saved snapshot.
-            save_to (str | None): Directory to save any runs of the newly created Trainer to
+            save_to (str | None, optional): Replacement base output directory
+                for artifacts produced by the restored trainer. The snapshot's
+                ``name`` is still appended when set. If omitted, the saved
+                output path is reused. Defaults to None. The replacement's
+                final output directory must not already exist.
+
         Returns:
             TrainerProtocol: A trainer restored from the snapshot.
 

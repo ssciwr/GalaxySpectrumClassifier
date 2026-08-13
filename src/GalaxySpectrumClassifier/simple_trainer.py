@@ -50,7 +50,10 @@ class SimpleTrainer(TrainerProtocol):
         """Configure a model, optional calibration, and evaluation metrics.
 
         Args:
-            output_path (str): Directory used as the base for saved artifacts.
+            output_path (str): Base directory for saved artifacts. The trainer
+                uses this directory directly when ``name`` is None, or the
+                ``output_path/name`` subdirectory otherwise. The final
+                directory must not already exist, unless  _allow_existing_output_path is set.
             model_type (str): Dotted import path identifying the model class.
             model_args (list[Any] | None, optional): Positional arguments
                 used to construct the model. Defaults to None.
@@ -90,8 +93,8 @@ class SimpleTrainer(TrainerProtocol):
                 for ``task``.
             seed (int, optional): Seed used for trainer-managed random state.
                 Defaults to 42.
-            name (str | None, optional): Experiment name included in the output
-                directory. Defaults to None.
+            name (str | None, optional): Experiment-name subdirectory appended
+                to ``output_path``. Defaults to None.
 
         Raises:
             ValueError: If ``task`` is unsupported, or calibration is requested
@@ -385,7 +388,11 @@ class SimpleTrainer(TrainerProtocol):
 
         Args:
             path (str): Directory containing a saved snapshot.
-            save_to (str | None): Directory to save any runs of the newly created Trainer to
+            save_to (str | None, optional): Replacement base output directory
+                for artifacts produced by the restored trainer. The snapshot's
+                ``name`` is still appended when set. If omitted, the saved
+                output path is reused. Defaults to None. The replacement's
+                final output directory must not already exist.
 
         Returns:
             SimpleTrainer: A trainer with the saved configuration and model.
