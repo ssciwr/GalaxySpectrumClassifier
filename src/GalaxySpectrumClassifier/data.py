@@ -58,9 +58,8 @@ class TabularDataset(torch.utils.data.Dataset):
                 target column or an ordered collection of target columns,
                 used to split each retrieved sample into features and
                 targets. A string produces one target column. Defaults to
-                None, which treats every column as a feature; see
-                ``__getitem__`` and ``__getitems__`` for how targets are
-                reported in that case.
+                None, which treats every column as a feature and returns an
+                empty target for each sample.
             squeeze_labels (bool, optional): Whether ``__getitems__`` drops
                 the target tensor's trailing dimension when it has size 1
                 (i.e. exactly one label column), matching the ``(n,)``
@@ -172,18 +171,18 @@ class TabularDataset(torch.utils.data.Dataset):
         Raises:
             ValueError: If ``label_columns`` names a column that does not
                 exist in the dataset.
-            RuntimeError: If ``label_columns`` is empty, from stacking zero
-                target columns.
 
         Returns:
             tuple[torch.Tensor, torch.Tensor]: ``(features, targets)``.
                 ``features`` stacks every column not named in
                 ``label_columns``; ``targets`` stacks the ``label_columns``
-                columns, never squeezed (unlike ``__getitems__``).
+                columns, never squeezed (unlike ``__getitems__``). With no
+                label columns, ``targets`` has shape ``(0,)`` for one sample
+                or ``(n, 0)`` for multiple samples.
         """
         # split into X, y with self.label_columns
         raw = self.backend[idx]
-        if self.label_columns is not None:
+        if self.label_columns:
             missing = [
                 c for c in self.label_columns if c not in self.backend.column_names
             ]
@@ -200,13 +199,11 @@ class TabularDataset(torch.utils.data.Dataset):
                 [torch.as_tensor(raw[c]) for c in self.label_columns], dim=-1
             )
             return X, y
-        else:
-            X = torch.stack(
-                [torch.as_tensor(raw[c]) for c in self.backend.column_names], dim=-1
-            ).to(torch.float32)
-
-            y = torch.tensor([], dtype=torch.float32)
-            return X, y
+        X = torch.stack(
+            [torch.as_tensor(raw[c]) for c in self.backend.column_names], dim=-1
+        ).to(torch.float32)
+        y = X.new_empty((*X.shape[:-1], 0))
+        return X, y
 
     def __getitems__(
         self, idxs: Sequence[int]
@@ -227,7 +224,7 @@ class TabularDataset(torch.utils.data.Dataset):
                 stacks the ``label_columns`` columns, squeezed to drop its
                 last dimension when ``squeeze_labels`` is set and there is
                 exactly one label column; when ``label_columns`` is empty,
-                ``target`` is a scalar NaN tensor.
+                ``target`` is an empty one-dimensional tensor.
         """
         raw = self.backend[idxs]
 
@@ -259,7 +256,7 @@ class TabularDataset(torch.utils.data.Dataset):
 
         xs = zip(*(raw[c] for c in self.backend.column_names))
         return [
-            (torch.tensor(x, dtype=torch.float32), torch.as_tensor(float("nan")))
+            (torch.tensor(x, dtype=torch.float32), torch.empty(0, dtype=torch.float32))
             for x in xs
         ]
 

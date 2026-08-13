@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader, Subset
 from torchvision.transforms import Compose
 
 import GalaxySpectrumClassifier.data as data_module
-from GalaxySpectrumClassifier import EpochTrainer, SimpleTrainer, TabularDataset
+from GalaxySpectrumClassifier import EpochTrainer, SimpleTrainer, TabularDataset, to_xy
 
 
 def _keep_source_zero(example):
@@ -87,6 +87,26 @@ def test_tabulardataset_creation_without_function(data_dir, tmp_path):
     assert len(ds) == 6
     assert ds.label_columns == []
     assert ds.feature_columns == ["a", "b", "source"]
+
+
+def test_tabulardataset_without_labels_has_consistent_empty_targets(data_dir, tmp_path):
+    ds = TabularDataset(str(data_dir), hf_dataset_kwargs=_hf_kwargs(tmp_path))
+
+    scalar_X, scalar_y = ds[0]
+    sliced_X, sliced_y = ds[:2]
+    batched_X, batched_y = next(iter(DataLoader(ds, batch_size=2, shuffle=False)))
+    array_X, array_y = to_xy(ds)
+
+    expected_scalar = torch.tensor([1.0, 10.0, 0.0])
+    expected_batch = torch.tensor([[1.0, 10.0, 0.0], [2.0, 20.0, 1.0]])
+    assert torch.equal(scalar_X, expected_scalar)
+    assert scalar_y.shape == (0,)
+    assert torch.equal(sliced_X, expected_batch)
+    assert sliced_y.shape == (2, 0)
+    assert torch.equal(batched_X, expected_batch)
+    assert batched_y.shape == (2, 0)
+    assert array_X.shape == (6, 3)
+    assert array_y.shape == (6, 0)
 
 
 def test_tabulardataset_creation_filter_cache(data_dir, tmp_path):
