@@ -1,5 +1,4 @@
-# Example: 2-layer MLP (skorch-wrapped torch, trained epoch by epoch) on the
-# classification_v2 Cloudy grids (AGN vs. star-forming). Paths are relative to
+# Example: 2-layer conv1d (skorch-wrapped torch, trained epoch by epoch). Paths are relative to
 # notebooks/. No calibration here yet - that's a separate notebook.
 trainer:
   output_path: ../training/binaryclassifier_epoch_example_custom_model
