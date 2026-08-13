@@ -259,18 +259,35 @@ class EpochTrainer(TrainerProtocol):
         torch.manual_seed(seed)
 
         # build datasets
+        # Classification losses (BCEWithLogitsLoss, CrossEntropyLoss) require
+        # a 1-D target, so TabularDataset should squeeze a single label
+        # column down to that shape. Regression losses (e.g. MSELoss)
+        # instead need the target shape to match the model's own output
+        # shape (e.g. (n, 1) for a single regression target), so squeezing
+        # would silently break them via broadcasting.
+        squeeze_labels = task in ("binary-classification", "multiclass-classification")
         self.train_ds = load_type(train_dataset_type)(
             *(train_dataset_args or []),
-            **(resolve_type_kwargs(train_dataset_kwargs or {})),
+            **{
+                "squeeze_labels": squeeze_labels,
+                **resolve_type_kwargs(train_dataset_kwargs or {}),
+            },
         )
 
         self.val_ds = load_type(val_dataset_type)(
-            *(val_dataset_args or []), **(resolve_type_kwargs(val_dataset_kwargs or {}))
+            *(val_dataset_args or []),
+            **{
+                "squeeze_labels": squeeze_labels,
+                **resolve_type_kwargs(val_dataset_kwargs or {}),
+            },
         )
 
         self.eval_ds = load_type(test_dataset_type)(
             *(test_dataset_args or []),
-            **(resolve_type_kwargs(test_dataset_kwargs or {})),
+            **{
+                "squeeze_labels": squeeze_labels,
+                **resolve_type_kwargs(test_dataset_kwargs or {}),
+            },
         )
 
         # Metrics come first: _build_callbacks turns each one into an

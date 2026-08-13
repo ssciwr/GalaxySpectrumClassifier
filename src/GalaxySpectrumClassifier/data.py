@@ -26,6 +26,7 @@ class TabularDataset(torch.utils.data.Dataset):
         pre_transform: Callable | str | None = None,
         pre_filter: Callable | str | None = None,
         label_columns: str | list[str] | None = None,
+        squeeze_labels: bool = True,
         hf_dataset_kwargs: dict[str, Any] | None = None,
         transform_kwargs: dict[str, Any] | None = None,
         pre_filter_kwargs: dict[str, Any] | None = None,
@@ -61,6 +62,17 @@ class TabularDataset(torch.utils.data.Dataset):
                 targets. A string produces one target column. Defaults to
                 None, which treats every column as a feature and returns an
                 empty target tensor.
+            squeeze_labels (bool, optional): Whether ``__getitems__`` drops
+                the target tensor's trailing dimension when it has size 1
+                (i.e. exactly one label column), matching the ``(n,)``
+                target shape classification losses such as
+                ``BCEWithLogitsLoss`` and ``CrossEntropyLoss`` require.
+                Regression losses like ``MSELoss`` instead need the target
+                shape to match the model's output shape (e.g. ``(n, 1)`` for
+                a single regression target), so callers doing regression
+                should pass ``False``. Only affects batched access via
+                ``__getitems__``; ``__getitem__`` never squeezes. Defaults
+                to True.
             hf_dataset_kwargs (dict[str, Any] | None, optional): Additional
                 keyword arguments forwarded to ``datasets.load_dataset`` or,
                 when reloading an existing cache, to
@@ -110,6 +122,8 @@ class TabularDataset(torch.utils.data.Dataset):
         self.feature_columns = [
             c for c in self.backend.column_names if c not in self.label_columns
         ]
+
+        self.squeeze_labels = squeeze_labels
 
     @classmethod
     def from_config(cls, cfg: dict[str, Any]) -> "TabularDataset":
@@ -164,7 +178,7 @@ class TabularDataset(torch.utils.data.Dataset):
 
             y = torch.stack(
                 [torch.as_tensor(raw[c]) for c in self.label_columns], dim=-1
-            ).to(torch.float32)
+            )
             return X, y
         else:
             X = torch.stack(
@@ -192,11 +206,16 @@ class TabularDataset(torch.utils.data.Dataset):
             ]
             xs = zip(*(raw[c] for c in feature_cols))
             ys = zip(*(raw[c] for c in self.label_columns))
+            if self.squeeze_labels:
+                return [
+                    (
+                        torch.tensor(x, dtype=torch.float32),
+                        torch.tensor(y).squeeze(-1),
+                    )
+                    for x, y in zip(xs, ys)
+                ]
             return [
-                (
-                    torch.tensor(x, dtype=torch.float32),
-                    torch.tensor(y, dtype=torch.float32).squeeze(-1),
-                )
+                (torch.tensor(x, dtype=torch.float32), torch.tensor(y))
                 for x, y in zip(xs, ys)
             ]
 
