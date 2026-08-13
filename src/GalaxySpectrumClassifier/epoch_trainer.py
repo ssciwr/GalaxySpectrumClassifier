@@ -94,9 +94,11 @@ class EpochTrainer(TrainerProtocol):
                 class.
             task (str): One of ``"binary-classification"``,
                 ``"multiclass-classification"``, or ``"regression"``.
-                Regression with scalar-output torch modules should configure
-                datasets with list-form ``label_columns`` such as
-                ``["target"]`` so batches carry targets shaped ``(B, 1)``.
+                For ``TabularDataset``, classification defaults to
+                ``squeeze_labels=True`` and regression defaults to
+                ``squeeze_labels=False``, keeping a single regression target
+                shaped ``(B, 1)``. An explicit ``squeeze_labels`` value in
+                each ``*_dataset_kwargs`` takes precedence over this default.
             device (str, optional): Device on which model computation runs.
                 Defaults to "cpu".
             optimizer_kwargs (dict[str, Any] | None, optional): Named options

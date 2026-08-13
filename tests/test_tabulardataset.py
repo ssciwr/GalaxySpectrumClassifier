@@ -394,6 +394,7 @@ def test_tabulardataset_works_with_simpletrainer_regression(data_dir, tmp_path):
 
 def test_tabulardataset_works_with_epochtrainer_classification(data_dir, tmp_path):
     ds_kwargs = {
+        "path": str(data_dir),
         "label_columns": "source",
         "transform": "test_tabulardataset._float_source",
         "hf_dataset_kwargs": _hf_kwargs(tmp_path),
@@ -406,13 +407,7 @@ def test_tabulardataset_works_with_epochtrainer_classification(data_dir, tmp_pat
         model_args=[2, 1],
         loss_type="torch.nn.BCEWithLogitsLoss",
         optimizer_type="torch.optim.SGD",
-        train_dataset_type="GalaxySpectrumClassifier.data.TabularDataset",
-        val_dataset_type="GalaxySpectrumClassifier.data.TabularDataset",
-        test_dataset_type="GalaxySpectrumClassifier.data.TabularDataset",
         task="binary-classification",
-        train_dataset_args=[str(data_dir)],
-        val_dataset_args=[str(data_dir)],
-        test_dataset_args=[str(data_dir)],
         train_dataset_kwargs=ds_kwargs,
         val_dataset_kwargs=ds_kwargs,
         test_dataset_kwargs=ds_kwargs,
@@ -426,6 +421,7 @@ def test_tabulardataset_works_with_epochtrainer_classification(data_dir, tmp_pat
 
 def test_tabulardataset_works_with_epochtrainer_regression(data_dir, tmp_path):
     ds_kwargs = {
+        "path": str(data_dir),
         "label_columns": "source",
         "transform": "test_tabulardataset._float_source",
         "hf_dataset_kwargs": _hf_kwargs(tmp_path),
@@ -438,13 +434,7 @@ def test_tabulardataset_works_with_epochtrainer_regression(data_dir, tmp_path):
         model_args=[2, 1],
         loss_type="torch.nn.MSELoss",
         optimizer_type="torch.optim.SGD",
-        train_dataset_type="GalaxySpectrumClassifier.data.TabularDataset",
-        val_dataset_type="GalaxySpectrumClassifier.data.TabularDataset",
-        test_dataset_type="GalaxySpectrumClassifier.data.TabularDataset",
         task="regression",
-        train_dataset_args=[str(data_dir)],
-        val_dataset_args=[str(data_dir)],
-        test_dataset_args=[str(data_dir)],
         train_dataset_kwargs=ds_kwargs,
         val_dataset_kwargs=ds_kwargs,
         test_dataset_kwargs=ds_kwargs,
