@@ -1,16 +1,31 @@
-# Example: 2-layer MLP (skorch-wrapped torch, trained epoch by epoch) on the
-# classification_v2 Cloudy grids (AGN vs. star-forming). Paths are relative to
+# Example: 2-layer conv1d (skorch-wrapped torch, trained epoch by epoch). Paths are relative to
 # notebooks/. No calibration here yet - that's a separate notebook.
 trainer:
-  output_path: ../training/binaryclassifier_epoch_example
-  max_epochs: 5
+  output_path: ../training/binaryclassifier_epoch_example_custom_model
+  max_epochs: 20
   batch_size: 256
-  model_type: torchvision.ops.MLP
+  model_type: __main__.ConvModel
   model_kwargs:
-    # Linear(18, 64) -> ReLU -> Linear(64, 1): 18 input features (all dataset
-    # columns except `source`), one hidden layer of 64, one output logit.
-    in_channels: 18
-    hidden_channels: [64, 1]
+    layer_defs:
+      - type: "torch.nn.Conv1d"
+        args: [1, 64, 4] # all columns input (18), 64 dims output -> kernel size = 4 (very small)
+        kwargs:
+          stride: 1
+          padding: 0
+          bias: True
+      - type: "torch.nn.ReLU"
+        args: []
+        kwargs:
+          "inplace": False
+      - type: "torch.nn.Conv1d"
+        args: [64, 1, 4]
+        kwargs:
+          stride: 1
+          padding: 0
+          bias: True
+      - type: torch.nn.AdaptiveAvgPool1d
+        args: [1]
+        kwargs: {}
   # The MLP emits a raw logit, matching BCEWithLogitsLoss.
   loss_type: torch.nn.BCEWithLogitsLoss
   optimizer_type: torch.optim.Adam
@@ -29,7 +44,7 @@ trainer:
     label_columns: "source"
     # Resolved from the notebook's kernel namespace - see the `to_float32`
     # cell just above where this config is loaded.
-    transform: __main__.to_float32
+    transform: __main__.convert_to_float32
   val_dataset_kwargs: *dataset_kwargs
   test_dataset_kwargs: *dataset_kwargs
   # Rows are grouped by split-file origin, so shuffling is not optional here.

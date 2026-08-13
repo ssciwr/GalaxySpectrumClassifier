@@ -189,11 +189,16 @@ class TrainerProtocol(Configurable, Protocol):
         ...
 
     @classmethod
-    def load_snapshot(cls, path: str) -> "TrainerProtocol":
+    def load_snapshot(cls, path: str, save_to: str | None = None) -> "TrainerProtocol":
         """Restore a trainer from a previously saved snapshot.
 
         Args:
             path (str): Directory containing the saved trainer state.
+            save_to (str | None, optional): Replacement base output directory
+                for artifacts produced by the restored trainer. If omitted,
+                the output path stored in the snapshot is reused. Defaults to
+                None. The replacement's final output directory must not
+                already exist.
 
         Returns:
             TrainerProtocol: A trainer restored from the snapshot.

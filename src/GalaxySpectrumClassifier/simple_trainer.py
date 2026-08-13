@@ -14,7 +14,6 @@ import pyaml
 import yaml
 import skops.io as sio
 import torch.utils.data
-from datetime import datetime
 
 from .base import Trainable, TrainerProtocol
 from .utils import load_type, resolve_type_kwargs, to_xy
@@ -51,7 +50,10 @@ class SimpleTrainer(TrainerProtocol):
         """Configure a model, optional calibration, and evaluation metrics.
 
         Args:
-            output_path (str): Directory used as the base for saved artifacts.
+            output_path (str): Base directory for saved artifacts. The trainer
+                uses this directory directly when ``name`` is None, or the
+                ``output_path/name`` subdirectory otherwise. The final
+                directory must not already exist, unless  _allow_existing_output_path is set.
             model_type (str): Dotted import path identifying the model class.
             model_args (list[Any] | None, optional): Positional arguments
                 used to construct the model. Defaults to None.
@@ -91,8 +93,8 @@ class SimpleTrainer(TrainerProtocol):
                 for ``task``.
             seed (int, optional): Seed used for trainer-managed random state.
                 Defaults to 42.
-            name (str | None, optional): Experiment name included in the output
-                directory. Defaults to None.
+            name (str | None, optional): Experiment-name subdirectory appended
+                to ``output_path``. Defaults to None.
 
         Raises:
             ValueError: If ``task`` is unsupported, or calibration is requested
@@ -119,14 +121,10 @@ class SimpleTrainer(TrainerProtocol):
             "seed": seed,
             "name": name,
         }
-
-        # Get current datetime
-        now = datetime.now()
-        # Format as yyyy-MM_dd-hh-mm-ss (24-hour clock)
-        timestamp = now.strftime("%Y-%m_%d-%H-%M-%S")
-
-        name_suffix = f"_{name}" if name else ""
-        self.output_path = Path(f"{output_path}{name_suffix}_{timestamp}").resolve()
+        self.output_path = Path(output_path)
+        if name:
+            self.output_path = self.output_path / name
+        self.output_path = self.output_path.resolve()
         self.output_path.mkdir(parents=True, exist_ok=_allow_existing_output_path)
 
         if task not in TASKS:
@@ -385,11 +383,16 @@ class SimpleTrainer(TrainerProtocol):
         self.export_model(directory / "model.skops")
 
     @classmethod
-    def load_snapshot(cls, path: str) -> "SimpleTrainer":
+    def load_snapshot(cls, path: str, save_to: str | None = None) -> "SimpleTrainer":
         """Restore a trainer and model from a saved snapshot.
 
         Args:
             path (str): Directory containing a saved snapshot.
+            save_to (str | None, optional): Replacement base output directory
+                for artifacts produced by the restored trainer. The snapshot's
+                ``name`` is still appended when set. If omitted, the saved
+                output path is reused. Defaults to None. The replacement's
+                final output directory must not already exist.
 
         Returns:
             SimpleTrainer: A trainer with the saved configuration and model.
@@ -401,7 +404,11 @@ class SimpleTrainer(TrainerProtocol):
         directory = Path(path)
         with open(directory / "config.yaml") as f:
             config = yaml.safe_load(f)
-        config["_allow_existing_output_path"] = True
+
+        if save_to:
+            config["output_path"] = save_to
+        else:
+            config["_allow_existing_output_path"] = True
         trainer = cls(**config)
         trainer.model = trainer._load_model(directory / "model.skops")
         return trainer

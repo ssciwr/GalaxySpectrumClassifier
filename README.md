@@ -2,7 +2,6 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/ssciwr/GalaxySpectrumClassifier/ci.yml?branch=main)](https://github.com/ssciwr/GalaxySpectrumClassifier/actions/workflows/ci.yml)
-[![Documentation Status](https://readthedocs.org/projects/GalaxySpectrumClassifier/badge/)](https://GalaxySpectrumClassifier.readthedocs.io/)
 [![codecov](https://codecov.io/gh/ssciwr/GalaxySpectrumClassifier/branch/main/graph/badge.svg)](https://codecov.io/gh/ssciwr/GalaxySpectrumClassifier)
 
 ## Installation
@@ -37,6 +36,44 @@ Having done so, the test suite can be run using `pytest`:
 python -m pytest
 ```
 
+## Building the documentation
+
+Until hosted documentation is available, the Sphinx documentation can be
+built locally from a repository checkout. Install the package in editable mode
+with its documentation dependencies:
+
+```sh
+python -m pip install --editable ".[docs]"
+```
+
+Then run the platform-independent Sphinx build command from the repository
+root:
+
+```sh
+python -m sphinx -M html doc doc/build
+```
+
+The generated documentation starts at `doc/build/html/index.html`; open that
+file in a web browser. On systems with `make`, the equivalent command is:
+
+```sh
+make -C doc html
+```
+
+On Windows, the bundled command file can be used instead:
+
+```bat
+doc\make.bat html
+```
+
+The example notebooks are rendered as part of the documentation but are not
+executed during the build. To require a warning-free build when reviewing
+documentation changes, add `-W`:
+
+```sh
+python -m sphinx -W -M html doc doc/build
+```
+
 ## Usage overview
 
 `GalaxySpectrumClassifier` provides a small set of configurable building blocks
@@ -64,6 +101,26 @@ trainer = SimpleTrainer.from_config(config["trainer"])
 trainer.fit(dataset)
 scores = trainer.evaluate(dataset)
 trainer.save_snapshot("example-run")
+```
+
+### Output directories and snapshots
+
+Trainer output paths are deterministic. With `name` omitted, a trainer writes
+to exactly the configured `output_path`; with `name="experiment-2"`, it writes
+to `output_path/experiment-2`. No date or time is added. A newly constructed
+trainer requires that final directory not exist, which prevents an
+experiment from accidentally overwriting another one.
+
+Loading a snapshot reuses its saved output path by default. Pass `save_to` to
+write subsequent artifacts beneath a new base output directory instead (the
+saved `name` is still appended, if present). The new final directory must not
+already exist:
+
+```python
+restored = SimpleTrainer.load_snapshot(
+    "training/original/example-run",
+    save_to="training/resumed",
+)
 ```
 
 ### Config-driven trainers
