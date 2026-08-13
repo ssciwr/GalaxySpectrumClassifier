@@ -36,7 +36,6 @@ from collections.abc import Callable
 import yaml
 import numpy as np
 import torch
-from datetime import datetime
 
 MetricSpec = dict[str, Callable[..., Any] | dict[str, Any] | bool]
 
@@ -249,13 +248,11 @@ class EpochTrainer(TrainerProtocol):
         }
         self.task = task
         # Get current datetime
-        now = datetime.now()
-        # Format as yyyy-MM_dd-hh-mm-ss (24-hour clock)
-        timestamp = now.strftime("%Y-%m_%d-%H-%M-%S")
 
-        name_suffix = f"_{name}" if name else ""
-        self.output_path = Path(f"{output_path}{name_suffix}_{timestamp}").resolve()
-
+        self.output_path = Path(output_path)
+        if name:
+            self.output_path = self.output_path / name
+        self.output_path = self.output_path.resolve()
         self.output_path.mkdir(parents=True, exist_ok=_allow_existing_output_path)
 
         # set rng
@@ -794,12 +791,12 @@ class EpochTrainer(TrainerProtocol):
         )
 
     @classmethod
-    def load_snapshot(cls, path: str) -> "TrainerProtocol":
+    def load_snapshot(cls, path: str, save_to: str | None = None) -> "TrainerProtocol":
         """Restore a trainer with the saved model and training state.
 
         Args:
             path (str): Directory containing a saved snapshot.
-
+            save_to (str | None): Directory to save any runs of the newly created Trainer to
         Returns:
             TrainerProtocol: A trainer restored from the snapshot.
 
@@ -808,10 +805,16 @@ class EpochTrainer(TrainerProtocol):
             ValueError: If the saved configuration is invalid.
         """
         # load config
-        load_path = Path(path).resolve()
-        with open(load_path / "config.yaml", "r") as f:
+        directory = Path(path)
+        with open(directory / "config.yaml") as f:
             config = yaml.safe_load(f)
-        config["_allow_existing_output_path"] = True
+
+        load_path = Path(path).resolve()
+
+        if save_to:
+            config["output_path"] = save_to
+        else:
+            config["_allow_existing_output_path"] = True
 
         # build trainer from config
         trainer = cls.from_config(config)

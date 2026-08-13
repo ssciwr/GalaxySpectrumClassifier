@@ -1,5 +1,3 @@
-from datetime import datetime
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -19,7 +17,6 @@ from sklearn.metrics import (
     mean_squared_error,
     roc_auc_score,
 )
-import GalaxySpectrumClassifier.simple_trainer as simple_trainer_module
 from GalaxySpectrumClassifier import SimpleTrainer, to_xy
 
 
@@ -88,22 +85,14 @@ def test_simple_trainer_init_binary_minimal(tmp_path):
 
 
 def test_simple_trainer_includes_experiment_name_in_output_path(tmp_path, monkeypatch):
-    class FixedDateTime:
-        @classmethod
-        def now(cls):
-            return datetime(2026, 8, 13, 15, 4, 5)
-
-    monkeypatch.setattr(simple_trainer_module, "datetime", FixedDateTime)
-
     trainer = SimpleTrainer(
         output_path=str(tmp_path / "training"),
         name="experiment-2",
         model_type="sklearn.ensemble.RandomForestClassifier",
     )
 
-    assert (
-        trainer.output_path
-        == (tmp_path / "training_experiment-2_2026-08_13-15-04-05").resolve()
+    assert str(trainer.output_path) == str(
+        (tmp_path / "training/experiment-2").resolve()
     )
     assert trainer.output_path.is_dir()
     assert trainer.config["name"] == "experiment-2"

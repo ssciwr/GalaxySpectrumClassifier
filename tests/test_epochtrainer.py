@@ -1,6 +1,5 @@
 from collections import Counter
 from copy import deepcopy
-from datetime import datetime
 import warnings
 
 import numpy as np
@@ -25,12 +24,6 @@ from skorch.callbacks import (
 from GalaxySpectrumClassifier.data import TabularDataset
 from GalaxySpectrumClassifier.epoch_trainer import EpochTrainer
 from GalaxySpectrumClassifier.utils import load_type
-
-
-class _FixedDateTime:
-    @classmethod
-    def now(cls):
-        return datetime(2026, 8, 13, 15, 4, 5)
 
 
 def _float_labels(batch):
@@ -153,10 +146,7 @@ def test_epochtrainer_rejects_shuffled_evaluation_configuration(tmp_path, create
     assert not (tmp_path / "training").exists()
 
 
-def test_epochtrainer_rejects_reused_output_path(tmp_path, create_data, monkeypatch):
-    monkeypatch.setattr(
-        "GalaxySpectrumClassifier.epoch_trainer.datetime", _FixedDateTime
-    )
+def test_epochtrainer_rejects_reused_output_path(tmp_path, create_data):
     output_path = tmp_path / "training"
     EpochTrainer(**_trainer_kwargs(tmp_path, create_data, output_path=output_path))
 
@@ -164,31 +154,19 @@ def test_epochtrainer_rejects_reused_output_path(tmp_path, create_data, monkeypa
         EpochTrainer(**_trainer_kwargs(tmp_path, create_data, output_path=output_path))
 
 
-def test_epochtrainer_includes_experiment_name_in_output_path(
-    tmp_path, create_data, monkeypatch
-):
-    monkeypatch.setattr(
-        "GalaxySpectrumClassifier.epoch_trainer.datetime", _FixedDateTime
-    )
-
+def test_epochtrainer_includes_experiment_name_in_output_path(tmp_path, create_data):
     trainer = EpochTrainer(
         **_trainer_kwargs(tmp_path, create_data, name="experiment-2")
     )
 
-    assert (
-        trainer.output_path
-        == (tmp_path / "training_experiment-2_2026-08_13-15-04-05").resolve()
-    )
+    assert trainer.output_path == (tmp_path / "training/experiment-2").resolve()
     assert trainer.output_path.is_dir()
     assert trainer.config["name"] == "experiment-2"
 
 
 def test_epochtrainer_constructs_all_datasets_and_preserves_rebuild_config(
-    tmp_path, create_data, monkeypatch
+    tmp_path, create_data
 ):
-    monkeypatch.setattr(
-        "GalaxySpectrumClassifier.epoch_trainer.datetime", _FixedDateTime
-    )
     trainer = EpochTrainer(
         **_trainer_kwargs(
             tmp_path,
@@ -227,7 +205,7 @@ def test_epochtrainer_constructs_all_datasets_and_preserves_rebuild_config(
     assert trainer.model.get_params()["iterator_train__num_workers"] == 0
     assert trainer.model.get_params()["iterator_valid__num_workers"] == 0
 
-    assert trainer.output_path == (tmp_path / "training_2026-08_13-15-04-05").resolve()
+    assert trainer.output_path == (tmp_path / "training").resolve()
     assert trainer.output_path.is_dir()
     assert trainer.config["additional_setting"] == "preserved"
 
