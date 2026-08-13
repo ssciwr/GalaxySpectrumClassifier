@@ -141,8 +141,6 @@ def to_xy(
             selected sample.
     """
 
-    # TODO: this is slow, the dataset needs some improvements wrt performance
-
     X, y = dataset[:]
 
     return X.numpy(), y.numpy()
