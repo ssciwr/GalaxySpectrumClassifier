@@ -1,3 +1,10 @@
+"""Present a directory of tabular files as one indexed torch dataset.
+
+Rows are loaded through Hugging Face ``datasets`` and split into feature and
+label tensors, so any format that library can read is available to the
+trainers.
+"""
+
 import torch.utils.data
 from typing import Any
 from collections.abc import Callable, Sequence
@@ -218,8 +225,9 @@ class TabularDataset(torch.utils.data.Dataset):
                 exist in the dataset.
 
         Returns:
-            list[tuple[torch.Tensor, torch.Tensor]]: One ``(features,
-                target)`` pair per requested position. ``features`` stacks
+            list[tuple[torch.Tensor, torch.Tensor]]: One
+                ``(features, target)`` pair per requested position.
+                ``features`` stacks
                 every column not named in ``label_columns``. ``target``
                 stacks the ``label_columns`` columns, squeezed to drop its
                 last dimension when ``squeeze_labels`` is set and there is
