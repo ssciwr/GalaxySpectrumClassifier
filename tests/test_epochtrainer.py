@@ -121,19 +121,19 @@ def _trainer_kwargs(tmp_path, data_path, **overrides):
         "val_dataset_args": [str(data_path)],
         "test_dataset_args": [str(data_path)],
         "train_dataset_kwargs": {
-            "suffix": ".dat",
             "label_columns": "source",
             "transform": "test_epochtrainer._as_float32",
+            "hf_dataset_kwargs": {"cache_dir": str(tmp_path / "hf_cache")},
         },
         "val_dataset_kwargs": {
-            "suffix": ".dat",
             "label_columns": "source",
             "transform": "test_epochtrainer._as_float32",
+            "hf_dataset_kwargs": {"cache_dir": str(tmp_path / "hf_cache")},
         },
         "test_dataset_kwargs": {
-            "suffix": ".dat",
             "label_columns": "source",
             "transform": "test_epochtrainer._as_float32",
+            "hf_dataset_kwargs": {"cache_dir": str(tmp_path / "hf_cache")},
         },
         "progressbar": False,
     }
@@ -192,10 +192,10 @@ def test_epochtrainer_constructs_all_datasets_and_preserves_rebuild_config(
             tmp_path,
             create_data,
             train_dataset_kwargs={
-                "suffix": ".dat",
                 "label_columns": "source",
                 # Constructor kwargs may name types in YAML-safe form.
                 "transform": {"type": "GalaxySpectrumClassifier.utils.identity"},
+                "hf_dataset_kwargs": {"cache_dir": str(tmp_path / "hf_cache")},
             },
             optimizer_kwargs={"lr": 0.25},
             loss_kwargs={"reduction": "sum"},
@@ -617,9 +617,9 @@ def test_epochtrainer_trains_multiclass_with_transform_controlled_dtypes(
     tmp_path, create_data
 ):
     dataset_kwargs = {
-        "suffix": ".dat",
         "label_columns": "source",
         "transform": "test_epochtrainer._as_float32_features_int64_labels",
+        "hf_dataset_kwargs": {"cache_dir": str(tmp_path / "hf_cache")},
     }
     trainer = EpochTrainer(
         **_trainer_kwargs(
@@ -647,9 +647,9 @@ def test_epochtrainer_trains_multiclass_with_transform_controlled_dtypes(
 
 def test_epochtrainer_trains_regression_with_vector_targets(tmp_path, create_data):
     dataset_kwargs = {
-        "suffix": ".dat",
         "label_columns": ["source"],
         "transform": "test_epochtrainer._as_float32_vector_label",
+        "hf_dataset_kwargs": {"cache_dir": str(tmp_path / "hf_cache")},
     }
     trainer = EpochTrainer(
         **_trainer_kwargs(
