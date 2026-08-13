@@ -9,13 +9,7 @@
 
 `GalaxySpectrumClassifier` requires Python 3.13 or newer. The package pulls in
 the scientific Python stack used by the trainers, including `pandas`,
-`scikit-learn`, `torch`, `skorch`, and `torchvision`.
-
-The Python package can be installed from PyPI:
-
-```sh
-python -m pip install GalaxySpectrumClassifier
-```
+`scikit-learn`, `torch`, `skorch`, and `torchvision`, as well as hugginface's `datasets` library.
 
 To install directly from a checkout of this repository:
 
@@ -25,10 +19,11 @@ cd GalaxySpectrumClassifier
 python -m pip install .
 ```
 
+PyPi releases will be available in the future.
+
 ## Development installation
 
-If you want to contribute to the development of `GalaxySpectrumClassifier`, we recommend
-the following editable installation from this repository:
+For development of `GalaxySpectrumClassifier`, use an editable installation from this repository:
 
 ```sh
 git clone git@github.com:ssciwr/GalaxySpectrumClassifier.git
@@ -101,7 +96,7 @@ dataset. If `hf_dataset_kwargs` contains `data_files`, that value is passed thro
 unchanged and `path` must be omitted; exactly one of `path` and `data_files` is
 required. The `split` loader argument is intentionally not supported because
 training, validation, and test splitting belongs to the torch/skorch training
-workflow.
+workflow. For more details, have a look at the huggingface `datasets` documentation.
 
 The dataset configuration names the data path, Hugging Face format, loader options,
 and target column or columns:
