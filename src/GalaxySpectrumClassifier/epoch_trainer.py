@@ -133,8 +133,8 @@ class EpochTrainer(TrainerProtocol):
                 declarations. Each includes ``type`` and can include
                 ``kwargs``, ``name``, ``needs_proba``, ``lower_is_better``,
                 and ``use_caching``. Defaults to None.
-            callbacks (list[dict[str, str | list[Any] | dict[str, Any]]] | None,
-                optional): Additional callback declarations, each with ``type``
+            callbacks (list[dict[str, str | list[Any] | dict[str, Any]]] | None, optional):
+                Additional callback declarations, each with ``type``
                 and optional ``args`` and ``kwargs``. Defaults to None.
             train_dataset_args (list[Any] | None, optional): Positional
                 arguments for the training dataset. Defaults to None.

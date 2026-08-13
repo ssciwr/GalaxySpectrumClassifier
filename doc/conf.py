@@ -57,6 +57,11 @@ napoleon_numpy_docstring = False
 
 autodoc_member_order = "bysource"
 
+# Constructor arguments are documented in __init__, which autodoc skips as a
+# special member. "both" appends that docstring to the class description so
+# the arguments are documented where the class is.
+autoclass_content = "both"
+
 # Several constructors take a large number of annotated arguments. Rendering
 # the annotations as part of the parameter descriptions keeps the signature
 # lines readable.
