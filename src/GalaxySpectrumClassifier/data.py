@@ -160,7 +160,7 @@ class TabularDataset(torch.utils.data.Dataset):
 
     def __getitem__(
         self,
-        idx: int | Sequence[int] | slice[int],
+        idx: int | Sequence[int],
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Retrieve one or several samples, split into features and targets.
 
