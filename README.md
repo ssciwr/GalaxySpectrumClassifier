@@ -94,30 +94,35 @@ stopping, learning-rate schedulers, metrics, snapshots, and model export.
 ### Tabular datasets
 
 `TabularDataset` treats each row in a directory of tabular files as one sample.
-It currently supports registered tabular formats such as CSV and parquet through
-PyArrow-backed handlers. Files are ordered consistently and rows can be indexed like
-a torch dataset.
+It loads the sorted files matching `*.{data_format}` with Hugging Face
+`datasets.load_dataset`. The format can be any loading script supported by Hugging
+Face Datasets, such as `csv` or `parquet`, and rows can be indexed like a torch
+dataset.
 
-The dataset configuration names the data path, read options, file suffix, and
-target column or columns:
+The dataset configuration names the data path, Hugging Face format, loader options,
+and target column or columns:
 
 ```python
 from GalaxySpectrumClassifier import TabularDataset
 
 dataset = TabularDataset(
     path="data/classification_v2",
-    dataformat="csv",
-    suffix=".csv",
+    data_format="csv",
+    hf_dataset_kwargs={"delimiter": ","},
     label_columns="source",
 )
 
 features, target = dataset[0]
 ```
 
-Optional `pre_filter` and `pre_transform` hooks run once into an on-disk cache,
-while `transform` prepares rows at retrieval time. These hooks can also be
-configured with dotted import paths so they can live in YAML alongside the rest
-of the experiment.
+`hf_dataset_kwargs` is forwarded to `datasets.load_dataset`, so it can also set
+options such as `cache_dir`. Optional `pre_filter` and `pre_transform` hooks are
+applied through Hugging Face Datasets' `filter` and `map`, respectively. Their
+results follow Hugging Face's fingerprinting and cache behavior rather than a
+separate preprocessing cache owned by this package. `transform` is installed with
+`with_transform` and runs lazily when rows are retrieved; it does not rewrite the
+stored dataset. Hooks may be callables or dotted import paths, and their respective
+`*_kwargs` dictionaries are forwarded to the Hugging Face operation.
 
 ### Torch, sklearn, and skorch
 
