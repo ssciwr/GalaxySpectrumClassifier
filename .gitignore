@@ -141,8 +141,6 @@ dmypy.json
 cython_debug/
 
 
-# data
-data
 
 literature/**/pdfs/
 literature/.[!.]*
@@ -163,6 +161,11 @@ training/
 docs/
 
 
-# testing data needs to be added
+# data
+data/*
+!data/bronze/
+data/bronze/*
+!data/bronze/default/
+data/bronze/default/*
 !data/bronze/default/C17_AGN_alpha08_efrac02_CNfix.dat
 !data/bronze/default/C17_POPSTAR_1myr.dat
