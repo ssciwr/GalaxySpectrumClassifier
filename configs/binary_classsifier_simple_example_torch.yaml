@@ -88,7 +88,7 @@ trainer:
       needs_proba: true
   seed: 42
 dataset:
-  path: ../data/bronze/default
+  path: ../data/silver/default
   data_format: csv
   label_columns: "source"
   transform: __main__.convert_types
