@@ -2,6 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/ssciwr/GalaxySpectrumClassifier/ci.yml?branch=main)](https://github.com/ssciwr/GalaxySpectrumClassifier/actions/workflows/ci.yml)
+[![Documentation Status](https://readthedocs.org/projects/GalaxySpectrumClassifier/badge/)](https://GalaxySpectrumClassifier.readthedocs.io/)
 [![codecov](https://codecov.io/gh/ssciwr/GalaxySpectrumClassifier/branch/main/graph/badge.svg)](https://codecov.io/gh/ssciwr/GalaxySpectrumClassifier)
 
 ## Installation
@@ -38,9 +39,8 @@ python -m pytest
 
 ## Building the documentation
 
-Until hosted documentation is available, the Sphinx documentation can be
-built locally from a repository checkout. Install the package in editable mode
-with its documentation dependencies:
+The Sphinx documentation can also be built locally from a repository checkout.
+Install the package in editable mode with its documentation dependencies:
 
 ```sh
 python -m pip install --editable ".[docs]"
