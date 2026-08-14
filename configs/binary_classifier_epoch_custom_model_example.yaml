@@ -2,7 +2,7 @@
 # notebooks/. No calibration here yet - that's a separate notebook.
 trainer:
   output_path: ../training/binaryclassifier_epoch_example_custom_model
-  max_epochs: 20
+  max_epochs: 5
   batch_size: 256
   model_type: __main__.ConvModel
   model_kwargs:
