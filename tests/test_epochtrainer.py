@@ -3,12 +3,9 @@ from copy import deepcopy
 import warnings
 
 import numpy as np
-import onnx
 import pytest
 import torch
 import yaml
-from onnx.reference import ReferenceEvaluator
-from safetensors.torch import load_file
 from sklearn.metrics import accuracy_score, log_loss, roc_auc_score
 from skorch import NeuralNetBinaryClassifier, NeuralNetClassifier, NeuralNetRegressor
 from skorch.callbacks import (
@@ -1030,79 +1027,6 @@ def test_epochtrainer_export_model_pt_reloads_weights_with_safe_torch_load(
         actual = module(inputs)
 
     torch.testing.assert_close(actual, expected)
-
-
-def test_epochtrainer_export_model_safetensors_reloads_state_dict(
-    tmp_path, create_data
-):
-    trainer = EpochTrainer(
-        **_trainer_kwargs(
-            tmp_path,
-            create_data,
-            max_epochs=1,
-            batch_size=1000,
-            export_format="safetensors",
-        )
-    )
-    trainer.train()
-    inputs = torch.stack([trainer.train_ds[index][0] for index in range(2)])
-    trainer.model.module_.eval()
-    with torch.no_grad():
-        expected = trainer.model.module_(inputs)
-
-    trainer.export_model("safetensors-export")
-
-    export_path = trainer.output_path / "safetensors-export"
-    with (export_path / "model.yaml").open() as manifest_file:
-        manifest = yaml.safe_load(manifest_file)
-    assert manifest["export_format"] == "safetensors"
-    assert (export_path / "params.safetensors").is_file()
-
-    module = load_type(manifest["model_type"])(
-        *(manifest["model_args"] or []), **(manifest["model_kwargs"] or {})
-    )
-    module.load_state_dict(load_file(export_path / "params.safetensors"))
-    module.eval()
-    with torch.no_grad():
-        actual = module(inputs)
-
-    torch.testing.assert_close(actual, expected)
-
-
-def test_epochtrainer_export_model_onnx_runs_with_dynamic_batch_size(
-    tmp_path, create_data
-):
-    trainer = EpochTrainer(
-        **_trainer_kwargs(
-            tmp_path,
-            create_data,
-            max_epochs=1,
-            batch_size=1000,
-            export_format="onnx",
-        )
-    )
-    trainer.train()
-    trainer.model.module_.eval()
-
-    trainer.export_model("onnx-export")
-
-    export_path = trainer.output_path / "onnx-export"
-    with (export_path / "model.yaml").open() as manifest_file:
-        assert yaml.safe_load(manifest_file)["export_format"] == "onnx"
-    model = onnx.load(export_path / "model.onnx")
-    onnx.checker.check_model(model)
-    evaluator = ReferenceEvaluator(model)
-
-    # The graph is traced with one row, but its public export contract accepts
-    # a variable batch dimension. Exercise both the traced and a larger batch.
-    for batch_size in (1, 2):
-        inputs = torch.stack(
-            [trainer.train_ds[index][0] for index in range(batch_size)]
-        )
-        with torch.no_grad():
-            expected = trainer.model.module_(inputs).numpy()
-        (actual,) = evaluator.run(None, {"input": inputs.numpy()})
-        np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.parametrize("was_training", [True, False])

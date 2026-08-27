@@ -874,31 +874,10 @@ class EpochTrainer(TrainerProtocol):
         try:
             if export_format == "default":
                 self.model.save_params(f_params=directory / "params.pt")
-            elif export_format == "safetensors":
-                self.model.save_params(
-                    f_params=directory / "params.safetensors", use_safetensors=True
-                )
             elif export_format == "pt":
                 # The manifest reconstructs the architecture, leaving this
                 # artifact as weights that torch.load can safely restrict.
                 torch.save(module.state_dict(), directory / "model.pt")
-            elif export_format == "onnx":
-                # This sample only supplies the configured input shape for
-                # tracing; learned weights come from the initialized module.
-                sample, _ = self.train_ds[0]
-                torch.onnx.export(
-                    module,
-                    (sample.unsqueeze(0).float().to(self.config["device"]),),
-                    directory / "model.onnx",
-                    input_names=["input"],
-                    output_names=["output"],
-                    # Without this the graph is pinned to the single sample
-                    # used to trace it and only ever accepts batches of one.
-                    # Given positionally rather than keyed by name, since the
-                    # keys would have to match the module's forward parameter
-                    # names, which are the user's to choose.
-                    dynamic_shapes=({0: "batch"},),
-                )
             else:
                 raise ValueError(
                     f"Unknown export format: {export_format}. "
