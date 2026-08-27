@@ -29,7 +29,7 @@ DEFAULT_METRICS = {
 }
 
 #: available export formats for torch models
-EXPORT_FORMATS = ["onnx", "default", "pt", "safetensors"]
+EXPORT_FORMATS = ["default", "pt"]
 
 
 def identity(x: Any) -> Any:

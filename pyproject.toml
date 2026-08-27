@@ -27,8 +27,6 @@ dependencies = [
     "cachetools>=7.1.7",
     "matplotlib>=3.11.0",
     "numpy>=2.5.0",
-    "onnx>=1.17.0",
-    "onnxscript>=0.1.0",
     "pandas[parquet]>=3.0.3",
     "pyarrow>=25.0.0",
     "pyaml>=26.2.1",
@@ -43,7 +41,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-tests = ["pytest", "pytest-cov", "nbval", "safetensors"]
+tests = ["pytest", "pytest-cov", "nbval"]
 docs = [
     "nbsphinx",
     "nbsphinx-link",
