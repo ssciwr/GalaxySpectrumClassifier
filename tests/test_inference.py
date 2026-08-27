@@ -22,6 +22,7 @@ import torch
 import yaml
 from sklearn.linear_model import LinearRegression, LogisticRegression
 
+from GalaxySpectrumClassifier import EpochTrainer, SimpleTrainer
 from GalaxySpectrumClassifier.inference import (
     ClassifierInference,
     RegressionInference,
@@ -324,3 +325,148 @@ def test_regressor_passes_tensor_through_to_skorch_net(default_regressor_export)
         reg.predict(torch.from_numpy(probe)), source.predict(probe)
     )
     np.testing.assert_allclose(reg.predict(probe), source.predict(probe))
+
+
+# --- trainer -> YAML -> inference round trips ----------------------------
+#
+# These drive the real trainers end to end -- fit/train, export, then load the
+# export through an inference YAML -- and require the inference predictions to
+# equal the trainer's own, from both NumPy and torch input. Any gap here is a
+# real seam mismatch between an export and its loader, not a test artefact.
+
+
+def _float_labels(batch):
+    """Cast the ``source`` label column to float, as BCE-style losses need.
+
+    Referenced by dotted path from an ``EpochTrainer`` dataset config below;
+    ``TabularDataset`` hands ``transform`` a column -> list-of-values dict and
+    expects the same shape back.
+    """
+    batch = dict(batch)
+    batch["source"] = [float(v) for v in batch["source"]]
+    return batch
+
+
+class _XYDataset:
+    """Minimal ``to_xy``-compatible dataset: ``dataset[:]`` yields two tensors."""
+
+    def __init__(self, x, y):
+        self._x = torch.as_tensor(x)
+        self._y = torch.as_tensor(y)
+
+    def __getitem__(self, idx):
+        return self._x[idx], self._y[idx]
+
+    def __len__(self):
+        return len(self._x)
+
+
+def _binary_xy(seed=0):
+    rng = np.random.default_rng(seed)
+    x = rng.standard_normal((80, 4)).astype("float32")
+    y = (x[:, 0] + x[:, 1] > 0).astype("int64")
+    return x, y
+
+
+def _epoch_trainer_kwargs(tmp_path, data_path, **overrides):
+    dataset_kwargs = {
+        "path": str(data_path),
+        "label_columns": "source",
+        "transform": "test_inference._float_labels",
+        "hf_dataset_kwargs": {"cache_dir": str(tmp_path / "hf_cache")},
+    }
+    kwargs = {
+        "output_path": str(tmp_path / "run"),
+        "max_epochs": 2,
+        "batch_size": 16,
+        "model_type": "torch.nn.Linear",
+        "model_args": [5, 1],
+        "loss_type": "torch.nn.BCEWithLogitsLoss",
+        "optimizer_type": "torch.optim.SGD",
+        "task": "binary-classification",
+        "progressbar": False,
+        "train_dataset_kwargs": dataset_kwargs,
+        "val_dataset_kwargs": dataset_kwargs,
+        "test_dataset_kwargs": dataset_kwargs,
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_simpletrainer_skops_round_trip_matches_trainer(tmp_path):
+    x, y = _binary_xy()
+    trainer = SimpleTrainer(
+        output_path=str(tmp_path / "run"),
+        model_type="sklearn.linear_model.LogisticRegression",
+        task="binary-classification",
+    )
+    trainer.fit(_XYDataset(x, y))
+
+    deploy = tmp_path / "deploy"
+    deploy.mkdir()
+    trainer.export_model(deploy / "model.skops")
+    config = deploy / "classifier.yaml"
+    config.write_text(
+        yaml.dump(
+            {
+                "model_path": "model.skops",  # relative to the config file
+                "model_format": "skops",
+                "task": "binary-classification",
+            }
+        )
+    )
+
+    clf = ClassifierInference.from_config(str(config))
+
+    np.testing.assert_array_equal(clf.predict(x), trainer.model.predict(x))
+    np.testing.assert_array_equal(
+        clf.predict(torch.from_numpy(x)), trainer.model.predict(x)
+    )
+
+
+def test_simpletrainer_round_trip_maps_custom_labels(tmp_path):
+    x, y = _binary_xy(seed=1)
+    trainer = SimpleTrainer(
+        output_path=str(tmp_path / "run"),
+        model_type="sklearn.linear_model.LogisticRegression",
+        task="binary-classification",
+    )
+    trainer.fit(_XYDataset(x, y))
+    trainer.export_model(tmp_path / "model.skops")
+
+    clf = ClassifierInference(
+        model_path=str(tmp_path / "model.skops"),
+        model_format="skops",
+        task="binary-classification",
+        classes=["qso", "galaxy"],
+    )
+
+    expected = np.asarray(["qso", "galaxy"])[trainer.model.predict(x)]
+    np.testing.assert_array_equal(clf.predict(x), expected)
+
+
+def test_epochtrainer_default_round_trip_matches_trainer(tmp_path, create_data):
+    trainer = EpochTrainer(**_epoch_trainer_kwargs(tmp_path, create_data))
+    trainer.train()
+
+    probe = torch.stack([trainer.eval_ds[index][0] for index in range(8)])
+    expected = trainer.model.predict(probe)
+
+    trainer.export_model("export")
+    config = tmp_path / "deploy" / "classifier.yaml"
+    config.parent.mkdir()
+    config.write_text(
+        yaml.dump(
+            {
+                # config in ``deploy/``; export dir is ``run/export/``
+                "model_path": str(Path("..") / "run" / "export"),
+                "model_format": "default",
+                "task": "binary-classification",
+            }
+        )
+    )
+
+    clf = ClassifierInference.from_config(str(config))
+
+    np.testing.assert_array_equal(clf.predict(probe), expected)
+    np.testing.assert_array_equal(clf.predict(probe.numpy()), expected)
