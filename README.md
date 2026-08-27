@@ -82,6 +82,8 @@ for training galaxy-spectrum classifiers and related tabular models:
 - `TabularDataset` presents a directory of tabular files as one indexed dataset.
 - `SimpleTrainer` fits models after converting a dataset to full `X, y` arrays.
 - `EpochTrainer` trains torch modules over repeated epochs through `skorch`.
+- `ClassifierInference` / `RegressionInference` load an exported model for
+  prediction-only use.
 
 Most objects can be created directly from dictionaries, which makes YAML files a
 convenient way to describe an experiment. The `configs/` directory contains
@@ -197,6 +199,43 @@ appropriate skorch wrapper for the configured task:
 This keeps torch modules usable in sklearn-like workflows while still allowing
 batch loading, callbacks, checkpointing, and metrics during epoch-based
 training.
+
+## Inference
+
+`ClassifierInference` and `RegressionInference` load a model a trainer has
+already exported and expose a single `predict`. They are **prediction-only**:
+there is no `fit`, and they make no claim of compatibility with training tools
+such as `GridSearchCV`. Loading **trusts the artifact** exactly as the trainers'
+own snapshot loading does, so only load exports you produced or otherwise trust.
+
+They read a small dedicated inference YAML -- not a trainer snapshot or export
+manifest:
+
+```yaml
+# classifier.yaml
+model_path: ./exported-model   # SimpleTrainer: a .skops file; EpochTrainer: the export directory
+model_format: default          # default, pt (EpochTrainer), or skops (SimpleTrainer)
+task: binary-classification    # or multiclass-classification
+device: cpu                    # overrides the training device for reconstructed skorch models
+classes: [0, 1]                # optional; maps predicted indices onto labels
+```
+
+A relative `model_path` resolves against the YAML file's directory.
+
+```python
+import numpy as np
+
+from GalaxySpectrumClassifier import ClassifierInference
+
+model = ClassifierInference.from_config("classifier.yaml")
+predictions = model.predict(np.load("features.npy"))
+```
+
+`predict` accepts a NumPy array or a torch tensor (for example a `DataLoader`
+batch). Tensors are passed straight to reconstructed skorch/torch models; for a
+plain sklearn estimator loaded from `skops` the input is converted to NumPy
+first. `RegressionInference` works the same way but takes no `task` or
+`classes`.
 
 ## Acknowledgments
 

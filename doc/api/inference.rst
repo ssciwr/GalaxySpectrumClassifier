@@ -1,0 +1,4 @@
+Inference
+=========
+
+.. automodule:: GalaxySpectrumClassifier.inference

@@ -7,5 +7,7 @@ API reference
    api/data
    api/simple_trainer
    api/epoch_trainer
+   api/inference
+   api/model_loading
    api/utils
    api/base
