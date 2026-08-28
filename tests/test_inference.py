@@ -34,6 +34,17 @@ MULTICLASS_NET_TYPE = "skorch.classifier.NeuralNetClassifier"
 REGRESSOR_NET_TYPE = "skorch.regressor.NeuralNetRegressor"
 
 
+class _ConstantProbabilityModel(torch.nn.Module):
+    """Emit one trainable, input-independent binary probability."""
+
+    def __init__(self, probability=0.2):
+        super().__init__()
+        self.logit = torch.nn.Parameter(torch.tensor(probability).logit())
+
+    def forward(self, data):
+        return torch.sigmoid(self.logit).expand(data.shape[0])
+
+
 @pytest.fixture
 def skops_classifier(tmp_path):
     """A trusted skops artifact holding a tiny fitted binary classifier."""
@@ -42,6 +53,21 @@ def skops_classifier(tmp_path):
     y = (x[:, 0] + x[:, 1] > 0).astype("int64")
     estimator = LogisticRegression().fit(x, y)
     path = tmp_path / "classifier.skops"
+    sio.dump(estimator, path)
+    return path, estimator, x
+
+
+def _skops_classifier_with_labels(tmp_path, native_labels):
+    """Build a trusted skops classifier with caller-selected native labels."""
+    rng = np.random.default_rng(7)
+    x = rng.standard_normal((60, 4)).astype("float32")
+    native_labels = np.asarray(native_labels)
+    combined_signal = x[:, 0] + x[:, 1]
+    belongs_to_second_class = combined_signal > 0
+    label_indices = belongs_to_second_class.astype("int64")
+    y = native_labels[label_indices]
+    estimator = LogisticRegression().fit(x, y)
+    path = tmp_path / "native-labels.skops"
     sio.dump(estimator, path)
     return path, estimator, x
 
@@ -213,6 +239,34 @@ def test_classifier_maps_predictions_onto_custom_labels(skops_classifier):
 
     expected = np.asarray(["star", "galaxy"])[source.predict(x)]
     np.testing.assert_array_equal(predictions, expected)
+
+
+@pytest.mark.parametrize(
+    ("native_labels", "application_labels"),
+    [
+        ([10, 20], ["qso", "galaxy"]),
+        (["agn", "star"], ["active", "stellar"]),
+    ],
+)
+def test_skops_classifier_maps_native_labels_by_identity(
+    tmp_path, native_labels, application_labels
+):
+    path, estimator, x = _skops_classifier_with_labels(tmp_path, native_labels)
+    # Regression guard: native predictions may be labels such as 10 or "agn",
+    # not zero-based positions suitable for indexing application_labels.
+    clf = ClassifierInference(
+        model_path=str(path),
+        model_format="skops",
+        task="binary-classification",
+        classes=application_labels,
+    )
+    # Define the desired mapping by label identity. Positional indexing would
+    # raise for both the non-zero-based numeric and string parameter cases.
+    label_map = dict(zip(estimator.classes_, application_labels, strict=True))
+    expected = np.asarray([label_map[label] for label in estimator.predict(x)])
+
+    np.testing.assert_array_equal(clf.predict(x), expected)
+    np.testing.assert_array_equal(clf.predict(torch.from_numpy(x)), expected)
 
 
 def test_classifier_rejects_unsupported_task(skops_classifier):
@@ -445,6 +499,26 @@ def test_simpletrainer_round_trip_maps_custom_labels(tmp_path):
     np.testing.assert_array_equal(clf.predict(x), expected)
 
 
+def test_binary_epoch_round_trip_maps_configured_classes(tmp_path, create_data):
+    trainer = EpochTrainer(**_epoch_trainer_kwargs(tmp_path, create_data))
+    trainer.train()
+    trainer.export_model("export")
+    probe = torch.stack([trainer.eval_ds[index][0] for index in range(8)])
+    application_labels = np.asarray(["negative", "positive"])
+    expected = application_labels[trainer.model.predict(probe)]
+    # Regression guard: loading a binary export with application labels must
+    # not pass ``classes`` into NeuralNetBinaryClassifier reconstruction.
+    clf = ClassifierInference(
+        model_path=str(tmp_path / "run" / "export"),
+        model_format="default",
+        task="binary-classification",
+        classes=application_labels.tolist(),
+    )
+
+    np.testing.assert_array_equal(clf.predict(probe), expected)
+    np.testing.assert_array_equal(clf.predict(probe.numpy()), expected)
+
+
 def test_epochtrainer_default_round_trip_matches_trainer(tmp_path, create_data):
     trainer = EpochTrainer(**_epoch_trainer_kwargs(tmp_path, create_data))
     trainer.train()
@@ -467,6 +541,42 @@ def test_epochtrainer_default_round_trip_matches_trainer(tmp_path, create_data):
     )
 
     clf = ClassifierInference.from_config(str(config))
+
+    np.testing.assert_array_equal(clf.predict(probe), expected)
+    np.testing.assert_array_equal(clf.predict(probe.numpy()), expected)
+
+
+@pytest.mark.parametrize("export_format", ["default", "pt"])
+def test_epoch_round_trip_preserves_nondefault_prediction_semantics(
+    tmp_path, create_data, export_format
+):
+    # For ANN models, the meaning of the output is derived from the loss. As such,
+    # the predict functions have to use the same semantics as the loss functions used.
+    # BCELoss means the module's 0.2 output is already a probability. If export
+    # omits this criterion, reconstruction uses BCEWithLogitsLoss and treats
+    # 0.2 as a logit, flipping the predicted class from 0 to 1.
+    trainer = EpochTrainer(
+        **_epoch_trainer_kwargs(
+            tmp_path,
+            create_data,
+            max_epochs=1,
+            model_type="test_inference._ConstantProbabilityModel",
+            model_args=[],
+            loss_type="torch.nn.BCELoss",
+            optimizer_kwargs={"lr": 0.0},
+            export_format=export_format,
+        )
+    )
+    trainer.train()
+    trainer.export_model("export")
+    probe = torch.stack([trainer.eval_ds[index][0] for index in range(8)])
+    expected = trainer.model.predict(probe)
+    # Exercise the public loader seam for both exported weight layouts.
+    clf = ClassifierInference(
+        model_path=str(tmp_path / "run" / "export"),
+        model_format=export_format,
+        task="binary-classification",
+    )
 
     np.testing.assert_array_equal(clf.predict(probe), expected)
     np.testing.assert_array_equal(clf.predict(probe.numpy()), expected)

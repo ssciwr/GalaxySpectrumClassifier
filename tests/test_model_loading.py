@@ -125,6 +125,27 @@ def test_load_torch_predictions_match_source_net(pt_binary_export):
     np.testing.assert_array_equal(restored.predict(probe), source.predict(probe))
 
 
+@pytest.mark.parametrize(
+    ("loader", "fixture_name"),
+    [
+        (load_default, "default_binary_export"),
+        (load_torch, "pt_binary_export"),
+    ],
+)
+def test_binary_loader_accepts_classes_and_matches_source(
+    loader, fixture_name, request
+):
+    directory, source = request.getfixturevalue(fixture_name)
+    probe = _training_data(2, seed=99)[0]
+
+    # Regression guard: application labels must not be passed to skorch's
+    # binary classifier constructor, which does not accept ``classes``.
+    restored = loader(directory, classes=["negative", "positive"])
+
+    # Ignoring labels during reconstruction must not alter the raw 0/1 output.
+    np.testing.assert_array_equal(restored.predict(probe), source.predict(probe))
+
+
 def test_load_skops_predictions_match_source_estimator(tmp_path):
     x, y = _training_data(2, seed=7)
     source = LogisticRegression().fit(x, y.astype("int64"))
