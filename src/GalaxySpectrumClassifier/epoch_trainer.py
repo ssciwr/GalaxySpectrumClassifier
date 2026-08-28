@@ -83,7 +83,7 @@ class EpochTrainer(TrainerProtocol):
         progressbar_values: list[str] | None = None,
         early_stopping_kwargs: dict[str, Any] | None = None,
         export_format: str = "default",
-        classes: list[Any] | None = None,
+        nclasses: int | None = None,
         _allow_existing_output_path: bool = False,
         name: str | None = None,
         **additional_model_kwargs,
@@ -169,10 +169,10 @@ class EpochTrainer(TrainerProtocol):
                 conditions for ending training early. Defaults to None.
             export_format (str, optional): Model export format. Must be one of
                 the supported formats. Defaults to "default".
-            classes (list[Any] | None, optional): Known class labels for
-                multiclass classification. Passed to skorch's
-                ``NeuralNetClassifier`` because fitting from a Dataset with
-                ``y=None`` cannot infer them. Defaults to None.
+            nclasses (int | None, optional): Number of encoded classes for
+                multiclass classification. Labels must be integer indices in
+                ``range(nclasses)``. Required for multiclass classification
+                and invalid for other tasks. Defaults to None.
             name (str | None, optional): Experiment-name subdirectory appended
                 to ``output_path``. Defaults to None.
             **additional_model_kwargs: Additional named options preserved in
@@ -202,6 +202,18 @@ class EpochTrainer(TrainerProtocol):
 
         if task not in TASKS:
             raise ValueError(f"Unknown task {task}. Allowed tasks: {TASKS}")
+
+        if task == "multiclass-classification":
+            if nclasses is None:
+                raise ValueError("nclasses is required for multiclass classification")
+            if (
+                not isinstance(nclasses, int)
+                or isinstance(nclasses, bool)
+                or nclasses < 2
+            ):
+                raise ValueError("nclasses must be an integer of at least 2")
+        elif nclasses is not None:
+            raise ValueError("nclasses is only valid for multiclass classification")
 
         if val_loader_kwargs is not None and val_loader_kwargs.get("shuffle"):
             raise ValueError(
@@ -245,11 +257,12 @@ class EpochTrainer(TrainerProtocol):
             "progressbar_values": progressbar_values,
             "early_stopping_kwargs": early_stopping_kwargs,
             "export_format": export_format,
-            "classes": classes,
+            "nclasses": nclasses,
             "name": name,
             **additional_model_kwargs,
         }
         self.task = task
+        self.nclasses = nclasses
         self.output_path = Path(output_path)
         if name:
             self.output_path = self.output_path / name
@@ -328,7 +341,7 @@ class EpochTrainer(TrainerProtocol):
             device=device,
             train_split=predefined_split(self.val_ds),
             callbacks=self.callbacks,
-            classes=classes,
+            nclasses=nclasses,
         )
         self.model.initialize()
 
@@ -544,7 +557,7 @@ class EpochTrainer(TrainerProtocol):
         device: str = "cpu",
         train_split: Any = None,
         callbacks: list[Any] | None = None,
-        classes: list[Any] | None = None,
+        nclasses: int | None = None,
     ) -> Trainable:
         """Construct the configured neural model and its training interface.
 
@@ -582,8 +595,8 @@ class EpochTrainer(TrainerProtocol):
                 training. Defaults to None.
             callbacks (list[Any] | None, optional): Training callbacks.
                 Defaults to None.
-            classes (list[Any] | None, optional): Known class labels for
-                multiclass classifiers. Defaults to None.
+            nclasses (int | None, optional): Number of encoded classes for
+                a multiclass classifier. Defaults to None.
 
         Raises:
             ValueError: If ``self.task`` is unsupported.
@@ -608,7 +621,6 @@ class EpochTrainer(TrainerProtocol):
                 f"multiclass-classification, regression - got {self.task!r}"
             )
 
-        # build loss
         criterion_t = load_type(loss_type)
         criterion_kwargs = {}
 
@@ -632,8 +644,8 @@ class EpochTrainer(TrainerProtocol):
         model_t = load_type(type)
         module = model_t(*(args or []), **(resolve_type_kwargs(kwargs or {})))
         skorch_kwargs = {}
-        if self.task == "multiclass-classification" and classes is not None:
-            skorch_kwargs["classes"] = classes
+        if self.task == "multiclass-classification":
+            skorch_kwargs["classes"] = range(nclasses)
 
         # build model
         net = skorch_modeltype(
@@ -656,6 +668,34 @@ class EpochTrainer(TrainerProtocol):
 
         return net
 
+    def _validate_training_labels(self) -> None:
+        """Validate the encoded classification labels before fitting."""
+        if self.task == "regression":
+            return
+
+        labels = np.asarray([to_numpy(target) for _, target in self.train_ds]).reshape(
+            -1
+        )
+        try:
+            numeric = labels.astype(np.float64)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "classification labels must be integer indices starting at 0"
+            ) from error
+        if not np.all(np.isfinite(numeric)) or not np.all(numeric == np.floor(numeric)):
+            raise ValueError(
+                "classification labels must be integer indices starting at 0"
+            )
+
+        encoded = numeric.astype(np.int64)
+        if self.task == "binary-classification":
+            if not np.all((encoded >= 0) & (encoded <= 1)):
+                raise ValueError("binary class indices must be 0 or 1")
+        elif not np.all((encoded >= 0) & (encoded < self.nclasses)):
+            raise ValueError(
+                f"multiclass class indices must be between 0 and {self.nclasses - 1}"
+            )
+
     def train(self) -> Trainable:
         """Fit the model using its configured training and validation datasets.
 
@@ -665,6 +705,7 @@ class EpochTrainer(TrainerProtocol):
         Raises:
             ValueError: If training samples are incompatible with the model.
         """
+        self._validate_training_labels()
         max_epochs = self.config["max_epochs"]
         completed_epochs = len(self.model.history)
         remaining_epochs = max_epochs - completed_epochs
@@ -710,7 +751,7 @@ class EpochTrainer(TrainerProtocol):
                 # class's probability as a 1D array, not the full 2-column matrix.
                 y_proba = y_proba[:, 1]
             # else: task == "multiclass-classification" - pass the full
-            # (n_samples, n_classes) matrix through unchanged, since that's
+            # (n_samples, class_count) matrix through unchanged, since that's
             # the shape multiclass-aware metrics (e.g. roc_auc_score with
             # multi_class="ovr") expect.
 
@@ -860,6 +901,8 @@ class EpochTrainer(TrainerProtocol):
                     "model_args": self.config["model_args"],
                     "model_kwargs": self.config["model_kwargs"],
                     "device": self.config["device"],
+                    "criterion_type": self.config["loss_type"],
+                    "criterion_kwargs": self.config["loss_kwargs"],
                     "export_format": export_format,
                 },
                 f,

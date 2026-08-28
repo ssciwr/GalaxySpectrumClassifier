@@ -51,6 +51,19 @@ def create_data(tmp_path):
 
 
 @pytest.fixture
+def create_string_label_data(tmp_path):
+    """Write binary data whose domain labels still need numeric encoding."""
+    datapath = tmp_path / "string-label-data"
+    datapath.mkdir()
+    label_names = {0: "agn", 1: "star"}
+    for index, frame in enumerate(build_data()):
+        frame = frame.copy()
+        frame["source"] = frame["source"].map(label_names)
+        frame.to_csv(datapath / f"{index}.csv", index=False)
+    return datapath
+
+
+@pytest.fixture
 def create_data_nonstandard(tmp_path):
     """Write the same frames as tab-separated ``.tsv`` files wrapped in comments.
 

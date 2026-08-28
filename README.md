@@ -82,6 +82,8 @@ for training galaxy-spectrum classifiers and related tabular models:
 - `TabularDataset` presents a directory of tabular files as one indexed dataset.
 - `SimpleTrainer` fits models after converting a dataset to full `X, y` arrays.
 - `EpochTrainer` trains torch modules over repeated epochs through `skorch`.
+- `load_skops`, `load_default`, and `load_torch` restore exported estimators
+  for prediction.
 
 Most objects can be created directly from dictionaries, which makes YAML files a
 convenient way to describe an experiment. The `configs/` directory contains
@@ -197,6 +199,38 @@ appropriate skorch wrapper for the configured task:
 This keeps torch modules usable in sklearn-like workflows while still allowing
 batch loading, callbacks, checkpointing, and metrics during epoch-based
 training.
+
+## Inference
+
+Load a trusted trainer export directly and use the returned estimator's native
+API. `SimpleTrainer` writes a self-contained skops file:
+
+```python
+import numpy as np
+
+from GalaxySpectrumClassifier import load_skops
+
+model = load_skops("training/run/model.skops")
+predictions = model.predict(np.load("features.npy"))
+probabilities = model.predict_proba(np.load("features.npy"))
+```
+
+`EpochTrainer` writes a directory containing `model.yaml` and either
+`params.pt` (`default`) or `model.pt` (`pt`):
+
+```python
+from GalaxySpectrumClassifier import load_default, load_torch
+
+model = load_default("training/run/default-export", device="cpu")
+pt_model = load_torch("training/run/pt-export", device="cpu")
+```
+
+For a multiclass epoch export, pass the encoded class count, for example
+`load_default(path, nclasses=3)`. Classification labels are integer indices
+starting at zero. The returned sklearn or skorch estimator defines the accepted
+input type and exposes its own `predict` and, where supported,
+`predict_proba`. Loading trusts the artifact, so only load exports you produced
+or otherwise trust.
 
 ## Acknowledgments
 

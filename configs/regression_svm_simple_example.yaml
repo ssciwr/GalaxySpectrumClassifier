@@ -1,0 +1,34 @@
+trainer:
+  output_path: ../training/regression_svm_example
+  model_type: sklearn.svm.SVR
+  model_args:
+  model_kwargs:
+    kernel: "rbf"
+    degree: 3
+    gamma: "scale"
+    coef0: 0.0
+    tol: 0.001
+    C: 1.0
+    epsilon: 0.1
+    shrinking: True
+    cache_size: 200
+    verbose: False
+    max_iter: -1
+
+  # Must be one of utils.TASKS - it decides the predict_proba shape handed
+  # to needs_proba metrics (positive-class column for binary).
+  task: regression
+  metrics:
+    - name: rmse
+      type: sklearn.metrics.root_mean_squared_error
+      kwargs:
+      needs_proba: false
+    - name: r2
+      type: sklearn.metrics.r2_score
+      kwargs:
+      needs_proba: false
+  seed: 42
+dataset:
+  path: ../data/silver/default
+  data_format: csv
+  label_columns: "source"

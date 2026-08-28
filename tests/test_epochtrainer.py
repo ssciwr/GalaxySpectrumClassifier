@@ -44,6 +44,27 @@ def _int_labels(batch):
     return batch
 
 
+def _encode_binary_domain_labels(batch):
+    mapping = {"agn": 0.0, "star": 1.0}
+    batch = dict(batch)
+    batch["source"] = [mapping[label] for label in batch["source"]]
+    return batch
+
+
+def _encode_multiclass_domain_labels(batch):
+    mapping = {"agn": 0, "star": 1}
+    batch = dict(batch)
+    batch["source"] = [mapping[label] for label in batch["source"]]
+    return batch
+
+
+def _encode_out_of_range_domain_labels(batch):
+    mapping = {"agn": 0, "star": 2}
+    batch = dict(batch)
+    batch["source"] = [mapping[label] for label in batch["source"]]
+    return batch
+
+
 class _FixedPredictionModel:
     """Minimal predictor used where a real net cannot produce an invalid shape."""
 
@@ -126,6 +147,50 @@ def test_epochtrainer_rejects_invalid_configuration_before_creating_output(
     # Invalid configuration must fail before creating a partial training run.
     with pytest.raises(ValueError, match=message):
         EpochTrainer(**kwargs)
+
+    assert not (tmp_path / "training").exists()
+
+
+def test_epochtrainer_requires_nclasses_for_multiclass(tmp_path, create_data):
+    kwargs = _trainer_kwargs(
+        tmp_path,
+        create_data,
+        task="multiclass-classification",
+        model_args=[5, 2],
+        loss_type="torch.nn.CrossEntropyLoss",
+    )
+
+    with pytest.raises(ValueError, match="nclasses is required for multiclass"):
+        EpochTrainer(**kwargs)
+
+    assert not (tmp_path / "training").exists()
+
+
+@pytest.mark.parametrize("nclasses", [0, 1, -1, 2.5, True])
+def test_epochtrainer_rejects_invalid_nclasses(tmp_path, create_data, nclasses):
+    kwargs = _trainer_kwargs(
+        tmp_path,
+        create_data,
+        task="multiclass-classification",
+        model_args=[5, 2],
+        loss_type="torch.nn.CrossEntropyLoss",
+        nclasses=nclasses,
+    )
+
+    with pytest.raises(ValueError, match="nclasses must be an integer of at least 2"):
+        EpochTrainer(**kwargs)
+
+    assert not (tmp_path / "training").exists()
+
+
+@pytest.mark.parametrize("task", ["binary-classification", "regression"])
+def test_epochtrainer_rejects_nclasses_for_other_tasks(tmp_path, create_data, task):
+    overrides = {"task": task, "nclasses": 2}
+    if task == "regression":
+        overrides.update(loss_type="torch.nn.MSELoss")
+
+    with pytest.raises(ValueError, match="nclasses is only valid for multiclass"):
+        EpochTrainer(**_trainer_kwargs(tmp_path, create_data, **overrides))
 
     assert not (tmp_path / "training").exists()
 
@@ -265,6 +330,7 @@ def test_epochtrainer_selects_net_and_default_metric_for_each_task(
 ):
     # These coherent model/loss pairs make each constructor case meaningful;
     # they deliberately do not impose task-specific validation on callers.
+    task_kwargs = {"nclasses": 2} if task == "multiclass-classification" else {}
     trainer = EpochTrainer(
         **_trainer_kwargs(
             tmp_path,
@@ -272,6 +338,7 @@ def test_epochtrainer_selects_net_and_default_metric_for_each_task(
             task=task,
             model_args=model_args,
             loss_type=loss_type,
+            **task_kwargs,
         )
     )
 
@@ -279,19 +346,23 @@ def test_epochtrainer_selects_net_and_default_metric_for_each_task(
     assert [metric["name"] for metric in trainer.metrics] == [expected_metric]
 
 
-def test_epochtrainer_passes_multiclass_classes_to_skorch(tmp_path, create_data):
+def test_epochtrainer_configures_multiclass_indices_from_nclasses(
+    tmp_path, create_data
+):
     trainer = EpochTrainer(
         **_trainer_kwargs(
             tmp_path,
             create_data,
             task="multiclass-classification",
-            model_args=[5, 2],
+            model_args=[5, 3],
             loss_type="torch.nn.CrossEntropyLoss",
-            classes=[0, 1],
+            nclasses=3,
         )
     )
 
-    np.testing.assert_array_equal(trainer.model.classes_, np.array([0, 1]))
+    # nclasses describes only the encoded index space; no domain labels are
+    # routed into skorch.
+    np.testing.assert_array_equal(trainer.model.classes_, np.arange(3))
 
 
 def test_epochtrainer_adds_required_checkpoint_and_default_metric_callbacks(
@@ -591,6 +662,95 @@ def test_epochtrainer_evaluate_binary_probability_metric_after_training(
     assert set(results) == {"auc"}
 
 
+def test_epochtrainer_trains_binary_with_transformed_domain_labels(
+    tmp_path, create_string_label_data
+):
+    dataset_kwargs = {
+        "path": str(create_string_label_data),
+        "label_columns": "source",
+        "transform": "test_epochtrainer._encode_binary_domain_labels",
+        "hf_dataset_kwargs": {"cache_dir": str(tmp_path / "hf_cache")},
+    }
+    trainer = EpochTrainer(
+        **_trainer_kwargs(
+            tmp_path,
+            create_string_label_data,
+            train_dataset_kwargs=dataset_kwargs,
+            val_dataset_kwargs=dataset_kwargs,
+            test_dataset_kwargs=dataset_kwargs,
+            max_epochs=1,
+            batch_size=1000,
+        )
+    )
+
+    trainer.train()
+
+    _, sample_y = trainer.train_ds[0]
+    assert sample_y.dtype == torch.float32
+    assert set(trainer.evaluate()) == {"accuracy_score"}
+
+
+def test_epochtrainer_trains_multiclass_with_transformed_domain_labels(
+    tmp_path, create_string_label_data
+):
+    dataset_kwargs = {
+        "path": str(create_string_label_data),
+        "label_columns": "source",
+        "transform": "test_epochtrainer._encode_multiclass_domain_labels",
+        "hf_dataset_kwargs": {"cache_dir": str(tmp_path / "hf_cache")},
+    }
+    trainer = EpochTrainer(
+        **_trainer_kwargs(
+            tmp_path,
+            create_string_label_data,
+            task="multiclass-classification",
+            model_args=[5, 2],
+            loss_type="torch.nn.CrossEntropyLoss",
+            train_dataset_kwargs=dataset_kwargs,
+            val_dataset_kwargs=dataset_kwargs,
+            test_dataset_kwargs=dataset_kwargs,
+            max_epochs=1,
+            batch_size=1000,
+            nclasses=2,
+        )
+    )
+
+    trainer.train()
+
+    _, sample_y = trainer.train_ds[0]
+    assert sample_y.dtype == torch.int64
+    assert set(trainer.evaluate()) == {"accuracy_score"}
+
+
+def test_epochtrainer_rejects_transformed_labels_outside_nclasses(
+    tmp_path, create_string_label_data
+):
+    dataset_kwargs = {
+        "path": str(create_string_label_data),
+        "label_columns": "source",
+        "transform": "test_epochtrainer._encode_out_of_range_domain_labels",
+        "hf_dataset_kwargs": {"cache_dir": str(tmp_path / "hf_cache")},
+    }
+    trainer = EpochTrainer(
+        **_trainer_kwargs(
+            tmp_path,
+            create_string_label_data,
+            task="multiclass-classification",
+            model_args=[5, 2],
+            loss_type="torch.nn.CrossEntropyLoss",
+            train_dataset_kwargs=dataset_kwargs,
+            val_dataset_kwargs=dataset_kwargs,
+            test_dataset_kwargs=dataset_kwargs,
+            max_epochs=1,
+            batch_size=1000,
+            nclasses=2,
+        )
+    )
+
+    with pytest.raises(ValueError, match="class indices must be between 0 and 1"):
+        trainer.train()
+
+
 def test_epochtrainer_trains_multiclass_with_transform_controlled_dtypes(
     tmp_path, create_data
 ):
@@ -612,7 +772,7 @@ def test_epochtrainer_trains_multiclass_with_transform_controlled_dtypes(
             test_dataset_kwargs=dataset_kwargs,
             max_epochs=1,
             batch_size=1000,
-            classes=[0, 1],
+            nclasses=2,
         )
     )
 
@@ -664,8 +824,9 @@ def test_epochtrainer_evaluate_passes_multiclass_probability_matrix_to_metric(
             tmp_path,
             create_data,
             task="multiclass-classification",
-            model_args=[5, 2],
+            model_args=[5, 3],
             loss_type="torch.nn.CrossEntropyLoss",
+            nclasses=3,
             metrics=[
                 {
                     "type": "sklearn.metrics.log_loss",
