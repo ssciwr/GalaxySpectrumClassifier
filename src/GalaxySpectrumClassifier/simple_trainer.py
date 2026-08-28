@@ -280,23 +280,23 @@ class SimpleTrainer(TrainerProtocol):
         labels = np.asarray(targets).reshape(-1)
         if not np.issubdtype(labels.dtype, np.integer):
             raise ValueError(
-                "classification labels must be contiguous integer indices starting at 0"
+                "classification labels must be unique contiguous integer indices starting at 0"
             )
         try:
             numeric = labels.astype(np.float64)
         except (TypeError, ValueError) as error:
             raise ValueError(
-                "classification labels must be contiguous integer indices starting at 0"
+                "classification labels must be unique contiguous integer indices starting at 0"
             ) from error
         if not np.all(np.isfinite(numeric)) or not np.all(numeric == np.floor(numeric)):
             raise ValueError(
-                "classification labels must be contiguous integer indices starting at 0"
+                "classification labels must be unique contiguous integer indices starting at 0"
             )
 
         unique = np.unique(numeric.astype(np.int64))
         if not np.array_equal(unique, np.arange(len(unique))):
             raise ValueError(
-                "classification labels must be contiguous integer indices starting at 0"
+                "classification labels must be unique contiguous integer indices starting at 0"
             )
 
     def fit(self, dataset: torch.utils.data.Dataset) -> Trainable:
