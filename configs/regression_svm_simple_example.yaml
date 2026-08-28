@@ -1,5 +1,3 @@
-# Example: RandomForest + probability calibration on the classification_v2
-# Cloudy grids (AGN vs. star-forming). Paths are relative to notebooks/.
 trainer:
   output_path: ../training/regression_svm_example
   model_type: sklearn.svm.SVR
