@@ -1,3 +1,3 @@
 model_format: skops
-model_path: training/binaryclassifier_simple_example/trained_random_forest
+model_path: ../../training/binaryclassifier_simple_example/trained_random_forest/model.skops
 task: binary-classification
