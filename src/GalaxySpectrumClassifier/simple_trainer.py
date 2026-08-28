@@ -272,6 +272,33 @@ class SimpleTrainer(TrainerProtocol):
             )
         return metrics
 
+    def _validate_classification_labels(self, targets: Any) -> None:
+        """Require zero-based contiguous integer labels for classification."""
+        if self.task == "regression":
+            return
+
+        labels = np.asarray(targets).reshape(-1)
+        if not np.issubdtype(labels.dtype, np.integer):
+            raise ValueError(
+                "classification labels must be contiguous integer indices starting at 0"
+            )
+        try:
+            numeric = labels.astype(np.float64)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "classification labels must be contiguous integer indices starting at 0"
+            ) from error
+        if not np.all(np.isfinite(numeric)) or not np.all(numeric == np.floor(numeric)):
+            raise ValueError(
+                "classification labels must be contiguous integer indices starting at 0"
+            )
+
+        unique = np.unique(numeric.astype(np.int64))
+        if not np.array_equal(unique, np.arange(len(unique))):
+            raise ValueError(
+                "classification labels must be contiguous integer indices starting at 0"
+            )
+
     def fit(self, dataset: torch.utils.data.Dataset) -> Trainable:
         """Fit the configured model using every retained sample in a dataset.
 
@@ -289,6 +316,7 @@ class SimpleTrainer(TrainerProtocol):
         X, y = to_xy(
             dataset,
         )
+        self._validate_classification_labels(y)
         self.model.fit(X, y)
         return self.model
 
@@ -355,7 +383,7 @@ class SimpleTrainer(TrainerProtocol):
                 # class's probability as a 1D array, not the full 2-column matrix.
                 y_proba = y_proba[:, 1]
             # else: task == "multiclass-classification" - pass the full
-            # (n_samples, n_classes) matrix through unchanged, since that's
+            # (n_samples, class_count) matrix through unchanged, since that's
             # the shape multiclass-aware metrics (e.g. roc_auc_score with
             # multi_class="ovr") expect.
 
