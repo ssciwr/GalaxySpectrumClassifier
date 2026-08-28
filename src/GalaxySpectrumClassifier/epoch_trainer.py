@@ -621,10 +621,6 @@ class EpochTrainer(TrainerProtocol):
                 f"multiclass-classification, regression - got {self.task!r}"
             )
 
-        # Preserve prediction-affecting criterion configuration in exports.
-        self.criterion_type = loss_type
-        self.criterion_kwargs = loss_kwargs
-
         criterion_t = load_type(loss_type)
         criterion_kwargs = {}
 
@@ -905,9 +901,8 @@ class EpochTrainer(TrainerProtocol):
                     "model_args": self.config["model_args"],
                     "model_kwargs": self.config["model_kwargs"],
                     "device": self.config["device"],
-                    # TODO: not sure this will work. include into self.config
-                    "criterion_type": self.criterion_type,
-                    "criterion_kwargs": self.criterion_kwargs,
+                    "criterion_type": self.config["loss_type"],
+                    "criterion_kwargs": self.config["loss_kwargs"],
                     "export_format": export_format,
                 },
                 f,
