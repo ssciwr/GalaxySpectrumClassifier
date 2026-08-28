@@ -82,8 +82,8 @@ for training galaxy-spectrum classifiers and related tabular models:
 - `TabularDataset` presents a directory of tabular files as one indexed dataset.
 - `SimpleTrainer` fits models after converting a dataset to full `X, y` arrays.
 - `EpochTrainer` trains torch modules over repeated epochs through `skorch`.
-- `ClassifierInference` / `RegressionInference` load an exported model for
-  prediction-only use.
+- `load_skops`, `load_default`, and `load_torch` restore exported estimators
+  for prediction.
 
 Most objects can be created directly from dictionaries, which makes YAML files a
 convenient way to describe an experiment. The `configs/` directory contains
@@ -202,40 +202,35 @@ training.
 
 ## Inference
 
-`ClassifierInference` and `RegressionInference` load a model a trainer has
-already exported and expose a single `predict`. They are **prediction-only**:
-there is no `fit`, and they make no claim of compatibility with training tools
-such as `GridSearchCV`. Loading **trusts the artifact** exactly as the trainers'
-own snapshot loading does, so only load exports you produced or otherwise trust.
-
-They read a small dedicated inference YAML -- not a trainer snapshot or export
-manifest:
-
-```yaml
-# classifier.yaml
-model_path: ./exported-model   # SimpleTrainer: a .skops file; EpochTrainer: the export directory
-model_format: default          # default, pt (EpochTrainer), or skops (SimpleTrainer)
-task: binary-classification    # or multiclass-classification
-device: cpu                    # overrides the training device for reconstructed skorch models
-classes: [0, 1]                # optional; maps predicted indices onto labels
-```
-
-A relative `model_path` resolves against the YAML file's directory.
+Load a trusted trainer export directly and use the returned estimator's native
+API. `SimpleTrainer` writes a self-contained skops file:
 
 ```python
 import numpy as np
 
-from GalaxySpectrumClassifier import ClassifierInference
+from GalaxySpectrumClassifier import load_skops
 
-model = ClassifierInference.from_config("classifier.yaml")
+model = load_skops("training/run/model.skops")
 predictions = model.predict(np.load("features.npy"))
+probabilities = model.predict_proba(np.load("features.npy"))
 ```
 
-`predict` accepts a NumPy array or a torch tensor (for example a `DataLoader`
-batch). Tensors are passed straight to reconstructed skorch/torch models; for a
-plain sklearn estimator loaded from `skops` the input is converted to NumPy
-first. `RegressionInference` works the same way but takes no `task` or
-`classes`.
+`EpochTrainer` writes a directory containing `model.yaml` and either
+`params.pt` (`default`) or `model.pt` (`pt`):
+
+```python
+from GalaxySpectrumClassifier import load_default, load_torch
+
+model = load_default("training/run/default-export", device="cpu")
+pt_model = load_torch("training/run/pt-export", device="cpu")
+```
+
+For a multiclass epoch export, pass the encoded class count, for example
+`load_default(path, nclasses=3)`. Classification labels are integer indices
+starting at zero. The returned sklearn or skorch estimator defines the accepted
+input type and exposes its own `predict` and, where supported,
+`predict_proba`. Loading trusts the artifact, so only load exports you produced
+or otherwise trust.
 
 ## Acknowledgments
 
