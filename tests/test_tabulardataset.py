@@ -360,22 +360,41 @@ def test_tabulardataset_transform_encodes_string_labels_lazily(
 def test_tabulardataset_pretransform_persists_encoded_label_column(
     create_string_label_data, tmp_path
 ):
-    ds = TabularDataset(
-        str(create_string_label_data),
-        label_columns="source_index",
-        pre_transform="test_tabulardataset._add_encoded_source",
-        pre_transform_kwargs={"remove_columns": ["source"]},
-        hf_dataset_kwargs=_hf_kwargs(tmp_path),
-    )
+    kwargs = {
+        "path": str(create_string_label_data),
+        "label_columns": "source_index",
+        "pre_transform": "test_tabulardataset._add_encoded_source",
+        "pre_transform_kwargs": {"remove_columns": ["source"]},
+        "hf_dataset_kwargs": _hf_kwargs(tmp_path),
+    }
+    first = TabularDataset(**kwargs)
+    first_cache_files = {
+        Path(cache_file["filename"]) for cache_file in first.backend.cache_files
+    }
+    del first
 
-    _, labels = ds[:]
+    # Reconstructing from the same source and cache must retain the materialized
+    # column and reuse the persisted Arrow cache rather than only exposing an
+    # in-memory result from the first construction.
+    restored = TabularDataset(**kwargs)
+    restored_cache_files = {
+        Path(cache_file["filename"]) for cache_file in restored.backend.cache_files
+    }
+    _, labels = restored[:]
 
-    assert ds.backend.column_names == ["a", "b", "c", "d", "extra", "source_index"]
+    assert restored.backend.column_names == [
+        "a",
+        "b",
+        "c",
+        "d",
+        "extra",
+        "source_index",
+    ]
     assert labels.dtype == torch.int64
     assert set(labels.squeeze(-1).tolist()) == {0, 1}
-    assert ds.backend.cache_files
-    # TODO:
-    # there's something missing here wrt to saving of data. this test does not check for data persistence at all?
+    assert first_cache_files
+    assert restored_cache_files == first_cache_files
+    assert all(cache_file.is_file() for cache_file in restored_cache_files)
 
 
 def test_tabular_dataset_works_with_parallel_dataloaders(data_dir, tmp_path):
