@@ -19,6 +19,7 @@ resolves against the file's directory.
 """
 
 from pathlib import Path
+from typing import Any, Self
 
 import numpy as np
 import torch
@@ -30,15 +31,29 @@ from .model_loading import LOADER_MAP
 #: The classification tasks a ``ClassifierInference`` accepts. Regression is a
 #: ``RegressionInference`` concern; the two are kept separate so the task is
 #: always explicit and never guessed.
-CLASSIFIER_TASKS = ("binary-classification", "multiclass-classification")
+CLASSIFIER_TASKS: tuple[str, str] = (
+    "binary-classification",
+    "multiclass-classification",
+)
 
 
-def _as_predict_input(data, model_format):
-    """Return ``data`` in the form the underlying predictor expects.
+def _as_predict_input(
+    data: np.ndarray | torch.Tensor, model_format: str
+) -> np.ndarray | torch.Tensor:
+    """Convert prediction input to the representation required by a model.
 
-    skorch and torch models consume tensors natively, so the tensor is handed
-    through untouched. A skops artifact is a plain sklearn estimator that
-    cannot take a tensor, so it is coerced to NumPy for that format only.
+    Skorch and torch models consume tensors natively. A skops artifact is a
+    plain scikit-learn estimator, so torch tensors are converted to NumPy
+    arrays for that format only.
+
+    Args:
+        data (np.ndarray | torch.Tensor): Input samples accepted by the
+            underlying predictor.
+        model_format (str): Serialization format of the loaded model.
+
+    Returns:
+        Any: ``data`` unchanged, except for torch tensors used with the
+        ``skops`` format, which are returned as NumPy arrays on the CPU.
     """
     if model_format == "skops" and isinstance(data, torch.Tensor):
         return data.detach().cpu().numpy()
@@ -46,9 +61,29 @@ def _as_predict_input(data, model_format):
 
 
 class _BaseInference(BaseEstimator):
-    """Shared artifact loading and config handling for the two predictors."""
+    """Provide shared model loading and configuration behavior.
 
-    def _load_model(self, classes=None):
+    Subclasses must define ``model_path``, ``model_format``, and ``device``
+    before calling :meth:`_load_model`.
+    """
+
+    model_path: str | Path
+    model_format: str
+    device: str
+    model_: Any
+
+    def _load_model(self, classes: list[Any] | None = None) -> None:
+        """Load and store the configured prediction model.
+
+        Args:
+            classes (list[Any] | None, optional): Class labels passed to
+                loaders that need them when reconstructing a classifier.
+                Defaults to None.
+
+        Raises:
+            ValueError: If ``model_format`` is not registered in
+                ``LOADER_MAP``.
+        """
         if self.model_format not in LOADER_MAP:
             raise ValueError(
                 f"unsupported model_format {self.model_format!r}; "
@@ -58,12 +93,22 @@ class _BaseInference(BaseEstimator):
         self.model_ = loader(self.model_path, device=self.device, classes=classes)
 
     @classmethod
-    def from_config(cls, config_path: str):
+    def from_config(cls, config_path: str | Path) -> Self:
         """Build a predictor from an inference YAML file.
 
-        Reads the file with ``yaml.safe_load``, resolves a relative
-        ``model_path`` against the file's directory, and passes every key
-        straight to the constructor.
+        Relative model paths are resolved against the configuration file's
+        directory. All configuration values are passed to the subclass
+        constructor.
+
+        Args:
+            config_path (str | Path): Path to the inference YAML file.
+
+        Returns:
+            Self: An instance of ``cls`` configured with the values from the
+            YAML file.
+
+        Raises:
+            KeyError: If the configuration does not define ``model_path``.
         """
         config_path = Path(config_path)
         with config_path.open() as f:
@@ -89,7 +134,8 @@ class ClassifierInference(ClassifierMixin, _BaseInference):
             ``"multiclass-classification"``.
         device (str, optional): Torch device for a reconstructed skorch net;
             ignored for skops. Defaults to ``"cpu"``.
-        classes (list, optional): Labels to map predicted class indices onto.
+        classes (list[Any] | None, optional): Labels to map predicted class
+            indices onto.
             An epoch export records none, so without this the raw indices are
             returned. Defaults to None.
     """
@@ -100,8 +146,8 @@ class ClassifierInference(ClassifierMixin, _BaseInference):
         model_format: str,
         task: str,
         device: str = "cpu",
-        classes: list | None = None,
-    ):
+        classes: list[Any] | None = None,
+    ) -> None:
         self.model_path = model_path
         self.model_format = model_format
         self.task = task
@@ -114,11 +160,35 @@ class ClassifierInference(ClassifierMixin, _BaseInference):
             )
         self._load_model(classes=classes)
 
-    def predict(self, data: np.ndarray | torch.Tensor):
+    def predict(self, data: np.ndarray | torch.Tensor) -> np.ndarray:
+        """Predict class labels for the provided samples.
+
+        Args:
+            data (np.ndarray | torch.Tensor): Samples to classify. The shape
+                must match the input expected by the exported model.
+
+        Returns:
+            np.ndarray: Predicted class indices, or the corresponding labels
+            when ``classes`` was supplied.
+        """
         predictions = self.model_.predict(_as_predict_input(data, self.model_format))
         if self.classes is not None:
             predictions = np.asarray(self.classes)[predictions]
         return predictions
+
+    def predict_proba(self, data: np.ndarray | torch.Tensor) -> np.ndarray:
+        """Predict class probabilities for the provided samples.
+
+        Args:
+            data (np.ndarray | torch.Tensor): Samples for which probabilities
+                would be predicted.
+        """
+        probabilities = self.model_.predict_proba(
+            _as_predict_input(data, self.model_format)
+        )
+        if self.classes is not None:
+            probabilities = np.asarray(self.classes)[probabilities]
+        return probabilities
 
 
 class RegressionInference(RegressorMixin, _BaseInference):
@@ -138,12 +208,21 @@ class RegressionInference(RegressorMixin, _BaseInference):
         model_path: str,
         model_format: str,
         device: str = "cpu",
-    ):
+    ) -> None:
         self.model_path = model_path
         self.model_format = model_format
         self.device = device
 
         self._load_model()
 
-    def predict(self, data: np.ndarray | torch.Tensor):
+    def predict(self, data: np.ndarray | torch.Tensor) -> np.ndarray:
+        """Predict target values for the provided samples.
+
+        Args:
+            data (np.ndarray | torch.Tensor): Samples to evaluate. The shape
+                must match the input expected by the exported model.
+
+        Returns:
+            np.ndarray: Predicted target values from the loaded estimator.
+        """
         return self.model_.predict(_as_predict_input(data, self.model_format))

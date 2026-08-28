@@ -13,6 +13,7 @@ trusting the artifact-declared types exactly as ``SimpleTrainer._load_model``
 does.
 """
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -30,25 +31,23 @@ def _reconstruct_skorch_net(
 ) -> Any:
     """Rebuild a fitted skorch net from an epoch export directory.
 
-    Reads ``<export_dir>/model.yaml``, instantiates the recorded ``model_type``
-    module and ``net_type`` net, then loads ``weights_filename`` into the
-    initialized net. The manifest's saved training ``device`` is ignored in
-    favour of ``device``, which the client may have to change because the
-    training device is unavailable to them.
+    The loader reads ``model.yaml``, instantiates the recorded module and net
+    types, initializes the net, and restores the requested state-dict file.
+    The supplied device overrides the training device recorded in the
+    manifest.
 
     Args:
-        export_dir (str | Path): Directory holding ``model.yaml`` and the
-            weights file.
-        weights_filename (str): Name of the state-dict file within
-            ``export_dir`` (``params.pt`` for ``default``, ``model.pt`` for
-            ``pt``).
-        device (str, optional): Torch device for the reconstructed net.
+        export_dir (str | Path): Directory containing ``model.yaml`` and the
+            exported weights.
+        weights_filename (str): Name of the state-dict file in ``export_dir``.
+        device (str, optional): Torch device on which to reconstruct the net.
             Defaults to ``"cpu"``.
-        classes (list[Any] | None, optional): Class labels for a multiclass
-            net, which an epoch export does not record. Defaults to None.
+        classes (list[Any] | None, optional): Class labels supplied while
+            reconstructing a classifier. Epoch exports do not record these
+            labels. Defaults to None.
 
     Returns:
-        Any: An initialized skorch net with the exported weights loaded.
+        Any: An initialized skorch net containing the exported weights.
     """
     export_dir = Path(export_dir)
     with (export_dir / "model.yaml").open() as f:
@@ -76,14 +75,38 @@ def _reconstruct_skorch_net(
 def load_default(
     path: str | Path, device: str = "cpu", classes: list[Any] | None = None
 ) -> Any:
-    """Load a ``default`` epoch export (``model.yaml`` plus ``params.pt``)."""
+    """Load a default-format epoch export.
+
+    Args:
+        path (str | Path): Directory containing ``model.yaml`` and
+            ``params.pt``.
+        device (str, optional): Torch device on which to reconstruct the net.
+            Defaults to ``"cpu"``.
+        classes (list[Any] | None, optional): Class labels supplied while
+            reconstructing a classifier. Defaults to None.
+
+    Returns:
+        Any: An initialized skorch net containing the exported weights.
+    """
     return _reconstruct_skorch_net(path, "params.pt", device, classes)
 
 
 def load_torch(
     path: str | Path, device: str = "cpu", classes: list[Any] | None = None
 ) -> Any:
-    """Load a ``pt`` epoch export (``model.yaml`` plus ``model.pt``)."""
+    """Load a PyTorch-format epoch export.
+
+    Args:
+        path (str | Path): Directory containing ``model.yaml`` and
+            ``model.pt``.
+        device (str, optional): Torch device on which to reconstruct the net.
+            Defaults to ``"cpu"``.
+        classes (list[Any] | None, optional): Class labels supplied while
+            reconstructing a classifier. Defaults to None.
+
+    Returns:
+        Any: An initialized skorch net containing the exported weights.
+    """
     return _reconstruct_skorch_net(path, "model.pt", device, classes)
 
 
@@ -92,10 +115,18 @@ def load_skops(
 ) -> Any:
     """Load a self-contained skops estimator.
 
-    ``device`` and ``classes`` are accepted for a uniform loader signature but
-    ignored: a skops artifact carries its own serialized estimator and device
-    behaviour. Trust follows ``SimpleTrainer._load_model`` and assumes the
-    artifact is trusted.
+    Only trusted artifacts should be loaded. The ``device`` and ``classes``
+    arguments are accepted for a uniform loader interface but are ignored.
+
+    Args:
+        path (str | Path): Path to the serialized skops artifact.
+        device (str, optional): Unused torch device argument. Defaults to
+            ``"cpu"``.
+        classes (list[Any] | None, optional): Unused class-label argument.
+            Defaults to None.
+
+    Returns:
+        Any: The estimator deserialized from the skops artifact.
     """
     untrusted = sio.get_untrusted_types(file=path)
     return sio.load(path, trusted=untrusted)
@@ -104,7 +135,7 @@ def load_skops(
 #: Maps an inference config's ``model_format`` to its loader. Keys are exactly
 #: ``utils.EXPORT_FORMATS`` plus ``skops``; a ``torch`` key would never match a
 #: real manifest's ``export_format``.
-LOADER_MAP = {
+LOADER_MAP: dict[str, Callable] = {
     "default": load_default,
     "pt": load_torch,
     "skops": load_skops,
