@@ -1,10 +1,4 @@
-"""Loader-level tests for inference model loading.
-
-These exercise ``GalaxySpectrumClassifier.model_loading`` in isolation from the
-inference classes: given a real exported artifact, each loader must return a
-ready predictor whose predictions match the source model. Fixtures build tiny,
-deterministic artifacts by hand in the same layout the trainers export.
-"""
+"""Round-trip tests for the public direct model loaders."""
 
 from pathlib import Path
 
@@ -14,160 +8,214 @@ import skops.io as sio
 import torch
 import yaml
 from sklearn.linear_model import LogisticRegression
+from skorch import NeuralNetBinaryClassifier, NeuralNetClassifier, NeuralNetRegressor
 
-from GalaxySpectrumClassifier.model_loading import (
-    LOADER_MAP,
-    _reconstruct_skorch_net,
-    load_default,
-    load_skops,
-    load_torch,
-)
-from GalaxySpectrumClassifier.utils import load_type
-
-BINARY_NET_TYPE = "skorch.classifier.NeuralNetBinaryClassifier"
-MULTICLASS_NET_TYPE = "skorch.classifier.NeuralNetClassifier"
+from GalaxySpectrumClassifier import EpochTrainer, load_default, load_skops, load_torch
+from GalaxySpectrumClassifier.model_loading import _reconstruct_skorch_net
 
 
-def _training_data(n_classes: int, seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
+class _ConstantProbabilityModel(torch.nn.Module):
+    """Emit one trainable, input-independent binary probability."""
+
+    def __init__(self, probability=0.2):
+        super().__init__()
+        self.logit = torch.nn.Parameter(torch.tensor(probability).logit())
+
+    def forward(self, data):
+        return torch.sigmoid(self.logit).expand(data.shape[0])
+
+
+def _float_labels(batch):
+    batch = dict(batch)
+    batch["source"] = [float(value) for value in batch["source"]]
+    return batch
+
+
+def _classification_data(nclasses: int, seed: int = 0):
     rng = np.random.default_rng(seed)
-    x = rng.standard_normal((40, 4)).astype("float32")
-    if n_classes == 2:
-        y = rng.integers(0, 2, size=40).astype("float32")
-    else:
-        y = rng.integers(0, n_classes, size=40).astype("int64")
-    return x, y
-
-
-def _fit_net(net_type: str, out_features: int):
-    """Build and briefly fit a skorch net over a tiny deterministic dataset."""
-    torch.manual_seed(0)
-    module = torch.nn.Linear(4, out_features)
-    # NeuralNetClassifier defaults to NLLLoss, which needs log-probabilities;
-    # feeding it raw Linear logits trains to nan, so name the loss explicitly.
-    extra = {} if out_features == 1 else {"criterion": torch.nn.CrossEntropyLoss}
-    net = load_type(net_type)(module, max_epochs=3, lr=0.05, device="cpu", **extra)
-    x, y = _training_data(2 if out_features == 1 else out_features)
-    net.fit(x, y)
-    return net
+    features = rng.standard_normal((40, 4)).astype("float32")
+    dtype = "float32" if nclasses == 2 else "int64"
+    labels = rng.integers(0, nclasses, size=40).astype(dtype)
+    return features, labels
 
 
 def _write_manifest(
-    directory: Path, net_type: str, out_features: int, export_format: str
+    directory: Path,
+    *,
+    net_type: str,
+    model_type: str = "torch.nn.Linear",
+    model_args=None,
+    export_format: str = "default",
+    criterion_type: str | None = None,
+    criterion_kwargs=None,
 ):
     directory.mkdir(parents=True, exist_ok=True)
-    with (directory / "model.yaml").open("w") as f:
-        yaml.dump(
+    with (directory / "model.yaml").open("w") as stream:
+        yaml.safe_dump(
             {
                 "net_type": net_type,
-                "model_type": "torch.nn.Linear",
-                "model_args": [4, out_features],
+                "model_type": model_type,
+                "model_args": model_args or [],
                 "model_kwargs": {},
                 "device": "cpu",
+                "criterion_type": criterion_type,
+                "criterion_kwargs": criterion_kwargs,
                 "export_format": export_format,
             },
-            f,
+            stream,
         )
 
 
-@pytest.fixture
-def default_binary_export(tmp_path):
-    """A ``default`` epoch export: ``model.yaml`` plus skorch ``params.pt``."""
-    directory = tmp_path / "default-export"
-    net = _fit_net(BINARY_NET_TYPE, out_features=1)
-    _write_manifest(directory, BINARY_NET_TYPE, 1, "default")
-    net.save_params(f_params=directory / "params.pt")
-    return directory, net
-
-
-@pytest.fixture
-def pt_binary_export(tmp_path):
-    """A ``pt`` epoch export: ``model.yaml`` plus a raw module ``state_dict``."""
-    directory = tmp_path / "pt-export"
-    net = _fit_net(BINARY_NET_TYPE, out_features=1)
-    _write_manifest(directory, BINARY_NET_TYPE, 1, "pt")
-    torch.save(net.module_.state_dict(), directory / "model.pt")
-    return directory, net
-
-
-@pytest.fixture
-def default_multiclass_export(tmp_path):
-    directory = tmp_path / "multiclass-export"
-    net = _fit_net(MULTICLASS_NET_TYPE, out_features=3)
-    _write_manifest(directory, MULTICLASS_NET_TYPE, 3, "default")
-    net.save_params(f_params=directory / "params.pt")
-    return directory, net
-
-
-def test_loader_map_uses_export_format_keys():
-    # The keys must mirror utils.EXPORT_FORMATS plus skops; a "torch" key here
-    # would silently never match a real manifest's export_format.
-    assert set(LOADER_MAP) == {"default", "pt", "skops"}
-    assert LOADER_MAP["default"] is load_default
-    assert LOADER_MAP["pt"] is load_torch
-    assert LOADER_MAP["skops"] is load_skops
-
-
-def test_load_default_predictions_match_source_net(default_binary_export):
-    directory, source = default_binary_export
-    probe = _training_data(2, seed=99)[0]
-
-    restored = load_default(directory)
-
-    np.testing.assert_array_equal(restored.predict(probe), source.predict(probe))
-
-
-def test_load_torch_predictions_match_source_net(pt_binary_export):
-    directory, source = pt_binary_export
-    probe = _training_data(2, seed=99)[0]
-
-    restored = load_torch(directory)
-
-    np.testing.assert_array_equal(restored.predict(probe), source.predict(probe))
+def _export_net(directory: Path, net, export_format: str):
+    if export_format == "default":
+        net.save_params(f_params=directory / "params.pt")
+    else:
+        torch.save(net.module_.state_dict(), directory / "model.pt")
 
 
 @pytest.mark.parametrize(
-    ("loader", "fixture_name"),
-    [
-        (load_default, "default_binary_export"),
-        (load_torch, "pt_binary_export"),
-    ],
+    ("loader", "export_format"),
+    [(load_default, "default"), (load_torch, "pt")],
 )
-def test_binary_loader_accepts_classes_and_matches_source(
-    loader, fixture_name, request
+def test_binary_epoch_loader_round_trip(loader, export_format, tmp_path):
+    torch.manual_seed(0)
+    features, labels = _classification_data(2)
+    source = NeuralNetBinaryClassifier(
+        torch.nn.Linear(4, 1), max_epochs=2, lr=0.05, device="cpu"
+    ).fit(features, labels)
+    directory = tmp_path / export_format
+    _write_manifest(
+        directory,
+        net_type="skorch.classifier.NeuralNetBinaryClassifier",
+        model_args=[4, 1],
+        export_format=export_format,
+        criterion_type="torch.nn.BCEWithLogitsLoss",
+    )
+    _export_net(directory, source, export_format)
+
+    restored = loader(directory, device="cpu")
+
+    assert restored.device == "cpu"
+    np.testing.assert_array_equal(restored.predict(features), source.predict(features))
+
+
+def test_regression_epoch_loader_round_trip(tmp_path):
+    rng = np.random.default_rng(1)
+    features = rng.standard_normal((40, 4)).astype("float32")
+    labels = rng.standard_normal((40, 1)).astype("float32")
+    source = NeuralNetRegressor(
+        torch.nn.Linear(4, 1), max_epochs=2, lr=0.01, device="cpu"
+    ).fit(features, labels)
+    directory = tmp_path / "regression"
+    _write_manifest(
+        directory,
+        net_type="skorch.regressor.NeuralNetRegressor",
+        model_args=[4, 1],
+        criterion_type="torch.nn.MSELoss",
+    )
+    _export_net(directory, source, "default")
+
+    restored = load_default(directory)
+
+    np.testing.assert_allclose(restored.predict(features), source.predict(features))
+
+
+def test_multiclass_loader_requires_valid_nclasses_and_restores_indices(tmp_path):
+    torch.manual_seed(0)
+    features, labels = _classification_data(3)
+    source = NeuralNetClassifier(
+        torch.nn.Linear(4, 3),
+        criterion=torch.nn.CrossEntropyLoss,
+        max_epochs=2,
+        lr=0.05,
+        device="cpu",
+    ).fit(features, labels)
+    directory = tmp_path / "multiclass"
+    _write_manifest(
+        directory,
+        net_type="skorch.classifier.NeuralNetClassifier",
+        model_args=[4, 3],
+        criterion_type="torch.nn.CrossEntropyLoss",
+    )
+    _export_net(directory, source, "default")
+
+    with pytest.raises(ValueError, match="nclasses must be an integer of at least 2"):
+        load_default(directory)
+    with pytest.raises(ValueError, match="nclasses must be an integer of at least 2"):
+        load_default(directory, nclasses=1)
+
+    restored = load_default(directory, nclasses=3)
+
+    np.testing.assert_array_equal(restored.classes_, np.arange(3))
+    np.testing.assert_array_equal(restored.predict(features), source.predict(features))
+
+
+@pytest.mark.parametrize(
+    ("loader", "export_format"),
+    [(load_default, "default"), (load_torch, "pt")],
+)
+def test_epoch_loader_preserves_nondefault_criterion_semantics(
+    loader, export_format, tmp_path, create_data
 ):
-    directory, source = request.getfixturevalue(fixture_name)
-    probe = _training_data(2, seed=99)[0]
+    dataset_kwargs = {
+        "path": str(create_data),
+        "label_columns": "source",
+        "transform": "test_model_loading._float_labels",
+        "hf_dataset_kwargs": {"cache_dir": str(tmp_path / "hf_cache")},
+    }
+    trainer = EpochTrainer(
+        output_path=str(tmp_path / "run"),
+        max_epochs=1,
+        batch_size=1000,
+        model_type="test_model_loading._ConstantProbabilityModel",
+        model_args=[],
+        loss_type="torch.nn.BCELoss",
+        loss_kwargs={"reduction": "sum"},
+        optimizer_type="torch.optim.SGD",
+        task="binary-classification",
+        export_format=export_format,
+        train_dataset_kwargs=dataset_kwargs,
+        val_dataset_kwargs=dataset_kwargs,
+        test_dataset_kwargs=dataset_kwargs,
+        progressbar=False,
+    )
+    trainer.export_model("export")
+    features = np.zeros((8, 5), dtype="float32")
 
-    # Regression guard: application labels must not be passed to skorch's
-    # binary classifier constructor, which does not accept ``classes``.
-    restored = loader(directory, classes=["negative", "positive"])
+    restored = loader(trainer.output_path / "export")
 
-    # Ignoring labels during reconstruction must not alter the raw 0/1 output.
-    np.testing.assert_array_equal(restored.predict(probe), source.predict(probe))
+    assert restored.criterion is torch.nn.BCELoss
+    assert restored.criterion_.reduction == "sum"
+    np.testing.assert_array_equal(
+        restored.predict(features), trainer.model.predict(features)
+    )
 
 
-def test_load_skops_predictions_match_source_estimator(tmp_path):
-    x, y = _training_data(2, seed=7)
-    source = LogisticRegression().fit(x, y.astype("int64"))
+def test_load_skops_round_trip(tmp_path):
+    features, labels = _classification_data(2, seed=7)
+    source = LogisticRegression().fit(features, labels.astype("int64"))
     path = tmp_path / "model.skops"
     sio.dump(source, path)
 
     restored = load_skops(path)
 
-    np.testing.assert_array_equal(restored.predict(x), source.predict(x))
+    np.testing.assert_array_equal(restored.predict(features), source.predict(features))
 
 
-def test_reconstruct_skorch_net_honors_device_and_classes(default_multiclass_export):
-    directory, _ = default_multiclass_export
-    probe = _training_data(3, seed=99)[0]
-
-    net = _reconstruct_skorch_net(
-        directory, "params.pt", device="cpu", classes=[7, 8, 9]
+def test_reconstruct_skorch_net_honors_device(tmp_path):
+    features, labels = _classification_data(2)
+    source = NeuralNetBinaryClassifier(
+        torch.nn.Linear(4, 1), max_epochs=1, device="cpu"
+    ).fit(features, labels)
+    directory = tmp_path / "device"
+    _write_manifest(
+        directory,
+        net_type="skorch.classifier.NeuralNetBinaryClassifier",
+        model_args=[4, 1],
+        criterion_type="torch.nn.BCEWithLogitsLoss",
     )
+    _export_net(directory, source, "default")
 
-    # The reconstructed net predicts class *indices* (skorch behaviour); mapping
-    # those onto the manifest-free ``classes`` labels is the inference layer's
-    # job. Here we only require the net to be ready and carry the given labels.
-    assert net.device == "cpu"
-    assert list(net.classes_) == [7, 8, 9]
-    assert set(np.unique(net.predict(probe))).issubset({0, 1, 2})
+    restored = _reconstruct_skorch_net(directory, "params.pt", device="cpu")
+
+    assert restored.device == "cpu"

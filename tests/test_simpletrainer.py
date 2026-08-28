@@ -56,9 +56,7 @@ def skorch_torch_model():
 
 @pytest.fixture
 def synthetic_dataset():
-    X, y = make_classification(
-        n_samples=100, n_features=20, n_classes=2, random_state=42
-    )
+    X, y = make_classification(n_samples=100, n_features=20, random_state=42)
     return _ArrayDataset(X.astype(np.float32), y.astype(np.int64))
 
 
@@ -300,6 +298,50 @@ def test_simple_trainer_fit_minimal(random_forest_model, synthetic_dataset, tmp_
 
     assert fitted is trainer.model
     np.testing.assert_array_equal(fitted.predict(X), random_forest_model.predict(X))
+
+
+def test_simple_trainer_accepts_contiguous_multiclass_indices(tmp_path):
+    labels = np.asarray([0, 1, 2] * 10, dtype="int64")
+    features = np.arange(labels.size * 20, dtype="float32").reshape(-1, 20)
+    dataset = _ArrayDataset(features, labels)
+    trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
+        model_type="sklearn.ensemble.RandomForestClassifier",
+        model_kwargs={"n_estimators": 10, "random_state": 42},
+        task="multiclass-classification",
+    )
+
+    trainer.fit(dataset)
+
+    np.testing.assert_array_equal(trainer.model.classes_, np.array([0, 1, 2]))
+    assert set(trainer.evaluate(dataset)) == {"accuracy_score"}
+
+
+@pytest.mark.parametrize(
+    "labels",
+    [
+        [10, 20, 10, 20],
+        [-1, 0, -1, 0],
+        [0, 2, 0, 2],
+        [0.0, 1.0, 0.0, 1.0],
+        [0.0, 1.5, 0.0, 1.5],
+    ],
+)
+def test_simple_trainer_rejects_noncontiguous_class_indices(tmp_path, labels):
+    features = np.arange(len(labels) * 20, dtype="float32").reshape(-1, 20)
+    dataset = _ArrayDataset(features, np.asarray(labels))
+    trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
+        model_type="sklearn.ensemble.RandomForestClassifier",
+        model_kwargs={"n_estimators": 10, "random_state": 42},
+    )
+
+    # Directly loaded classifiers preserve this encoded-label contract.
+    with pytest.raises(
+        ValueError,
+        match="classification labels must be unique contiguous integer indices starting at 0",
+    ):
+        trainer.fit(dataset)
 
 
 def test_simple_trainer_fit_with_calibrator(synthetic_dataset, tmp_path):

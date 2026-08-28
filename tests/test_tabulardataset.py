@@ -1,6 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
 import pytest
 import torch
@@ -58,6 +59,20 @@ def _float_source(batch):
     batch = dict(batch)
     batch["source"] = [float(v) for v in batch["source"]]
     return batch
+
+
+def _encode_string_source(batch):
+    """Lazily encode domain labels as binary floating-point indices."""
+    mapping = {"agn": 0.0, "star": 1.0}
+    batch = dict(batch)
+    batch["source"] = [mapping[label] for label in batch["source"]]
+    return batch
+
+
+def _add_encoded_source(example):
+    """Persist a numeric label column while retaining tabular preprocessing."""
+    mapping = {"agn": 0, "star": 1}
+    return {"source_index": mapping[example["source"]]}
 
 
 @pytest.fixture
@@ -323,6 +338,46 @@ def test_tabulardataset_getitems_with_transform(data_dir, tmp_path):
     assert torch.equal(y, torch.tensor([0.0, 1.0]))
 
 
+def test_tabulardataset_transform_encodes_string_labels_lazily(
+    create_string_label_data, tmp_path
+):
+    ds = TabularDataset(
+        str(create_string_label_data),
+        label_columns="source",
+        transform="test_tabulardataset._encode_string_source",
+        hf_dataset_kwargs=_hf_kwargs(tmp_path),
+    )
+
+    _, labels = ds[:]
+
+    assert labels.dtype == torch.float32
+    assert set(labels.squeeze(-1).tolist()) == {0.0, 1.0}
+    # A lazy transform changes retrieved values without rewriting the stored
+    # Hugging Face schema.
+    assert "string" in ds.backend.features["source"].dtype
+
+
+def test_tabulardataset_pretransform_persists_encoded_label_column(
+    create_string_label_data, tmp_path
+):
+    ds = TabularDataset(
+        str(create_string_label_data),
+        label_columns="source_index",
+        pre_transform="test_tabulardataset._add_encoded_source",
+        pre_transform_kwargs={"remove_columns": ["source"]},
+        hf_dataset_kwargs=_hf_kwargs(tmp_path),
+    )
+
+    _, labels = ds[:]
+
+    assert ds.backend.column_names == ["a", "b", "c", "d", "extra", "source_index"]
+    assert labels.dtype == torch.int64
+    assert set(labels.squeeze(-1).tolist()) == {0, 1}
+    assert ds.backend.cache_files
+    # TODO:
+    # there's something missing here wrt to saving of data. this test does not check for data persistence at all?
+
+
 def test_tabular_dataset_works_with_parallel_dataloaders(data_dir, tmp_path):
     ds = TabularDataset(
         str(data_dir), label_columns="source", hf_dataset_kwargs=_hf_kwargs(tmp_path)
@@ -391,6 +446,28 @@ def test_tabulardataset_works_with_simpletrainer_classification(data_dir, tmp_pa
     fitted = trainer.fit(train_subset)
 
     assert fitted is trainer.model
+    assert set(trainer.evaluate(ds)) == {"accuracy_score"}
+
+
+def test_pretransformed_string_labels_work_with_simpletrainer(
+    create_string_label_data, tmp_path
+):
+    ds = TabularDataset(
+        str(create_string_label_data),
+        label_columns="source_index",
+        pre_transform="test_tabulardataset._add_encoded_source",
+        pre_transform_kwargs={"remove_columns": ["source"]},
+        hf_dataset_kwargs=_hf_kwargs(tmp_path),
+    )
+    trainer = SimpleTrainer(
+        output_path=str(tmp_path / "training"),
+        model_type="sklearn.ensemble.RandomForestClassifier",
+        model_kwargs={"n_estimators": 10, "random_state": 42},
+    )
+
+    trainer.fit(ds)
+
+    np.testing.assert_array_equal(trainer.model.classes_, np.array([0, 1]))
     assert set(trainer.evaluate(ds)) == {"accuracy_score"}
 
 
