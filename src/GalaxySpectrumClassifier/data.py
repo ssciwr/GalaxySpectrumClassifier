@@ -254,12 +254,10 @@ class TabularDataset(torch.utils.data.Dataset):
         # split into X, y with self.label_columns
         raw = self.backend[idx]
         if self.label_columns:
-            missing = [
-                c for c in self.label_columns if c not in self.backend.format["columns"]
-            ]
+            missing = [c for c in self.label_columns if c not in raw]
             if len(missing) > 0:
                 raise ValueError(
-                    f"Error, all given label columns must be present in dataset, missing: {self.label_columns}"
+                    f"Error, all given label columns must be present in return value, missing: {self.label_columns}"
                 )
 
             X = torch.stack(
@@ -300,12 +298,10 @@ class TabularDataset(torch.utils.data.Dataset):
         """
         raw = self.backend[idxs]
         if self.label_columns:
-            missing = [
-                c for c in self.label_columns if c not in self.backend.format["columns"]
-            ]
-            if missing:
+            missing = [c for c in self.label_columns if c not in raw]
+            if len(missing) > 0:
                 raise ValueError(
-                    f"Error, all given label columns must be present in dataset, missing: {self.label_columns}"
+                    f"Error, all given label columns must be present in return value, missing: {self.label_columns}"
                 )
             xs = zip(*(raw[c] for c in self.feature_columns))
             ys = zip(*(raw[c] for c in self.label_columns))
