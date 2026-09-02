@@ -5,13 +5,13 @@ label tensors, so any format that library can read is available to the
 trainers.
 """
 
+from copy import deepcopy
 import glob
 from collections.abc import Callable, Sequence
 from typing import Any
 
 import datasets
 import torch.utils.data
-
 from .utils import load_type
 
 
@@ -137,33 +137,35 @@ class TabularDataset(torch.utils.data.Dataset):
             _pre_transform = load_type(pre_transform)
             ds = ds.map(_pre_transform, **(pre_transform_kwargs or {}))
 
+        _transform = transform
+        _transform_kwargs = deepcopy(transform_kwargs)
         if transform:
-            _transform = transform
-            _transform_kwargs = transform_kwargs
-
+            self.active_transform = True
             # if we select columns, then we need to make sure the dataset knows about it to select the
             # the right ones for torch-ification
             if _transform_kwargs and "columns" in _transform_kwargs:
-                _transform_kwargs["columns"] = _transform_kwargs["columns"] + (
-                    [
-                        label_columns,
-                    ]
-                    if isinstance(label_columns, str)
-                    else label_columns
+                _transform_kwargs["columns"] = list(
+                    dict.fromkeys(
+                        _transform_kwargs["columns"] + self.label_columns,
+                    )
                 )
 
             if isinstance(transform, str):
                 _transform = load_type(transform)
 
-            ds = ds.with_transform(_transform, **(transform_kwargs or {}))
+            ds = ds.with_transform(_transform, **(_transform_kwargs or {}))
+        else:
+            self.active_transform = False
 
         # gives us the one split there is for our cases, which comprises the entire dataset.
         # the split thing is built into hf datasets, so this is unidiomatic, but unavoidable.
         self.backend = ds["train"]
 
         # set the label columns
-        if transform_kwargs and transform_kwargs.get("columns"):
-            self.feature_columns = transform_kwargs.get("columns")
+        if _transform_kwargs and _transform_kwargs.get("columns") is not None:
+            self.feature_columns = [
+                c for c in _transform_kwargs["columns"] if c not in self.label_columns
+            ]
         else:
             self.feature_columns = [
                 c for c in self.backend.column_names if c not in self.label_columns
@@ -186,6 +188,10 @@ class TabularDataset(torch.utils.data.Dataset):
 
     def reset_format(self):
         """Reset the format set with `set_format`."""
+        if self.active_transform:
+            raise ValueError(
+                "reset_format cannot be used when a transform is active because it would erase any column selection done there"
+            )
         self.backend.reset_format()
         self.feature_columns = [
             c for c in self.backend.column_names if c not in self.label_columns
@@ -205,6 +211,12 @@ class TabularDataset(torch.utils.data.Dataset):
             output_all_columns (bool, optional): Keep un-formatted columns as well in the output (as python objects). Defaults to False.
             **format_kwargs (additional keyword arguments): Keywords arguments passed to the convert function torch.tensor.
         """
+
+        if self.active_transform:
+            raise ValueError(
+                "set_format cannot be used when a transform is active because it would erase any column selection done there. Select columns through transform_kwargs in that case."
+            )
+
         _cols = columns
         if columns:
             _cols = list(set(columns + self.label_columns))
@@ -243,7 +255,7 @@ class TabularDataset(torch.utils.data.Dataset):
         raw = self.backend[idx]
         if self.label_columns:
             missing = [
-                c for c in self.label_columns if c not in self.backend.column_names
+                c for c in self.label_columns if c not in self.backend.format["columns"]
             ]
             if len(missing) > 0:
                 raise ValueError(
@@ -287,19 +299,15 @@ class TabularDataset(torch.utils.data.Dataset):
                 ``target`` is an empty one-dimensional tensor.
         """
         raw = self.backend[idxs]
-
         if self.label_columns:
             missing = [
-                c for c in self.label_columns if c not in self.backend.column_names
+                c for c in self.label_columns if c not in self.backend.format["columns"]
             ]
             if missing:
                 raise ValueError(
                     f"Error, all given label columns must be present in dataset, missing: {self.label_columns}"
                 )
-            feature_cols = [
-                c for c in self.backend.column_names if c not in self.label_columns
-            ]
-            xs = zip(*(raw[c] for c in feature_cols))
+            xs = zip(*(raw[c] for c in self.feature_columns))
             ys = zip(*(raw[c] for c in self.label_columns))
             if self.squeeze_labels:
                 return [
