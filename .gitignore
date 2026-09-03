@@ -169,3 +169,5 @@ data/bronze/*
 data/bronze/default/*
 !data/bronze/default/C17_AGN_alpha08_efrac02_CNfix.dat
 !data/bronze/default/C17_POPSTAR_1myr.dat
+!data/bronze/default/C17_AGN_alpha08_efrac02_CNfix.csv
+!data/bronze/default/C17_POPSTAR_1myr.csv
