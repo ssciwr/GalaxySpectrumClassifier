@@ -87,8 +87,9 @@ trainer:
       kwargs:
       needs_proba: true
   seed: 42
+# Reuse the already-preprocessed Arrow cache written by dataset_examples.ipynb.
 dataset:
-  path: ../data/silver/default
-  data_format: csv
-  label_columns: "source"
-  transform: __main__.convert_types
+  data_format: arrow
+  label_columns: source_label
+  hf_dataset_kwargs:
+    data_files: ../data/silver/default/csv/**/cache-*.arrow
