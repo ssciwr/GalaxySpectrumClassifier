@@ -733,10 +733,14 @@ def test_tabulardataset_rejects_selection_containing_only_label_columns(
             hf_dataset_kwargs=_hf_kwargs(tmp_path),
         )
 
-        with pytest.raises(ValueError, match="Selected columns cannot be empty"):
+        with pytest.raises(
+            ValueError, match="Passed columns only contain label columns"
+        ):
             ds.set_format(columns=["source"])
     else:
-        with pytest.raises(ValueError, match="Selected columns cannot be empty"):
+        with pytest.raises(
+            ValueError, match="Passed columns only contain label columns"
+        ):
             TabularDataset(
                 str(data_dir),
                 label_columns="source",
