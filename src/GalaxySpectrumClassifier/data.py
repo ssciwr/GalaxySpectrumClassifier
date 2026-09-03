@@ -140,10 +140,17 @@ class TabularDataset(torch.utils.data.Dataset):
         _transform = transform
         _transform_kwargs = deepcopy(transform_kwargs)
         if transform:
+            if (
+                _transform_kwargs
+                and _transform_kwargs.get("columns") is not None
+                and len(_transform_kwargs["columns"]) == 0
+            ):
+                raise ValueError("Selected columns cannot be None")
+
             self.active_transform = True
             # if we select columns, then we need to make sure the dataset knows about it to select the
             # the right ones for torch-ification
-            if _transform_kwargs and "columns" in _transform_kwargs:
+            if _transform_kwargs and _transform_kwargs.get("columns") is not None:
                 _transform_kwargs["columns"] = list(
                     dict.fromkeys(
                         _transform_kwargs["columns"] + self.label_columns,
@@ -162,7 +169,11 @@ class TabularDataset(torch.utils.data.Dataset):
         self.backend = ds["train"]
 
         # set the label columns
-        if _transform_kwargs and _transform_kwargs.get("columns") is not None:
+        if (
+            transform
+            and _transform_kwargs
+            and _transform_kwargs.get("columns") is not None
+        ):
             self.feature_columns = [
                 c for c in _transform_kwargs["columns"] if c not in self.label_columns
             ]
@@ -199,15 +210,21 @@ class TabularDataset(torch.utils.data.Dataset):
         ]
 
     def set_format(
-        self, columns: list[str] | None = None, **format_kwargs: Any
+        self,
+        columns: list[str] | None = None,
+        output_all_columns: bool = False,
+        **format_kwargs: Any,
     ) -> None:
         """Wrapper around huggingface.datasets.set_format (https://huggingface.co/docs/datasets/v4.8.4/en/package_reference/main_classes#datasets.Dataset.set_format).
         In contrast to the latter, this does not support the 'type' argument b/c we always return torch tensors via the dataset.
 
         Args:
             columns (list[str] | None, optional): Columns to format in the output. None means __getitem__ returns all columns (default).
+            output_all_columns (bool, optional): Ignored, always set to false.
             **format_kwargs (additional keyword arguments): Keywords arguments passed to the convert function torch.tensor.
         """
+        if columns is not None and len(columns) == 0:
+            raise ValueError("Selected columns cannot be None")
 
         if self.active_transform:
             raise ValueError(
@@ -216,8 +233,7 @@ class TabularDataset(torch.utils.data.Dataset):
 
         _cols = columns
         if columns:
-            _cols = list(set(columns + self.label_columns))
-            self.feature_columns = [c for c in columns if c not in self.label_columns]
+            _cols = list(dict.fromkeys(columns + self.label_columns))
 
         self.backend.set_format(
             type="torch",
@@ -230,6 +246,8 @@ class TabularDataset(torch.utils.data.Dataset):
             self.feature_columns = [
                 c for c in self.backend.column_names if c not in self.label_columns
             ]
+        else:
+            self.feature_columns = [c for c in _cols if c not in self.label_columns]
 
     def __getitem__(
         self,
