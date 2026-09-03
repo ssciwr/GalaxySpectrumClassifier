@@ -1,20 +1,15 @@
-path: ../data/silver/default
+# Read the two committed bronze grids directly; do not depend on silver input.
 data_format: csv
-label_columns: source
-
-# Store the loaded, filtered, and mapped Arrow files in a project-local cache.
-hf_dataset_kwargs:
-  cache_dir: ../.cache/huggingface/datasets
-
-# Keep only rows where the OII_3727 emission line is at most 2.0.
-pre_filter: __main__.keep_oii_below
-pre_filter_kwargs:
-  fn_kwargs:
-    maximum: 2.0
-
-# Double OII_3727 in every retained row.
-pre_transform: __main__.scale_column
+label_columns: source_label
+pre_transform: __main__.encode_source
 pre_transform_kwargs:
-  fn_kwargs:
-    column: OII_3727
-    factor: 2.0
+  remove_columns:
+    - source
+hf_dataset_kwargs:
+  data_files:
+    - ../data/bronze/default/C17_AGN_alpha08_efrac02_CNfix.dat
+    - ../data/bronze/default/C17_POPSTAR_1myr.dat
+  comment: "#"
+  sep: '\s+'
+  # Materialize Hugging Face's transformed Arrow cache in the silver stage.
+  cache_dir: ../data/silver/default_fromconfig
