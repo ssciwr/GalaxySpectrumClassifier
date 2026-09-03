@@ -68,7 +68,7 @@ write_to = "src/GalaxySpectrumClassifier/_version.py"
 
 # The following is the configuration for the pytest test suite
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "notebooks"]
 
 # Exclude the test files themselves from coverage reporting
 [tool.coverage.run]
