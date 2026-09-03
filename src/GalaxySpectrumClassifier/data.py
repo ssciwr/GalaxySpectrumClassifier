@@ -145,7 +145,7 @@ class TabularDataset(torch.utils.data.Dataset):
                 and _transform_kwargs.get("columns") is not None
                 and len(_transform_kwargs["columns"]) == 0
             ):
-                raise ValueError("Selected columns cannot be None")
+                raise ValueError("Selected columns cannot be empty")
 
             self.active_transform = True
             # if we select columns, then we need to make sure the dataset knows about it to select the
@@ -182,6 +182,9 @@ class TabularDataset(torch.utils.data.Dataset):
                 c for c in self.backend.column_names if c not in self.label_columns
             ]
 
+        if not self.feature_columns:
+            raise ValueError("Error, feature columns cannot be empty")
+
         self.squeeze_labels = squeeze_labels
 
     @classmethod
@@ -215,7 +218,7 @@ class TabularDataset(torch.utils.data.Dataset):
         output_all_columns: bool = False,
         **format_kwargs: Any,
     ) -> None:
-        """Wrapper around huggingface.datasets.set_format (https://huggingface.co/docs/datasets/v4.8.4/en/package_reference/main_classes#datasets.Dataset.set_format).
+        """Wrapper around datasets.Dataset.set_format (https://huggingface.co/docs/datasets/v4.8.4/en/package_reference/main_classes#datasets.Dataset.set_format).
         In contrast to the latter, this does not support the 'type' argument b/c we always return torch tensors via the dataset.
 
         Args:
@@ -224,7 +227,7 @@ class TabularDataset(torch.utils.data.Dataset):
             **format_kwargs (additional keyword arguments): Keywords arguments passed to the convert function torch.tensor.
         """
         if columns is not None and len(columns) == 0:
-            raise ValueError("Selected columns cannot be None")
+            raise ValueError("Selected columns cannot be empty")
 
         if self.active_transform:
             raise ValueError(
@@ -248,6 +251,18 @@ class TabularDataset(torch.utils.data.Dataset):
             ]
         else:
             self.feature_columns = [c for c in _cols if c not in self.label_columns]
+
+    def _compute_returned_feature_columns(self, raw: dict) -> list[str]:
+        configured = set(self.feature_columns)
+        labels = set(self.label_columns)
+
+        columns = [column for column in self.feature_columns if column in raw]
+        columns.extend(
+            column
+            for column in raw
+            if column not in configured and column not in labels
+        )
+        return columns
 
     def __getitem__(
         self,
@@ -273,9 +288,10 @@ class TabularDataset(torch.utils.data.Dataset):
         """
         # split into X, y with self.label_columns
         raw = self.backend[idx]
-        X = torch.stack(
-            [torch.as_tensor(raw[c]) for c in self.feature_columns], dim=-1
-        ).to(torch.float32)
+        x_columns = self._compute_returned_feature_columns(raw)
+        X = torch.stack([torch.as_tensor(raw[c]) for c in x_columns], dim=-1).to(
+            torch.float32
+        )
 
         if self.label_columns:
             missing = [c for c in self.label_columns if c not in raw]
@@ -314,13 +330,15 @@ class TabularDataset(torch.utils.data.Dataset):
                 ``target`` is an empty one-dimensional tensor.
         """
         raw = self.backend[idxs]
+        x_columns = self._compute_returned_feature_columns(raw)
+
         if self.label_columns:
             missing = [c for c in self.label_columns if c not in raw]
             if len(missing) > 0:
                 raise ValueError(
                     f"Error, all given label columns must be present in return value, missing: {missing}"
                 )
-            xs = zip(*(raw[c] for c in self.feature_columns))
+            xs = zip(*(raw[c] for c in x_columns))
             ys = zip(*(raw[c] for c in self.label_columns))
             if self.squeeze_labels:
                 return [
@@ -335,7 +353,7 @@ class TabularDataset(torch.utils.data.Dataset):
                 for x, y in zip(xs, ys)
             ]
 
-        xs = zip(*(raw[c] for c in self.feature_columns))
+        xs = zip(*(raw[c] for c in x_columns))
         return [
             (torch.tensor(x, dtype=torch.float32), torch.empty(0, dtype=torch.float32))
             for x in xs

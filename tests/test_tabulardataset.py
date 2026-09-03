@@ -74,6 +74,15 @@ def _drop_source_from_transform(batch):
     return {"a": batch["a"]}
 
 
+def _replace_selected_feature_schema(batch):
+    return {
+        "added_before": [value + 100 for value in batch["a"]],
+        "a": batch["a"],
+        "source": batch["source"],
+        "added_after": [value + 200 for value in batch["a"]],
+    }
+
+
 def _float_source(batch):
     """Cast ``source`` to floats, as BCEWithLogitsLoss requires a float target."""
     batch = dict(batch)
@@ -478,6 +487,30 @@ def test_tabulardataset_transform_selected_columns_work_with_dataloader(
     assert torch.equal(y, torch.tensor([0, 1]))
 
 
+def test_tabulardataset_transform_reconciles_configured_and_returned_features(
+    data_dir, tmp_path
+):
+    ds = TabularDataset(
+        str(data_dir),
+        label_columns="source",
+        transform=_replace_selected_feature_schema,
+        transform_kwargs={"columns": ["a", "b"]},
+        hf_dataset_kwargs=_hf_kwargs(tmp_path),
+    )
+
+    scalar_X, scalar_y = ds[0]
+    batched_X, batched_y = next(iter(DataLoader(ds, batch_size=2, shuffle=False)))
+
+    assert ds.feature_columns == ["a", "b"]
+    assert torch.equal(scalar_X, torch.tensor([1.0, 101.0, 201.0]))
+    assert torch.equal(scalar_y, torch.tensor([0]))
+    assert torch.equal(
+        batched_X,
+        torch.tensor([[1.0, 101.0, 201.0], [2.0, 102.0, 202.0]]),
+    )
+    assert torch.equal(batched_y, torch.tensor([0, 1]))
+
+
 def test_tabulardataset_set_format_rejects_active_transform(data_dir, tmp_path):
     ds = TabularDataset(
         str(data_dir),
@@ -555,9 +588,6 @@ def test_tabulardataset_transform_output_must_preserve_label_columns(
         transform_kwargs={"columns": ["a"]},
         hf_dataset_kwargs=_hf_kwargs(tmp_path),
     )
-    print(ds.backend.format)
-    print(ds.feature_columns)
-    print(ds.label_columns)
     with pytest.raises(ValueError, match="label columns.*source"):
         ds[0]
 
@@ -677,12 +707,12 @@ def test_tabulardataset_set_format_raises_for_empty_columns(data_dir, tmp_path):
         str(data_dir), label_columns="source", hf_dataset_kwargs=_hf_kwargs(tmp_path)
     )
 
-    with pytest.raises(ValueError, match="Selected columns cannot be None"):
+    with pytest.raises(ValueError, match="Selected columns cannot be empty"):
         ds.set_format(columns=[])
 
 
 def test_tabulardataset_transform_raises_with_empty_columns(data_dir, tmp_path):
-    with pytest.raises(ValueError, match="Selected columns cannot be None"):
+    with pytest.raises(ValueError, match="Selected columns cannot be empty"):
         TabularDataset(
             str(data_dir),
             label_columns="source",
