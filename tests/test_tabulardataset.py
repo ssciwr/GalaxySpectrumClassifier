@@ -394,7 +394,28 @@ def test_tabulardataset_reset_format_restores_all_features_and_preserves_labels(
     X, y = next(iter(DataLoader(ds, batch_size=2, shuffle=False)))
 
     assert ds.feature_columns == ["a", "b"]
-    assert ds.backend.format["type"] is None
+    assert ds.backend.format["type"] == "torch"
+    assert set(ds.backend.format["columns"]) == {"a", "b", "source"}
+    assert torch.equal(scalar_X, torch.tensor([1.0, 10.0]))
+    assert torch.equal(scalar_y, torch.tensor([0]))
+    assert torch.equal(X, torch.tensor([[1.0, 10.0], [2.0, 20.0]]))
+    assert torch.equal(y, torch.tensor([0, 1]))
+
+
+def test_tabulardataset_set_format_with_none_restores_all_columns_and_preserves_labels(
+    data_dir, tmp_path
+):
+    ds = TabularDataset(
+        str(data_dir), label_columns="source", hf_dataset_kwargs=_hf_kwargs(tmp_path)
+    )
+    ds.set_format(columns=["a"])
+
+    ds.set_format()
+    scalar_X, scalar_y = ds[0]
+    X, y = next(iter(DataLoader(ds, batch_size=2, shuffle=False)))
+
+    assert ds.feature_columns == ["a", "b"]
+    assert ds.backend.format["type"] == "torch"
     assert set(ds.backend.format["columns"]) == {"a", "b", "source"}
     assert torch.equal(scalar_X, torch.tensor([1.0, 10.0]))
     assert torch.equal(scalar_y, torch.tensor([0]))

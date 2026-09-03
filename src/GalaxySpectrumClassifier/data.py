@@ -193,22 +193,19 @@ class TabularDataset(torch.utils.data.Dataset):
                 "reset_format cannot be used when a transform is active because it would erase any column selection done there"
             )
         self.backend.reset_format()
+        self.backend.set_format(type="torch")
         self.feature_columns = [
             c for c in self.backend.column_names if c not in self.label_columns
         ]
 
     def set_format(
-        self,
-        columns: list[str] | None = None,
-        output_all_columns: bool = False,
-        **format_kwargs: dict[str, Any] | None,
+        self, columns: list[str] | None = None, **format_kwargs: Any
     ) -> None:
-        """Wrapper around [huggingface.dataset.set_format](https://huggingface.co/docs/datasets/v4.8.4/en/package_reference/main_classes#datasets.Dataset.set_format).
+        """Wrapper around huggingface.datasets.set_format (https://huggingface.co/docs/datasets/v4.8.4/en/package_reference/main_classes#datasets.Dataset.set_format).
         In contrast to the latter, this does not support the 'type' argument b/c we always return torch tensors via the dataset.
 
         Args:
             columns (list[str] | None, optional): Columns to format in the output. None means __getitem__ returns all columns (default).
-            output_all_columns (bool, optional): Keep un-formatted columns as well in the output (as python objects). Defaults to False.
             **format_kwargs (additional keyword arguments): Keywords arguments passed to the convert function torch.tensor.
         """
 
@@ -225,9 +222,14 @@ class TabularDataset(torch.utils.data.Dataset):
         self.backend.set_format(
             type="torch",
             columns=_cols,
-            output_all_columns=output_all_columns,
+            output_all_columns=False,
             **format_kwargs,
         )
+
+        if _cols is None:
+            self.feature_columns = [
+                c for c in self.backend.column_names if c not in self.label_columns
+            ]
 
     def __getitem__(
         self,
@@ -253,25 +255,22 @@ class TabularDataset(torch.utils.data.Dataset):
         """
         # split into X, y with self.label_columns
         raw = self.backend[idx]
+        X = torch.stack(
+            [torch.as_tensor(raw[c]) for c in self.feature_columns], dim=-1
+        ).to(torch.float32)
+
         if self.label_columns:
             missing = [c for c in self.label_columns if c not in raw]
             if len(missing) > 0:
                 raise ValueError(
-                    f"Error, all given label columns must be present in return value, missing: {self.label_columns}"
+                    f"Error, all given label columns must be present in return value, missing: {missing}"
                 )
-
-            X = torch.stack(
-                [torch.as_tensor(raw[c]) for c in self.feature_columns], dim=-1
-            ).to(torch.float32)
 
             y = torch.stack(
                 [torch.as_tensor(raw[c]) for c in self.label_columns], dim=-1
             )
-            return X, y
-        X = torch.stack(
-            [torch.as_tensor(raw[c]) for c in self.backend.column_names], dim=-1
-        ).to(torch.float32)
-        y = X.new_empty((*X.shape[:-1], 0))
+        else:
+            y = X.new_empty((*X.shape[:-1], 0))
         return X, y
 
     def __getitems__(
@@ -301,7 +300,7 @@ class TabularDataset(torch.utils.data.Dataset):
             missing = [c for c in self.label_columns if c not in raw]
             if len(missing) > 0:
                 raise ValueError(
-                    f"Error, all given label columns must be present in return value, missing: {self.label_columns}"
+                    f"Error, all given label columns must be present in return value, missing: {missing}"
                 )
             xs = zip(*(raw[c] for c in self.feature_columns))
             ys = zip(*(raw[c] for c in self.label_columns))
@@ -318,7 +317,7 @@ class TabularDataset(torch.utils.data.Dataset):
                 for x, y in zip(xs, ys)
             ]
 
-        xs = zip(*(raw[c] for c in self.backend.column_names))
+        xs = zip(*(raw[c] for c in self.feature_columns))
         return [
             (torch.tensor(x, dtype=torch.float32), torch.empty(0, dtype=torch.float32))
             for x in xs
