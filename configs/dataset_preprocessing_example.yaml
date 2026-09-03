@@ -1,0 +1,15 @@
+# Read the two committed bronze grids directly; do not depend on silver input.
+data_format: csv
+label_columns: source_label
+pre_transform: __main__.encode_source
+pre_transform_kwargs:
+  remove_columns:
+    - source
+hf_dataset_kwargs:
+  data_files:
+    - ../data/bronze/default/C17_AGN_alpha08_efrac02_CNfix.dat
+    - ../data/bronze/default/C17_POPSTAR_1myr.dat
+  comment: "#"
+  sep: '\s+'
+  # Materialize Hugging Face's transformed Arrow cache in the silver stage.
+  cache_dir: ../data/silver/default_fromconfig

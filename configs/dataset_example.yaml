@@ -1,0 +1,3 @@
+path: ../data/bronze/default
+data_format: csv
+label_columns: "source"

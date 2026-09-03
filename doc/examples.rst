@@ -9,15 +9,10 @@ and ``data/`` resolve.
 .. toctree::
    :maxdepth: 1
 
+   dataset_examples
    simpletrainer_examples
    epochtrainer_examples
-
-.. Adding a notebook takes two steps: write doc/<name>.nblink containing
-   {"path": "../notebooks/<name>.ipynb"}, then list <name> in the toctree
-   above. Still to come:
-
-     conv1d_model
-     regression
+   inference_examples
 
 Example configurations
 ----------------------
@@ -26,6 +21,18 @@ These are the complete YAML configurations used by the example notebooks.
 Their relative paths assume that the calling process runs from ``notebooks/``.
 Configurations containing ``__main__`` import paths also require the helper
 functions or model classes defined in the corresponding notebook.
+
+Basic TabularDataset
+~~~~~~~~~~~~~~~~~~~~
+.. literalinclude:: ../configs/dataset_example.yaml
+   :language: yaml
+   :caption: configs/dataset_example.yaml
+
+TabularDataset with preprocessing
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. literalinclude:: ../configs/dataset_preprocessing_example.yaml
+   :language: yaml
+   :caption: configs/dataset_preprocessing_example.yaml
 
 SimpleTrainer with a random forest
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

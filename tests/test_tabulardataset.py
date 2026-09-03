@@ -1,5 +1,7 @@
+import inspect
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -52,6 +54,33 @@ def _scale_a(batch):
     batch = dict(batch)
     batch["a"] = [v * 2 for v in batch["a"]]
     return batch
+
+
+_transform_inputs = []
+
+
+def _record_and_scale_selected_a(batch):
+    batch = {name: list(values) for name, values in batch.items()}
+    _transform_inputs.append(batch.copy())
+    batch["a"] = [value * 2 for value in batch["a"]]
+    return batch
+
+
+def _return_scalars_from_transform(batch):
+    return {name: values[0] for name, values in batch.items()}
+
+
+def _drop_source_from_transform(batch):
+    return {"a": batch["a"]}
+
+
+def _replace_selected_feature_schema(batch):
+    return {
+        "added_before": [value + 100 for value in batch["a"]],
+        "a": batch["a"],
+        "source": batch["source"],
+        "added_after": [value + 200 for value in batch["a"]],
+    }
 
 
 def _float_source(batch):
@@ -309,6 +338,102 @@ def test_tabulardataset_getitem(data_dir, tmp_path):
     assert torch.equal(y, torch.tensor([0.0]))
 
 
+def test_tabulardataset_set_format_selects_columns_and_preserves_labels(
+    data_dir, tmp_path
+):
+    ds = TabularDataset(
+        str(data_dir), label_columns="source", hf_dataset_kwargs=_hf_kwargs(tmp_path)
+    )
+
+    ds.set_format(columns=["a"])
+    scalar_X, scalar_y = ds[0]
+    sliced_X, sliced_y = ds[:2]
+
+    assert ds.feature_columns == ["a"]
+    assert set(ds.backend.format["columns"]) == {"a", "source"}
+    assert set(ds.backend[0]) == {"a", "source"}
+    assert torch.equal(scalar_X, torch.tensor([1.0]))
+    assert torch.equal(scalar_y, torch.tensor([0]))
+    assert torch.equal(sliced_X, torch.tensor([[1.0], [2.0]]))
+    assert torch.equal(sliced_y, torch.tensor([[0], [1]]))
+
+
+def test_tabulardataset_set_format_selected_columns_work_with_dataloader(
+    data_dir, tmp_path
+):
+    ds = TabularDataset(
+        str(data_dir), label_columns="source", hf_dataset_kwargs=_hf_kwargs(tmp_path)
+    )
+    ds.set_format(columns=["a"])
+
+    X, y = next(iter(DataLoader(ds, batch_size=2, shuffle=False)))
+
+    assert torch.equal(X, torch.tensor([[1.0], [2.0]]))
+    assert torch.equal(y, torch.tensor([0, 1]))
+
+
+@pytest.mark.parametrize(
+    ("label_columns", "columns"),
+    [
+        pytest.param("source", ["missing"], id="unknown-feature"),
+        pytest.param("missing", ["a"], id="unknown-label"),
+    ],
+)
+def test_tabulardataset_set_format_rejects_unknown_feature_or_label_columns(
+    data_dir, tmp_path, label_columns, columns
+):
+    ds = TabularDataset(
+        str(data_dir),
+        label_columns=label_columns,
+        hf_dataset_kwargs=_hf_kwargs(tmp_path),
+    )
+
+    with pytest.raises(ValueError, match=r"Columns \['missing'\] not in the dataset"):
+        ds.set_format(columns=columns)
+
+
+def test_tabulardataset_reset_format_restores_all_features_and_preserves_labels(
+    data_dir, tmp_path
+):
+    ds = TabularDataset(
+        str(data_dir), label_columns="source", hf_dataset_kwargs=_hf_kwargs(tmp_path)
+    )
+    ds.set_format(columns=["a"])
+
+    ds.reset_format()
+    scalar_X, scalar_y = ds[0]
+    X, y = next(iter(DataLoader(ds, batch_size=2, shuffle=False)))
+
+    assert ds.feature_columns == ["a", "b"]
+    assert ds.backend.format["type"] == "torch"
+    assert set(ds.backend.format["columns"]) == {"a", "b", "source"}
+    assert torch.equal(scalar_X, torch.tensor([1.0, 10.0]))
+    assert torch.equal(scalar_y, torch.tensor([0]))
+    assert torch.equal(X, torch.tensor([[1.0, 10.0], [2.0, 20.0]]))
+    assert torch.equal(y, torch.tensor([0, 1]))
+
+
+def test_tabulardataset_set_format_with_none_restores_all_columns_and_preserves_labels(
+    data_dir, tmp_path
+):
+    ds = TabularDataset(
+        str(data_dir), label_columns="source", hf_dataset_kwargs=_hf_kwargs(tmp_path)
+    )
+    ds.set_format(columns=["a"])
+
+    ds.set_format()
+    scalar_X, scalar_y = ds[0]
+    X, y = next(iter(DataLoader(ds, batch_size=2, shuffle=False)))
+
+    assert ds.feature_columns == ["a", "b"]
+    assert ds.backend.format["type"] == "torch"
+    assert set(ds.backend.format["columns"]) == {"a", "b", "source"}
+    assert torch.equal(scalar_X, torch.tensor([1.0, 10.0]))
+    assert torch.equal(scalar_y, torch.tensor([0]))
+    assert torch.equal(X, torch.tensor([[1.0, 10.0], [2.0, 20.0]]))
+    assert torch.equal(y, torch.tensor([0, 1]))
+
+
 def test_tabulardataset_getitem_with_transform(data_dir, tmp_path):
     ds = TabularDataset(
         str(data_dir),
@@ -321,6 +446,353 @@ def test_tabulardataset_getitem_with_transform(data_dir, tmp_path):
 
     assert torch.equal(X, torch.tensor([2.0, 10.0]))
     assert torch.equal(y, torch.tensor([0.0]))
+
+
+def test_transform_selected_columns_are_batched_and_preserve_labels(data_dir, tmp_path):
+    _transform_inputs.clear()
+    ds = TabularDataset(
+        str(data_dir),
+        label_columns="source",
+        transform=_record_and_scale_selected_a,
+        transform_kwargs={"columns": ["a"]},
+        hf_dataset_kwargs=_hf_kwargs(tmp_path),
+    )
+
+    X, y = ds[0]
+
+    assert _transform_inputs == [{"a": [1.0], "source": [0]}]
+    assert ds.feature_columns == ["a"]
+    assert set(ds.backend.format["columns"]) == {"a", "source"}
+    assert torch.equal(X, torch.tensor([2.0]))
+    assert torch.equal(y, torch.tensor([0]))
+    assert ds.backend.data.column("a")[0].as_py() == 1.0
+
+
+def test_tabulardataset_transform_selected_columns_work_with_dataloader(
+    data_dir, tmp_path
+):
+    _transform_inputs.clear()
+    ds = TabularDataset(
+        str(data_dir),
+        label_columns="source",
+        transform=_record_and_scale_selected_a,
+        transform_kwargs={"columns": ["a"]},
+        hf_dataset_kwargs=_hf_kwargs(tmp_path),
+    )
+
+    X, y = next(iter(DataLoader(ds, batch_size=2, shuffle=False)))
+
+    assert _transform_inputs == [{"a": [1.0, 2.0], "source": [0, 1]}]
+    assert torch.equal(X, torch.tensor([[2.0], [4.0]]))
+    assert torch.equal(y, torch.tensor([0, 1]))
+
+
+def test_tabulardataset_transform_reconciles_configured_and_returned_features(
+    data_dir, tmp_path
+):
+    ds = TabularDataset(
+        str(data_dir),
+        label_columns="source",
+        transform=_replace_selected_feature_schema,
+        transform_kwargs={"columns": ["a", "b"]},
+        hf_dataset_kwargs=_hf_kwargs(tmp_path),
+    )
+
+    scalar_X, scalar_y = ds[0]
+    batched_X, batched_y = next(iter(DataLoader(ds, batch_size=2, shuffle=False)))
+
+    assert ds.feature_columns == ["a", "b"]
+    assert torch.equal(scalar_X, torch.tensor([1.0, 101.0, 201.0]))
+    assert torch.equal(scalar_y, torch.tensor([0]))
+    assert torch.equal(
+        batched_X,
+        torch.tensor([[1.0, 101.0, 201.0], [2.0, 102.0, 202.0]]),
+    )
+    assert torch.equal(batched_y, torch.tensor([0, 1]))
+
+
+def test_tabulardataset_set_format_rejects_active_transform(data_dir, tmp_path):
+    ds = TabularDataset(
+        str(data_dir),
+        label_columns="source",
+        transform=_record_and_scale_selected_a,
+        transform_kwargs={"columns": ["a"]},
+        hf_dataset_kwargs=_hf_kwargs(tmp_path),
+    )
+
+    with pytest.raises(ValueError, match="set_format cannot be used"):
+        ds.set_format(columns=["b"])
+
+
+def test_tabulardataset_reset_format_rejects_active_transform(data_dir, tmp_path):
+    _transform_inputs.clear()
+    ds = TabularDataset(
+        str(data_dir),
+        label_columns="source",
+        transform=_record_and_scale_selected_a,
+        transform_kwargs={"columns": ["a"]},
+        hf_dataset_kwargs=_hf_kwargs(tmp_path),
+    )
+
+    with pytest.raises(ValueError, match="reset_format cannot be used"):
+        ds.reset_format()
+
+    formatted_row = ds.backend[0]
+    assert ds.active_transform is True
+    assert ds.backend.format["type"] == "custom"
+    assert _transform_inputs == [{"a": [1.0], "source": [0]}]
+    assert formatted_row["a"] == 2.0
+    assert formatted_row["source"] == 0
+
+
+@pytest.mark.parametrize(
+    ("label_columns", "columns"),
+    [
+        pytest.param("source", ["missing"], id="unknown-feature"),
+        pytest.param("missing", ["a"], id="unknown-label"),
+    ],
+)
+def test_tabulardataset_transform_rejects_unknown_feature_or_label_columns(
+    data_dir, tmp_path, label_columns, columns
+):
+    with pytest.raises(ValueError, match=r"Columns \['missing'\] not in the dataset"):
+        TabularDataset(
+            str(data_dir),
+            label_columns=label_columns,
+            transform=_record_and_scale_selected_a,
+            transform_kwargs={"columns": columns},
+            hf_dataset_kwargs=_hf_kwargs(tmp_path),
+        )
+
+
+def test_tabulardataset_transform_rejects_non_batch_output(data_dir, tmp_path):
+    ds = TabularDataset(
+        str(data_dir),
+        label_columns="source",
+        transform=_return_scalars_from_transform,
+        transform_kwargs={"columns": ["a"]},
+        hf_dataset_kwargs=_hf_kwargs(tmp_path),
+    )
+
+    with pytest.raises(TypeError, match="must return a dict of sequences"):
+        ds[0]
+
+
+def test_tabulardataset_transform_output_must_preserve_label_columns(
+    data_dir, tmp_path
+):
+    ds = TabularDataset(
+        str(data_dir),
+        label_columns="source",
+        transform=_drop_source_from_transform,
+        transform_kwargs={"columns": ["a"]},
+        hf_dataset_kwargs=_hf_kwargs(tmp_path),
+    )
+    with pytest.raises(ValueError, match="label columns.*source"):
+        ds[0]
+
+
+def test_tabulardataset_set_format_selects_columns_without_labels_for_direct_access(
+    data_dir, tmp_path
+):
+    ds = TabularDataset(str(data_dir), hf_dataset_kwargs=_hf_kwargs(tmp_path))
+
+    ds.set_format(columns=["a"])
+    scalar_X, scalar_y = ds[0]
+    sliced_X, sliced_y = ds[:2]
+
+    assert torch.equal(scalar_X, torch.tensor([1.0]))
+    assert scalar_y.shape == (0,)
+    assert torch.equal(sliced_X, torch.tensor([[1.0], [2.0]]))
+    assert sliced_y.shape == (2, 0)
+
+
+def test_tabulardataset_set_format_selects_columns_without_labels_for_dataloader(
+    data_dir, tmp_path
+):
+    ds = TabularDataset(str(data_dir), hf_dataset_kwargs=_hf_kwargs(tmp_path))
+    ds.set_format(columns=["a"])
+
+    X, y = next(iter(DataLoader(ds, batch_size=2, shuffle=False)))
+
+    assert torch.equal(X, torch.tensor([[1.0], [2.0]]))
+    assert y.shape == (2, 0)
+
+
+def test_tabulardataset_transform_selects_columns_without_labels_for_direct_access(
+    data_dir, tmp_path
+):
+    ds = TabularDataset(
+        str(data_dir),
+        transform=_scale_a,
+        transform_kwargs={"columns": ["a"]},
+        hf_dataset_kwargs=_hf_kwargs(tmp_path),
+    )
+
+    scalar_X, scalar_y = ds[0]
+    sliced_X, sliced_y = ds[:2]
+
+    assert torch.equal(scalar_X, torch.tensor([2.0]))
+    assert scalar_y.shape == (0,)
+    assert torch.equal(sliced_X, torch.tensor([[2.0], [4.0]]))
+    assert sliced_y.shape == (2, 0)
+
+
+def test_tabulardataset_transform_selects_columns_without_labels_for_dataloader(
+    data_dir, tmp_path
+):
+    ds = TabularDataset(
+        str(data_dir),
+        transform=_scale_a,
+        transform_kwargs={"columns": ["a"]},
+        hf_dataset_kwargs=_hf_kwargs(tmp_path),
+    )
+
+    X, y = next(iter(DataLoader(ds, batch_size=2, shuffle=False)))
+
+    assert torch.equal(X, torch.tensor([[2.0], [4.0]]))
+    assert y.shape == (2, 0)
+
+
+def test_tabulardataset_transform_columns_none_matches_omitted_columns(
+    data_dir, tmp_path
+):
+    ds = TabularDataset(
+        str(data_dir),
+        label_columns="source",
+        transform=_scale_a,
+        transform_kwargs={"columns": None},
+        hf_dataset_kwargs=_hf_kwargs(tmp_path),
+    )
+
+    X, y = ds[0]
+
+    assert torch.equal(X, torch.tensor([2.0, 10.0]))
+    assert torch.equal(y, torch.tensor([0]))
+
+
+def test_tabulardataset_ignores_transform_kwargs_without_transform(data_dir, tmp_path):
+    ds = TabularDataset(
+        str(data_dir),
+        label_columns="source",
+        transform_kwargs={"columns": ["a"]},
+        hf_dataset_kwargs=_hf_kwargs(tmp_path),
+    )
+
+    X, y = ds[0]
+
+    assert ds.feature_columns == ["a", "b"]
+    assert torch.equal(X, torch.tensor([1.0, 10.0]))
+    assert torch.equal(y, torch.tensor([0]))
+
+
+def test_tabulardataset_failed_set_format_preserves_previous_state(data_dir, tmp_path):
+    ds = TabularDataset(
+        str(data_dir), label_columns="source", hf_dataset_kwargs=_hf_kwargs(tmp_path)
+    )
+    ds.set_format(columns=["a"])
+
+    with pytest.raises(ValueError, match=r"Columns \['missing'\] not in the dataset"):
+        ds.set_format(columns=["missing"])
+
+    X, y = ds[0]
+    assert ds.feature_columns == ["a"]
+    assert set(ds.backend.format["columns"]) == {"a", "source"}
+    assert torch.equal(X, torch.tensor([1.0]))
+    assert torch.equal(y, torch.tensor([0]))
+
+
+def test_tabulardataset_set_format_raises_for_empty_columns(data_dir, tmp_path):
+    ds = TabularDataset(
+        str(data_dir), label_columns="source", hf_dataset_kwargs=_hf_kwargs(tmp_path)
+    )
+
+    with pytest.raises(ValueError, match="Selected columns cannot be empty"):
+        ds.set_format(columns=[])
+
+
+def test_tabulardataset_transform_raises_with_empty_columns(data_dir, tmp_path):
+    with pytest.raises(ValueError, match="Selected columns cannot be empty"):
+        TabularDataset(
+            str(data_dir),
+            label_columns="source",
+            transform=_float_source,
+            transform_kwargs={"columns": []},
+            hf_dataset_kwargs=_hf_kwargs(tmp_path),
+        )
+
+
+@pytest.mark.parametrize("selection_mode", ["set-format", "transform"])
+def test_tabulardataset_rejects_selection_containing_only_label_columns(
+    data_dir, tmp_path, selection_mode
+):
+    if selection_mode == "set-format":
+        ds = TabularDataset(
+            str(data_dir),
+            label_columns="source",
+            hf_dataset_kwargs=_hf_kwargs(tmp_path),
+        )
+
+        with pytest.raises(
+            ValueError, match="Passed columns only contain label columns"
+        ):
+            ds.set_format(columns=["source"])
+    else:
+        with pytest.raises(
+            ValueError, match="Passed columns only contain label columns"
+        ):
+            TabularDataset(
+                str(data_dir),
+                label_columns="source",
+                transform=_float_source,
+                transform_kwargs={"columns": ["source"]},
+                hf_dataset_kwargs=_hf_kwargs(tmp_path),
+            )
+
+
+def test_tabulardataset_output_all_columns_ignored(data_dir, tmp_path):
+    ds = TabularDataset(
+        str(data_dir), label_columns="source", hf_dataset_kwargs=_hf_kwargs(tmp_path)
+    )
+
+    ds.set_format(columns=["a"], output_all_columns=True)
+    X, y = ds[0]
+
+    assert ds.feature_columns == [
+        "a",
+    ]
+    assert torch.equal(
+        X,
+        torch.tensor(
+            [
+                1.0,
+            ]
+        ),
+    )
+    assert torch.equal(y, torch.tensor([0]))
+
+
+def test_tabulardataset_set_format_variadic_annotation_accepts_any_value():
+    parameter = inspect.signature(TabularDataset.set_format).parameters["format_kwargs"]
+
+    assert parameter.annotation is Any
+
+
+@pytest.mark.parametrize("access", ["scalar", "batch"])
+def test_tabulardataset_reports_only_actually_missing_labels(
+    data_dir, tmp_path, access
+):
+    ds = TabularDataset(
+        str(data_dir),
+        label_columns=["source", "missing"],
+        hf_dataset_kwargs=_hf_kwargs(tmp_path),
+    )
+
+    with pytest.raises(ValueError, match=r"missing: \['missing'\]$"):
+        if access == "scalar":
+            ds[0]
+        else:
+            ds.__getitems__([0])
 
 
 def test_tabulardataset_getitems_with_transform(data_dir, tmp_path):

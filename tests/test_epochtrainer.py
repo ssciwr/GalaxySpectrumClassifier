@@ -250,10 +250,10 @@ def test_epochtrainer_constructs_all_datasets_and_preserves_rebuild_config(
 
     assert isinstance(trainer.train_ds, TabularDataset)
     assert isinstance(trainer.val_ds, TabularDataset)
-    assert isinstance(trainer.eval_ds, TabularDataset)
+    assert isinstance(trainer.test_ds, TabularDataset)
     assert len(trainer.train_ds) == 1000
     assert len(trainer.val_ds) == 1000
-    assert len(trainer.eval_ds) == 1000
+    assert len(trainer.test_ds) == 1000
     assert trainer.train_ds.feature_columns == ["a", "b", "c", "d", "extra"]
 
     assert isinstance(trainer.model, NeuralNetBinaryClassifier)
@@ -563,7 +563,7 @@ def test_epochtrainer_train_fits_constructor_datasets(tmp_path, create_data):
     assert len(trainer.model.history) == 1
     assert np.isfinite(trainer.model.history[-1]["train_loss"])
     assert np.isfinite(trainer.model.history[-1]["valid_loss"])
-    assert trainer.model.predict(trainer.eval_ds).shape == (len(trainer.eval_ds),)
+    assert trainer.model.predict(trainer.test_ds).shape == (len(trainer.test_ds),)
 
 
 def test_epochtrainer_evaluates_before_training(tmp_path, create_data):
@@ -573,8 +573,8 @@ def test_epochtrainer_evaluates_before_training(tmp_path, create_data):
 
     results = trainer.evaluate()
 
-    expected_y = np.array([y.item() for _, y in trainer.eval_ds])
-    expected = accuracy_score(expected_y, trainer.model.predict(trainer.eval_ds))
+    expected_y = np.array([y.item() for _, y in trainer.test_ds])
+    expected = accuracy_score(expected_y, trainer.model.predict(trainer.test_ds))
     assert results == {"accuracy_score": expected}
 
 
@@ -589,8 +589,8 @@ def test_epochtrainer_records_validation_metrics_and_evaluates_stably(
     first_results = trainer.evaluate()
     second_results = trainer.evaluate()
 
-    expected_y = np.array([y.item() for _, y in trainer.eval_ds])
-    expected = accuracy_score(expected_y, trainer.model.predict(trainer.eval_ds))
+    expected_y = np.array([y.item() for _, y in trainer.test_ds])
+    expected = accuracy_score(expected_y, trainer.model.predict(trainer.test_ds))
     assert "accuracy_score" in trainer.model.history[-1]
     assert first_results == second_results
     assert first_results == {"accuracy_score": expected}
@@ -600,11 +600,11 @@ def test_epochtrainer_evaluate_walks_eval_dataset_once(tmp_path, create_data):
     trainer = EpochTrainer(
         **_trainer_kwargs(tmp_path, create_data, max_epochs=1, batch_size=1000)
     )
-    trainer.eval_ds = _CountingDataset(trainer.eval_ds)
+    trainer.test_ds = _CountingDataset(trainer.test_ds)
 
     trainer.evaluate()
 
-    assert trainer.eval_ds.getitem_calls == len(trainer.eval_ds)
+    assert trainer.test_ds.getitem_calls == len(trainer.test_ds)
 
 
 def test_epochtrainer_records_custom_metric_in_history(tmp_path, create_data):
@@ -654,8 +654,8 @@ def test_epochtrainer_evaluate_binary_probability_metric_after_training(
     trainer.train()
     results = trainer.evaluate()
 
-    expected_y = np.array([y.item() for _, y in trainer.eval_ds])
-    probabilities = trainer.model.predict_proba(trainer.eval_ds)
+    expected_y = np.array([y.item() for _, y in trainer.test_ds])
+    probabilities = trainer.model.predict_proba(trainer.test_ds)
     assert results["auc"] == pytest.approx(
         roc_auc_score(expected_y, probabilities[:, 1])
     )
@@ -837,10 +837,10 @@ def test_epochtrainer_evaluate_passes_multiclass_probability_matrix_to_metric(
             ],
         )
     )
-    data = torch.utils.data.Subset(trainer.eval_ds, range(3))
+    data = torch.utils.data.Subset(trainer.test_ds, range(3))
     probabilities = np.array([[0.7, 0.2, 0.1], [0.1, 0.8, 0.1], [0.2, 0.3, 0.5]])
     trainer.model = _FixedPredictionModel([0, 1, 2], probabilities)
-    trainer.eval_ds = data
+    trainer.test_ds = data
 
     results = trainer.evaluate()
 
@@ -984,7 +984,7 @@ def test_epochtrainer_load_snapshot_restores_independently_written_state(
     )
     assert loaded.model.history == trainer.model.history
     np.testing.assert_array_equal(
-        loaded.model.predict(loaded.eval_ds), trainer.model.predict(trainer.eval_ds)
+        loaded.model.predict(loaded.test_ds), trainer.model.predict(trainer.test_ds)
     )
 
 
@@ -1032,7 +1032,7 @@ def test_epochtrainer_save_and_load_snapshot_round_trip(tmp_path, create_data):
     )
     assert loaded.model.history == trainer.model.history
     np.testing.assert_array_equal(
-        loaded.model.predict(loaded.eval_ds), trainer.model.predict(trainer.eval_ds)
+        loaded.model.predict(loaded.test_ds), trainer.model.predict(trainer.test_ds)
     )
 
 
