@@ -147,6 +147,13 @@ class TabularDataset(torch.utils.data.Dataset):
             ):
                 raise ValueError("Selected columns cannot be empty")
 
+            if (
+                _transform_kwargs
+                and _transform_kwargs.get("columns") is not None
+                and all(c in self.label_columns for c in _transform_kwargs["columns"])
+            ):
+                raise ValueError("Passed columns only contain label columns")
+
             self.active_transform = True
             # if we select columns, then we need to make sure the dataset knows about it to select the
             # the right ones for torch-ification
@@ -218,7 +225,7 @@ class TabularDataset(torch.utils.data.Dataset):
         output_all_columns: bool = False,
         **format_kwargs: Any,
     ) -> None:
-        """Wrapper around datasets.Dataset.set_format (https://huggingface.co/docs/datasets/v4.8.4/en/package_reference/main_classes#datasets.Dataset.set_format).
+        """Wrapper around datasets.Dataset.set_format (https://huggingface.co/docs/datasets/en/package_reference/main_classes#datasets.Dataset.set_format).
         In contrast to the latter, this does not support the 'type' argument b/c we always return torch tensors via the dataset.
 
         Args:
@@ -233,6 +240,9 @@ class TabularDataset(torch.utils.data.Dataset):
             raise ValueError(
                 "set_format cannot be used when a transform is active because it would erase any column selection done there. Select columns through transform_kwargs in that case."
             )
+
+        if columns is not None and all(c in self.label_columns for c in columns):
+            raise ValueError("Passed columns only contain label columns")
 
         _cols = columns
         if columns:
