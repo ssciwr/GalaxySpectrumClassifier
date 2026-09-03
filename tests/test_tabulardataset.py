@@ -722,6 +722,30 @@ def test_tabulardataset_transform_raises_with_empty_columns(data_dir, tmp_path):
         )
 
 
+@pytest.mark.parametrize("selection_mode", ["set-format", "transform"])
+def test_tabulardataset_rejects_selection_containing_only_label_columns(
+    data_dir, tmp_path, selection_mode
+):
+    if selection_mode == "set-format":
+        ds = TabularDataset(
+            str(data_dir),
+            label_columns="source",
+            hf_dataset_kwargs=_hf_kwargs(tmp_path),
+        )
+
+        with pytest.raises(ValueError, match="Selected columns cannot be empty"):
+            ds.set_format(columns=["source"])
+    else:
+        with pytest.raises(ValueError, match="Selected columns cannot be empty"):
+            TabularDataset(
+                str(data_dir),
+                label_columns="source",
+                transform=_float_source,
+                transform_kwargs={"columns": ["source"]},
+                hf_dataset_kwargs=_hf_kwargs(tmp_path),
+            )
+
+
 def test_tabulardataset_output_all_columns_ignored(data_dir, tmp_path):
     ds = TabularDataset(
         str(data_dir), label_columns="source", hf_dataset_kwargs=_hf_kwargs(tmp_path)
