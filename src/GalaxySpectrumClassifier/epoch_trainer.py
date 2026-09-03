@@ -298,7 +298,7 @@ class EpochTrainer(TrainerProtocol):
             },
         )
 
-        self.eval_ds = TabularDataset(
+        self.test_ds = TabularDataset(
             *(test_dataset_args or []),
             **{
                 "squeeze_labels": squeeze_labels,
@@ -769,11 +769,11 @@ class EpochTrainer(TrainerProtocol):
         if not hasattr(self.model, "get_iterator"):
             # Test doubles and sklearn-like stand-ins can still use the simpler
             # public API; real skorch nets take the single-pass path below.
-            y_pred = self.model.predict(self.eval_ds)
+            y_pred = self.model.predict(self.test_ds)
             y_proba = None
             if any(metric["needs_proba"] for metric in self.metrics):
-                y_proba = self.model.predict_proba(self.eval_ds)
-            y = np.array([y for _, y in self.eval_ds])
+                y_proba = self.model.predict_proba(self.test_ds)
+            y = np.array([y for _, y in self.test_ds])
             return y_pred, y_proba, y
 
         nonlin = self.model._get_predict_nonlinearity()
@@ -781,7 +781,7 @@ class EpochTrainer(TrainerProtocol):
         y_proba_batches = []
         y_batches = []
         needs_proba = any(metric["needs_proba"] for metric in self.metrics)
-        for batch in self.model.get_iterator(self.eval_ds, training=False):
+        for batch in self.model.get_iterator(self.test_ds, training=False):
             _, batch_y = unpack_data(batch)
             batch_pred = self.model.evaluation_step(batch, training=False)
             batch_pred = batch_pred[0] if isinstance(batch_pred, tuple) else batch_pred
