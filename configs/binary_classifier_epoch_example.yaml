@@ -8,7 +8,7 @@ trainer:
   model_type: torchvision.ops.MLP
   model_kwargs:
     # Linear(18, 64) -> ReLU -> Linear(64, 1): 18 input features (all dataset
-    # columns except `source`), one hidden layer of 64, one output logit.
+    # columns except `source_label`), one hidden layer of 64, one output logit.
     in_channels: 18
     hidden_channels: [64, 1]
   # The MLP emits a raw logit, matching BCEWithLogitsLoss.
@@ -26,7 +26,7 @@ trainer:
   # once and reused via YAML anchors.
   train_dataset_kwargs: &dataset_kwargs
     data_format: csv
-    label_columns: "source"
+    label_columns: source_label
     # Resolved from the notebook's kernel namespace - see the `to_float32`
     # cell just above where this config is loaded.
     transform: __main__.to_float32
