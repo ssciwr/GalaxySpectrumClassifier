@@ -1403,6 +1403,7 @@ docs = [
     { name = "sphinx-rtd-theme" },
 ]
 tests = [
+    { name = "ipywidgets" },
     { name = "nbval" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -1423,6 +1424,7 @@ requires-dist = [
     { name = "dvc", marker = "extra == 'train'" },
     { name = "dvclive", marker = "extra == 'train'" },
     { name = "ipykernel", marker = "extra == 'vscode'" },
+    { name = "ipywidgets", marker = "extra == 'tests'" },
     { name = "ipywidgets", marker = "extra == 'vscode'" },
     { name = "matplotlib", specifier = ">=3.11.0" },
     { name = "nbsphinx", marker = "extra == 'docs'" },
