@@ -48,12 +48,14 @@ and PyTorch/skorch trainers, evaluation, snapshots, model export, and inference.
 - config files are treated as ephemeral and do not need tests
 
 ## Coding guidelines
+- Adhere to test-driven development: Plan tests -> approval by user -> write tests -> user review -> implementation phase to make tests green -> user review -> refactoring if necessary
 - Adhere to SOLID principles
     - single responsibility principle: One code unit (function, class, module) should have one single purpose
     - open-closed principle: Code should be open to extension, but closed to modification, i.e., we should not have to modify existing code extensively to extend the functionality of the system
     - liskov substitution: derived- or child classes must be able to replace their parent classes, i.e., child classes should extend the parent classes without breaking the behavioral contract
     - interface segregation: A client should not be forced to depend on parts of an interface that is not relevant to it
     - dependency inversion: Higher-level elements of the code should not depend on lower-level elements of the code, both should depend on abstractions that define behavior, not restrict implementation.
+- Adhere to Clean Code principles: DRY, YAGNI, KISS, small, single purpose functions
 - keep control flow and data flow as flat as possible. Go with the minimum amount of hierarchical dept that solves the problem at hand.
 - avoid module-level variables
 - use classes as soon as data and functions work together to create a functionality
